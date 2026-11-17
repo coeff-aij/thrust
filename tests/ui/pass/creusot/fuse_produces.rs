@@ -36,13 +36,15 @@ impl<I: Iterator> Iterator for Fuse<I> {
             && (!self).iter == None
     }
 
-    // Creusot's `match self.iter` as a disjunction: a pattern in a formula cannot bind a
-    // variable, so the `Some(i)` arm is an `exists`.
     #[thrust_macros::predicate]
     fn produces(self, prod: Seq<<Self::Item as Model>::Ty>, other: Self) -> bool {
-        (self.iter == None && prod == Seq::empty() && other.iter == self.iter)
-            || exists(|i: <I as Model>::Ty| exists(|i2: <I as Model>::Ty|
-                self.iter == Some(i) && other.iter == Some(i2) && I::produces(i, prod, i2)))
+        match self.iter {
+            None => prod == Seq::empty() && other.iter == self.iter,
+            Some(i) => match other.iter {
+                Some(i2) => I::produces(i, prod, i2),
+                None => false,
+            },
+        }
     }
 
     fn next(&mut self) -> Option<Self::Item> {

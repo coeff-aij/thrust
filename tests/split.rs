@@ -414,9 +414,9 @@ fn a_part_of_several_functions_spans_each() {
     assert!(stderr.contains("`main` is in this part too"), "{stderr}");
 }
 
-/// A part declares only the definitions its clauses reach: the part of `bad`, which has no
-/// sequence, is refuted by `z3` although the part of `count` uses sequences, which `z3` cannot
-/// read, and only that part's error says PCSat reads it.
+/// A part declares only what its assertions use: the part of `bad`, which has no sequence, is
+/// refuted by `z3`, and the part of `count`, whose loop's sequence datatypes no assertion uses,
+/// declares none of them, so `z3` reads it too.
 #[test]
 fn a_part_without_sequences_declares_none() {
     let output = run("sequence_and_not.rs", Some("2"));
@@ -425,11 +425,7 @@ fn a_part_without_sequences_declares_none() {
         stderr.contains("error: verification error: Unsat"),
         "{stderr}"
     );
-    assert_eq!(
-        stderr.matches("which `z3` does not read").count(),
-        1,
-        "{stderr}"
-    );
+    assert_eq!(stderr.matches("verification error").count(), 1, "{stderr}");
 }
 
 /// A failing part's error and the labels of its other functions are at the functions'
@@ -655,6 +651,94 @@ fn each_conjunct_of_a_postcondition_is_a_goal() {
     assert!(!stderr.contains("result > x ∧"), "{stderr}");
     assert!(
         stderr.contains("`succ`: checked, in parts 1, 2 (unsat)"),
+        "{stderr}"
+    );
+}
+
+/// `#[thrust::split_goals]` sets apart the goals of `twice` only: each of its two assertions is a
+/// part with the clauses of `double` it reads, and the assertion of `main` stays in what is left
+/// of the one class; the refuted assertion fails alone.
+#[test]
+fn split_goals_sets_apart_the_goals_of_its_function() {
+    let output = run("goals_apart.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("3 parts solved on their own, 0 of them from earlier runs, each goal of a"),
+        "{stderr}"
+    );
+
+    let output = run("goals_apart_fail.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert_eq!(stderr.matches("verification error").count(), 1, "{stderr}");
+    assert!(stderr.contains("in part 2 of 3, "), "{stderr}");
+}
+
+/// In a function marked `#[thrust::split_goals]`, each conjunct of a checked postcondition is a
+/// goal of its own, as with `THRUST_SPLIT_GOALS`: the two `ensures` of `succ` are two parts, after
+/// the class with no goal that the run without the attribute has too, and only the second fails.
+#[test]
+fn split_goals_makes_each_conjunct_a_goal() {
+    let output = run("conjunct_goals_marked.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("3 parts solved on their own, 0 of them from earlier runs, each goal of a"),
+        "{stderr}"
+    );
+    assert_eq!(stderr.matches("verification error").count(), 1, "{stderr}");
+    assert!(stderr.contains("in part 3 of 3, "), "{stderr}");
+}
+
+/// The goals of an unmarked function analyzed while a marked one is (`h`, a callee analyzed at its
+/// instance inside `m`) keep their conjunctions: the precondition of `g` at the call in `h` is one
+/// goal, `x > 0 ∧ x < 100`.
+#[test]
+fn a_callee_of_a_marked_function_keeps_its_conjunctions() {
+    let dir = std::env::temp_dir().join(format!("thrust-split-callee-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let output = run_with(
+        "goals_apart_callee.rs",
+        Some("2"),
+        &[("THRUST_OUTPUT_DIR", dir.to_str().unwrap())],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let queries: Vec<String> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap())
+        .collect();
+    std::fs::remove_dir_all(&dir).unwrap();
+    assert!(
+        stderr.contains("each goal of a `#[thrust::split_goals]` function apart"),
+        "{stderr}"
+    );
+    let preconditions: Vec<&str> = queries
+        .iter()
+        .flat_map(|q| q.lines())
+        .filter(|l| l.contains("(< v5 100)"))
+        .collect();
+    assert!(!preconditions.is_empty(), "{queries:?}");
+    assert!(
+        preconditions.iter().all(|l| l.contains("(not (and")),
+        "{preconditions:?}"
+    );
+}
+
+/// `#[thrust::split_goals]` on anything but a function whose body Thrust analyzes is an error: a
+/// struct, and a closure, which takes the attribute of the function it is written in.
+#[test]
+fn a_misplaced_split_goals_is_an_error() {
+    let output = run("split_goals_misplaced.rs", Some("2"));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert_eq!(
+        stderr
+            .matches(
+                "`#[thrust::split_goals]` applies only to a function whose body Thrust analyzes"
+            )
+            .count(),
+        2,
         "{stderr}"
     );
 }

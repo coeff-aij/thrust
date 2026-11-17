@@ -27,6 +27,7 @@ use crate::rty;
 pub(crate) mod annot;
 mod annot_fn;
 mod basic_block;
+mod block_contract;
 mod closure_hist_inv;
 mod crate_;
 mod derive;
@@ -456,6 +457,19 @@ pub fn is_ignored_crate_fn(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
         .as_local()
         .is_some_and(|local| !is_injected_std(tcx, local))
         && is_ignored(tcx, def_id)
+}
+
+/// Whether `resolved`, the impl method a call of the trait method `def_id` resolves to, is from
+/// a crate other than the one analyzed and `std`/`core`/`alloc`: nothing checks its body against
+/// a trait-level spec of `std.rs`, which describes std's impls and the crate's own, so it takes
+/// none.
+pub fn is_unchecked_foreign_impl(tcx: mir_ty::TyCtxt<'_>, def_id: DefId, resolved: DefId) -> bool {
+    resolved != def_id
+        && !resolved.is_local()
+        && !matches!(
+            tcx.crate_name(resolved.krate).as_str(),
+            "std" | "core" | "alloc"
+        )
 }
 
 /// Stops at a call that resolves to an ignored function of the crate, which has no checked type.
@@ -919,6 +933,15 @@ impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
     }
 }
 
+/// Whether `def`, or the function it is a closure in, is marked `#[thrust::split_goals]`: with
+/// `THRUST_SPLIT`, each of its goals is a part of its own (see [`chc::System::goals_apart`]).
+pub fn splits_goals(tcx: mir_ty::TyCtxt<'_>, def: LocalDefId) -> bool {
+    let root = tcx.typeck_root_def_id(def.to_def_id());
+    tcx.get_attrs_by_path(root, &annot::split_goals_path())
+        .next()
+        .is_some()
+}
+
 /// `THRUST_SPLIT`: the number of parts of the system solved at a time, when the parts are solved
 /// on their own; `None` when unset, empty or `0`, and an error for anything but a number.
 fn split_jobs() -> Result<Option<usize>, String> {
@@ -1258,6 +1281,40 @@ impl<'tcx> Analyzer<'tcx> {
             && resolved_def_id.is_local()
             && !self.has_own_impl_contract(resolved_def_id)
             && self.trait_method_contract_written(def_id)
+    }
+
+    /// The functions whose contract a `pre!`/`post!` naming the trait method `def_id` at `args`
+    /// reads when the path resolves to `instance`, in the order a call takes them: the impl's own
+    /// contract (an extern spec of a std impl, a local impl method's contract), then the
+    /// trait-level spec, which describes std's impls and the crate's own, whose bodies are
+    /// checked against it, then the type inferred for a local impl method that has no contract
+    /// of its own, which a call falls back to when the trait gives none. An impl of another
+    /// crate is checked by nothing, so it has none.
+    pub fn named_contract_sources(
+        &self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        instance: mir_ty::Instance<'tcx>,
+    ) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        let resolved = instance.def_id();
+        let mut sources = Vec::new();
+        if resolved != def_id && !self.takes_trait_contract(def_id, resolved) {
+            sources.push((resolved, instance.args));
+        }
+        if is_unchecked_foreign_impl(self.tcx, def_id, resolved) {
+            return sources;
+        }
+        // An ignored impl method's body is not checked against the trait-level spec.
+        if resolved != def_id && is_ignored_crate_fn(self.tcx, resolved) {
+            fatal_ignored_call(self.tcx, resolved, instance.args);
+        }
+        sources.push((def_id, args));
+        // A local impl method that takes the trait's contract falls back to its own inferred
+        // type when the trait has no spec to give (`Deref::deref` of a local impl), as a call does.
+        if resolved != def_id && self.takes_trait_contract(def_id, resolved) {
+            sources.push((resolved, instance.args));
+        }
+        sources
     }
 
     /// Stops if a function Thrust verifies can run an ignored function of the crate, as Verus's
@@ -1956,6 +2013,7 @@ impl<'tcx> Analyzer<'tcx> {
                     }
                 });
                 let mut system = self.system.borrow_mut();
+                let facts = self.logic_fn_result_facts(&mut system, &pred, &arg_sorts, &ret);
                 system.push_fn_define_term(
                     pred.clone(),
                     arg_sorts,
@@ -1963,10 +2021,40 @@ impl<'tcx> Analyzer<'tcx> {
                     definition,
                     decreases,
                 );
+                if let Some(facts) = facts {
+                    system.set_result_facts(&pred, facts);
+                }
             }
         }
         self.defining_predicates.borrow_mut().pop();
         pred
+    }
+
+    /// The facts of `ret`, the result type of the logic function `pred`, stated of its value at
+    /// its parameters: `>= 0` of an unsigned type, and with `THRUST_INT_RANGE` its range
+    /// (`rty::int_range_type_formula`). Its definition has them at every argument
+    /// ([`Self::checked_logic_fn_body`]), so they hold of every interpretation an opaque
+    /// declaration stands for, as the value of an opaque function in Dafny or Verus keeps the
+    /// constraint of its result type. `None` when the type states none, and when stating them
+    /// needs an existential (the payload of an enum with `THRUST_INT_RANGE`): a law of the form
+    /// `forall params. exists payload. ..` has no test with PCSat, so that declaration keeps
+    /// no law.
+    fn logic_fn_result_facts(
+        &self,
+        system: &mut chc::System,
+        pred: &chc::UserDefinedPred,
+        arg_sorts: &IndexVec<chc::TermVarIdx, chc::Sort>,
+        ret: &rty::Type<rty::Closed>,
+    ) -> Option<chc::Formula> {
+        let args = arg_sorts.indices().map(chc::Term::var).collect();
+        let value = chc::Term::user_defined_fn(pred.clone(), ret.to_sort(), args);
+        let (payloads, facts) = rty::int_range_type_formula(
+            ret,
+            value,
+            || system.new_user_quantified_var(),
+            &self.enum_defs,
+        )?;
+        payloads.is_empty().then_some(facts)
     }
 
     /// The definition of a logic function from its `body`, and the clauses checking that
@@ -2514,6 +2602,17 @@ impl<'tcx> Analyzer<'tcx> {
         reach
     }
 
+    /// Whether `def_id` has a contract of its own (a written one or a spec); the error for a
+    /// `pre!`/`post!` that finds none is narrowed to methods with a contract of their own.
+    pub fn has_def_ty(&self, def_id: DefId) -> bool {
+        self.defs.contains_key(&def_id)
+    }
+
+    /// Whether `local_def_id` is a predicate or logic function with a Rust body.
+    pub fn is_formula_fn(&self, local_def_id: LocalDefId) -> bool {
+        self.formula_fns.contains_key(&local_def_id)
+    }
+
     pub fn register_formula_fn(&mut self, local_def_id: LocalDefId) {
         tracing::info!(?local_def_id, "register_formula_fn");
         self.formula_fns.insert(
@@ -2679,6 +2778,7 @@ impl<'tcx> Analyzer<'tcx> {
         }
         self.system.borrow_mut().type_params_reverse = reverse;
         self.mark_opaque_predicates();
+        self.check_split_goals_attributes();
         let config = crate::report::Config::from_env(self.tcx);
         match split_jobs() {
             Ok(None) => {}
@@ -2822,6 +2922,37 @@ impl<'tcx> Analyzer<'tcx> {
             .get_attrs_by_path(def.to_def_id(), path)
             .next()
             .is_some()
+    }
+
+    /// Stops at a `#[thrust::split_goals]` on anything but a function whose body Thrust analyzes
+    /// (not a closure, which takes the attribute of the function it is written in, nor a predicate,
+    /// logic, trusted or ignored function): rustc does not check `thrust::` attributes, and it would
+    /// otherwise change nothing.
+    fn check_split_goals_attributes(&self) {
+        let items = self.tcx.hir_crate_items(()).definitions();
+        let defs: HashSet<LocalDefId> = items.chain(self.tcx.hir_body_owners()).collect();
+        for def in defs {
+            if !self.has_attr(def, &analyze::annot::split_goals_path()) {
+                continue;
+            }
+            let analyzed = matches!(
+                self.tcx.def_kind(def),
+                rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
+            ) && ![
+                analyze::annot::trusted_path(),
+                analyze::annot::ignored_path(),
+                analyze::annot::predicate_path(),
+                analyze::annot::logic_path(),
+            ]
+            .iter()
+            .any(|path| self.has_attr(def, path));
+            if !analyzed {
+                self.tcx.dcx().span_err(
+                    self.tcx.def_span(def),
+                    "`#[thrust::split_goals]` applies only to a function whose body Thrust analyzes",
+                );
+            }
+        }
     }
 
     /// Stops at a `#[thrust::opaque]` on anything but a predicate or logic function with a Rust
@@ -3041,7 +3172,7 @@ impl<'tcx> Analyzer<'tcx> {
     /// `report`, reports the parts as without `THRUST_SPLIT`.
     fn solve_parts(&self, jobs: usize, report: Option<&crate::report::Config>) {
         let system = self.system.borrow();
-        let (clauses, by_goals) = self.parts_to_solve(&system);
+        let (clauses, kind) = self.parts_to_solve(&system);
         let parts = system.solve_parts(jobs, clauses);
         let summaries: Vec<crate::report::Part> = parts
             .iter()
@@ -3074,21 +3205,44 @@ impl<'tcx> Analyzer<'tcx> {
             diag.with_note(summary.error_note(self.tcx, &summaries))
                 .emit();
         }
-        crate::report::emit_part_notes(self.tcx, &summaries, by_goals);
+        crate::report::emit_part_notes(self.tcx, &summaries, kind);
     }
 
     /// The parts of `system` to solve on their own: with `THRUST_SPLIT_GOALS=1`, the cone of each
-    /// goal when every clause is a definite Horn clause, and otherwise, with a note saying why, the
-    /// classes of clauses that share an unknown. Returns whether they are the cones.
-    fn parts_to_solve(&self, system: &chc::System) -> (Vec<Vec<chc::ClauseId>>, bool) {
-        if !chc::split_goals() {
-            return (system.components(), false);
-        }
-        match system.goal_cones() {
-            Ok(cones) => (cones, true),
+    /// goal when every clause is a definite Horn clause; otherwise the classes of clauses that
+    /// share an unknown, with each goal of a function marked `#[thrust::split_goals]` set apart
+    /// in its cone (see [`chc::System::goals_apart`]). When the clauses are not definite, a note
+    /// says why and the parts are the classes.
+    fn parts_to_solve(
+        &self,
+        system: &chc::System,
+    ) -> (Vec<Vec<chc::ClauseId>>, crate::report::Parts) {
+        use crate::report::Parts;
+        let marked = |id: chc::ClauseId| {
+            crate::report::Provenance::of(&system.clauses[id].debug_info)
+                .def
+                .is_some_and(|def| splits_goals(self.tcx, def))
+        };
+        let (parts, kind, asked_by) = if chc::split_goals() {
+            (
+                system.goal_cones(),
+                Parts::GoalCones,
+                "`THRUST_SPLIT_GOALS`",
+            )
+        } else if system.clauses.indices().any(marked) {
+            (
+                system.goals_apart(marked),
+                Parts::GoalsApart,
+                "`#[thrust::split_goals]`",
+            )
+        } else {
+            return (system.components(), Parts::Classes);
+        };
+        match parts {
+            Ok(parts) => (parts, kind),
             Err(why) => {
-                crate::report::emit_not_horn_note(self.tcx, system, why);
-                (system.components(), false)
+                crate::report::emit_not_horn_note(self.tcx, system, why, asked_by);
+                (system.components(), Parts::Classes)
             }
         }
     }

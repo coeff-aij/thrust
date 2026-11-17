@@ -172,9 +172,21 @@ fn lines(tcx: TyCtxt<'_>, span: Span) -> String {
 /// At most this many of the parts solved now are named.
 const SOLVED_SHOWN: usize = 5;
 
+/// What the parts of a split run are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Parts {
+    /// The classes of clauses that share an unknown (`THRUST_SPLIT`).
+    Classes,
+    /// The cone of each goal (`THRUST_SPLIT_GOALS`).
+    GoalCones,
+    /// The classes, with each goal of the functions marked `#[thrust::split_goals]` solved
+    /// apart in its cone.
+    GoalsApart,
+}
+
 /// The notes after the errors of the parts: how many were solved and which of them now, and the
 /// functions of a failing part whose clauses fall into more than one part, with why.
-pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], by_goals: bool) {
+pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], kind: Parts) {
     let cached = parts.iter().filter(|p| p.cached).count();
     let solved: Vec<String> = parts
         .iter()
@@ -186,8 +198,13 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], by_goals: bool) {
         1 => "thrust: 1 part solved on its own".to_owned(),
         n => format!("thrust: {n} parts solved on their own, {cached} of them from earlier runs"),
     };
-    if by_goals {
-        note.push_str(", one per goal with the clauses it depends on");
+    match kind {
+        Parts::Classes => {}
+        Parts::GoalCones => note.push_str(", one per goal with the clauses it depends on"),
+        Parts::GoalsApart => note.push_str(
+            ", each goal of a `#[thrust::split_goals]` function apart with the clauses it depends \
+             on",
+        ),
     }
     if !solved.is_empty() && cached > 0 {
         let more = solved.len().saturating_sub(SOLVED_SHOWN);
@@ -217,7 +234,7 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], by_goals: bool) {
     if split.is_empty() {
         return;
     }
-    if by_goals {
+    if kind == Parts::GoalCones {
         tcx.dcx().note(format!(
             "thrust: a function can be in several parts: {}. Each goal is a part with every clause \
              deriving an unknown it depends on, so goals that depend on one unknown share its \
@@ -226,22 +243,35 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], by_goals: bool) {
         ));
         return;
     }
+    let apart = match kind {
+        Parts::GoalsApart => {
+            "; a goal solved apart is a part with every clause deriving an unknown it depends on, \
+             which other parts can share"
+        }
+        _ => "",
+    };
     tcx.dcx().note(format!(
         "thrust: a function can be in several parts: {}. Its clauses fall apart where they share \
          no unknown, as on the two sides of a written annotation (a contract, an `invariant!`, a \
-         refined type), and a clause with no unknown is a part of its own",
+         refined type), and a clause with no unknown is a part of its own{apart}",
         split.join(", ")
     ));
 }
 
-/// Why `THRUST_SPLIT_GOALS` does not split `system` into the cones of its goals, at the clause
-/// that is no definite Horn clause when it is one.
-pub fn emit_not_horn_note(tcx: TyCtxt<'_>, system: &chc::System, why: chc::NotHorn) {
+/// Why `asked_by` (`THRUST_SPLIT_GOALS`, or the attributes that set goals apart) does not split
+/// `system` into the cones of its goals, at the clause that is no definite Horn clause when it
+/// is one.
+pub fn emit_not_horn_note(
+    tcx: TyCtxt<'_>,
+    system: &chc::System,
+    why: chc::NotHorn,
+    asked_by: &str,
+) {
     let instead = "the parts are the classes of clauses that share an unknown instead";
     let clause = match why {
         chc::NotHorn::InLaw => {
             tcx.dcx().note(format!(
-                "thrust: `THRUST_SPLIT_GOALS`: an unknown is applied in a law, directly or through \
+                "thrust: {asked_by}: an unknown is applied in a law, directly or through \
                  a predicate's definition, or raw SMT-LIB text names a definition that applies \
                  one; {instead}"
             ));
@@ -249,21 +279,21 @@ pub fn emit_not_horn_note(tcx: TyCtxt<'_>, system: &chc::System, why: chc::NotHo
         }
         chc::NotHorn::RecursiveDefinition => {
             tcx.dcx().note(format!(
-                "thrust: `THRUST_SPLIT_GOALS`: a predicate's definition that applies an unknown \
+                "thrust: {asked_by}: a predicate's definition that applies an unknown \
                  applies itself; {instead}"
             ));
             return;
         }
         chc::NotHorn::Derived => {
             tcx.dcx().note(format!(
-                "thrust: `THRUST_SPLIT_GOALS`: a derived predicate is an unknown; {instead}"
+                "thrust: {asked_by}: a derived predicate is an unknown; {instead}"
             ));
             return;
         }
         chc::NotHorn::Clause(id) => id,
     };
     let message = format!(
-        "thrust: `THRUST_SPLIT_GOALS`: a constraint, with the predicates it applies read as \
+        "thrust: {asked_by}: a constraint, with the predicates it applies read as \
          their definitions, has a disjunction of unknowns in head positions, or one under an \
          existential quantifier there; {instead}"
     );

@@ -30,8 +30,20 @@ pub struct FormulaFn<'tcx> {
     param_idents: IndexVec<rty::FunctionParamIdx, Option<rustc_span::symbol::Ident>>,
     ret: mir_ty::Ty<'tcx>,
     body: FormulaFnBody,
+    /// [`FormulaFn::witnessed_formula`], when it differs from the formula.
+    witnessed: Option<chc::Formula<rty::FunctionParamIdx>>,
+    /// The binders and the body of the formula when it is a call of `exists`, as written. The
+    /// stored formula may read an enum's payload through selectors instead
+    /// (`Formula::exists_over_payload`); a `witness` instantiates this form.
+    exists: Option<ExistsParts>,
     pre_receivers: Vec<mir_ty::Ty<'tcx>>,
 }
+
+/// The binders of an `exists` and its body.
+type ExistsParts = (
+    Vec<(chc::UserQuantifiedVarId, chc::Sort)>,
+    chc::Formula<rty::FunctionParamIdx>,
+);
 
 /// The translated body: a formula, or a term for a `#[thrust_macros::logic]` function.
 #[derive(Debug, Clone)]
@@ -52,6 +64,17 @@ pub fn lifted_param_source_name(ident: rustc_span::symbol::Ident) -> rustc_span:
     } else {
         ident.name
     }
+}
+
+/// The parameter of the enclosing function whose entry value a parameter of a lifted loop
+/// invariant names, written `old!(x)` and spelled `__thrust_old_x` by `thrust_macros`; `None` for
+/// any other parameter.
+pub fn entry_value_param_name(ident: rustc_span::symbol::Ident) -> Option<rustc_span::Symbol> {
+    ident
+        .name
+        .as_str()
+        .strip_prefix("__thrust_old_")
+        .map(rustc_span::Symbol::intern)
 }
 
 impl<'a, D> Pretty<'a, D, termcolor::ColorSpec> for &FormulaFn<'_>
@@ -89,6 +112,18 @@ impl<'tcx> FormulaFn<'tcx> {
 
     pub fn body(&self) -> &FormulaFnBody {
         &self.body
+    }
+
+    /// The binders and the body of the formula when it is a call of `exists`, as written.
+    pub fn exists_parts(&self) -> Option<&ExistsParts> {
+        self.exists.as_ref()
+    }
+
+    /// The formula a `proof_assert!` checks and a `choose!` refines its value by: the formula
+    /// with each conjunct `thrust_models::witness(φ, t)`, which [`Self::formula`] reads as `φ`,
+    /// replaced by the body of `φ`'s `exists` at `t`.
+    pub fn witnessed_formula(&self) -> &chc::Formula<rty::FunctionParamIdx> {
+        self.witnessed.as_ref().unwrap_or_else(|| self.formula())
     }
 
     pub fn ret(&self) -> mir_ty::Ty<'tcx> {
@@ -140,16 +175,42 @@ impl<'tcx> FormulaFn<'tcx> {
     /// and the remaining parameters carry the formula's free variables,
     /// mapped to [`rty::RefinedTypeVar::Free`].
     pub fn to_refinement(&self) -> rty::Refinement<rty::FunctionParamIdx> {
-        self.formula()
-            .clone()
-            .map_var(|v| {
-                if v.as_usize() == 0 {
-                    rty::RefinedTypeVar::Value
-                } else {
-                    rty::RefinedTypeVar::Free(rty::FunctionParamIdx::from(v.as_usize() - 1))
-                }
-            })
-            .into()
+        value_refinement(self.formula().clone())
+    }
+
+    /// [`Self::witnessed_formula`] as a refinement, laid out as [`Self::to_refinement`].
+    pub fn to_witnessed_refinement(&self) -> rty::Refinement<rty::FunctionParamIdx> {
+        value_refinement(self.witnessed_formula().clone())
+    }
+}
+
+/// `formula` as a refinement of its parameter `0`, with the parameters after it as its free
+/// variables.
+fn value_refinement(
+    formula: chc::Formula<rty::FunctionParamIdx>,
+) -> rty::Refinement<rty::FunctionParamIdx> {
+    formula
+        .map_var(|v| {
+            if v.as_usize() == 0 {
+                rty::RefinedTypeVar::Value
+            } else {
+                rty::RefinedTypeVar::Free(rty::FunctionParamIdx::from(v.as_usize() - 1))
+            }
+        })
+        .into()
+}
+
+/// `expr` past the blocks and the temporaries scopes around it.
+fn peel_wrappers<'tcx>(mut expr: &'tcx rustc_hir::Expr<'tcx>) -> &'tcx rustc_hir::Expr<'tcx> {
+    loop {
+        match expr.kind {
+            rustc_hir::ExprKind::Block(block, _) if block.stmts.is_empty() => match block.expr {
+                Some(inner) => expr = inner,
+                None => return expr,
+            },
+            rustc_hir::ExprKind::DropTemps(inner) => expr = inner,
+            _ => return expr,
+        }
     }
 }
 
@@ -922,10 +983,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// The translation, with the `pre!` receivers it recorded, its quantifier bodies' included.
     pub fn into_formula_fn(self) -> FormulaFn<'tcx> {
-        let body = if self.is_logic(self.local_def_id.to_def_id()) {
-            FormulaFnBody::Term(self.to_term(self.logic_body_expr().0))
+        let (body, witnessed, exists) = if self.is_logic(self.local_def_id.to_def_id()) {
+            (
+                FormulaFnBody::Term(self.to_term(self.logic_body_expr().0)),
+                None,
+                None,
+            )
         } else {
-            FormulaFnBody::Formula(self.to_formula(self.body.value))
+            (
+                FormulaFnBody::Formula(self.to_formula(self.body.value)),
+                self.witnessed_formula(self.body.value),
+                self.exists_call_parts(self.body.value),
+            )
         };
         let fn_sig = self.tcx.fn_sig(self.local_def_id.to_def_id());
         let binder = if self.generic_args.is_empty() {
@@ -946,8 +1015,246 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             param_idents,
             ret,
             body,
+            witnessed,
+            exists,
             pre_receivers: self.pre_receivers.borrow().clone(),
         }
+    }
+
+    /// [`FormulaFn::witnessed_formula`] of the formula `hir`, or `None` when no conjunct of it is
+    /// a `witness`.
+    fn witnessed_formula(
+        &self,
+        hir: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
+        let hir = peel_wrappers(hir);
+        if let Some((formula, witness)) = self.witness_args(hir) {
+            return Some(self.witness_instance(formula, witness));
+        }
+        let rustc_hir::ExprKind::Binary(op, lhs, rhs) = hir.kind else {
+            return None;
+        };
+        if op.node != rustc_hir::BinOpKind::And {
+            return None;
+        }
+        let (lhs_witnessed, rhs_witnessed) =
+            (self.witnessed_formula(lhs), self.witnessed_formula(rhs));
+        if lhs_witnessed.is_none() && rhs_witnessed.is_none() {
+            return None;
+        }
+        let lhs = lhs_witnessed.unwrap_or_else(|| self.to_formula(lhs));
+        let rhs = rhs_witnessed.unwrap_or_else(|| self.to_formula(rhs));
+        Some(lhs.and(rhs))
+    }
+
+    /// The formula and the witness of `expr` when it is a call of `thrust_models::witness`.
+    fn witness_args(
+        &self,
+        expr: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> Option<(&'tcx rustc_hir::Expr<'tcx>, &'tcx rustc_hir::Expr<'tcx>)> {
+        let rustc_hir::ExprKind::Call(func_expr, [formula, witness]) = expr.kind else {
+            return None;
+        };
+        let rustc_hir::ExprKind::Path(qpath) = &func_expr.kind else {
+            return None;
+        };
+        let def_id = self
+            .typeck
+            .qpath_res(qpath, func_expr.hir_id)
+            .opt_def_id()?;
+        (Some(def_id) == self.def_ids.witness()).then_some((formula, witness))
+    }
+
+    /// The body of the `exists` `formula` is, or that defines the predicate `formula` calls, at
+    /// `witness`: its bound variable replaced by `witness`, or its bound variables by the
+    /// components of the tuple `witness` is, as Why3's `exists` transformation instantiates a
+    /// goal.
+    fn witness_instance(
+        &self,
+        formula: &'tcx rustc_hir::Expr<'tcx>,
+        witness: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> chc::Formula<rty::FunctionParamIdx> {
+        let (vars, body) = self.witnessed_exists(formula);
+        let terms: HashMap<_, _> = vars
+            .iter()
+            .map(|(var, _)| *var)
+            .zip(self.witness_terms(&vars, witness))
+            .collect();
+        body.subst_quantified(&terms)
+    }
+
+    /// The terms `witness` gives the variables `vars` an `exists` binds: the witness itself for one
+    /// variable, the elements of a tuple expression, or the projections of a tuple-typed term
+    /// (a `choose!`'s value of a tuple type); each of the variable's sort.
+    fn witness_terms(
+        &self,
+        vars: &[(chc::UserQuantifiedVarId, chc::Sort)],
+        witness: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> Vec<chc::Term<rty::FunctionParamIdx>> {
+        let sort_of = |e: &'tcx rustc_hir::Expr<'tcx>| {
+            let ty = self.normalized_ty(self.typeck.expr_ty(e));
+            self.type_builder.build(ty).to_sort()
+        };
+        let mismatch = |span| -> ! {
+            self.tcx.dcx().span_fatal(
+                span,
+                "this witness does not have the type of the variable the `exists` binds",
+            )
+        };
+        if vars.len() == 1 {
+            if sort_of(witness) != vars[0].1 {
+                mismatch(witness.span);
+            }
+            return vec![self.to_term(witness)];
+        }
+        if let rustc_hir::ExprKind::Tup(elems) = witness.kind {
+            if elems.len() != vars.len() {
+                self.several_binders(witness.span, vars.len());
+            }
+            return elems
+                .iter()
+                .zip(vars)
+                .map(|(elem, (_, sort))| {
+                    if sort_of(elem) != *sort {
+                        mismatch(elem.span);
+                    }
+                    self.to_term(elem)
+                })
+                .collect();
+        }
+        // A tuple value holds each element in a box (`Sort::Box`), which its projection opens.
+        let chc::Sort::Tuple(elems) = sort_of(witness) else {
+            self.several_binders(witness.span, vars.len())
+        };
+        if elems.len() != vars.len() {
+            self.several_binders(witness.span, vars.len());
+        }
+        let tuple = self.to_term(witness);
+        elems
+            .into_iter()
+            .zip(vars)
+            .enumerate()
+            .map(|(i, (elem, (_, sort)))| match elem {
+                elem if elem == *sort => tuple.clone().tuple_proj(i),
+                chc::Sort::Box(inner) if *inner == *sort => {
+                    tuple.clone().tuple_proj(i).box_current()
+                }
+                _ => mismatch(witness.span),
+            })
+            .collect()
+    }
+
+    fn several_binders(&self, span: rustc_span::Span, n: usize) -> ! {
+        self.tcx.dcx().span_fatal(
+            span,
+            format!("the `exists` binds {n} variables, so its witness is a tuple of {n} terms"),
+        )
+    }
+
+    /// The function `hir` calls by path, with the callee expression and the arguments.
+    fn path_call(
+        &self,
+        hir: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> Option<(
+        DefId,
+        &'tcx rustc_hir::Expr<'tcx>,
+        &'tcx [rustc_hir::Expr<'tcx>],
+    )> {
+        let rustc_hir::ExprKind::Call(func_expr, args) = peel_wrappers(hir).kind else {
+            return None;
+        };
+        let rustc_hir::ExprKind::Path(qpath) = &func_expr.kind else {
+            return None;
+        };
+        let def_id = self
+            .typeck
+            .qpath_res(qpath, func_expr.hir_id)
+            .opt_def_id()?;
+        Some((def_id, func_expr, args))
+    }
+
+    /// [`Self::exists_binders_and_body`] of `hir` when it is a call of `thrust_models::exists`.
+    fn exists_call_parts(&self, hir: &'tcx rustc_hir::Expr<'tcx>) -> Option<ExistsParts> {
+        let (def_id, _, args) = self.path_call(hir)?;
+        (Some(def_id) == self.def_ids.exists()).then(|| self.exists_binders_and_body(args))
+    }
+
+    /// The binders of a call of `thrust_models::exists` with arguments `args` and its body, the
+    /// binders' ranges included.
+    fn exists_binders_and_body(
+        &self,
+        args: &'tcx [rustc_hir::Expr<'tcx>],
+    ) -> (
+        Vec<(chc::UserQuantifiedVarId, chc::Sort)>,
+        chc::Formula<rty::FunctionParamIdx>,
+    ) {
+        let [closure] = args else {
+            panic!("exists takes exactly 1 argument");
+        };
+        let rustc_hir::ExprKind::Closure(closure) = closure.kind else {
+            panic!("exists argument must be a closure");
+        };
+        let (vars, range, body) =
+            self.to_formula_with_quantified_vars(self.tcx.hir_body(closure.body));
+        let body = match range {
+            Some(range) => range.and(body),
+            None => body,
+        };
+        (vars, body)
+    }
+
+    /// The bound variables and the body of `formula`, the formula of a `witness`: an `exists`,
+    /// or a call of a predicate whose body is one, unfolded at the call's arguments.
+    fn witnessed_exists(
+        &self,
+        formula: &'tcx rustc_hir::Expr<'tcx>,
+    ) -> (
+        Vec<(chc::UserQuantifiedVarId, chc::Sort)>,
+        chc::Formula<rty::FunctionParamIdx>,
+    ) {
+        let formula = peel_wrappers(formula);
+        let Some((def_id, func_expr, args)) = self.path_call(formula) else {
+            self.not_an_exists(formula.span)
+        };
+        if Some(def_id) == self.def_ids.exists() {
+            return self.exists_binders_and_body(args);
+        }
+        let is_predicate = self
+            .tcx
+            .get_attrs_by_path(def_id, &analyze::annot::predicate_path())
+            .next()
+            .is_some();
+        if !is_predicate {
+            self.not_an_exists(formula.span);
+        }
+        let (_, instance) = self.resolve_spec_fn_call(def_id, func_expr);
+        let Some((local, instance_args)) =
+            instance.and_then(|instance| Some((instance.def_id().as_local()?, instance.args)))
+        else {
+            self.tcx.dcx().span_fatal(
+                formula.span,
+                "a `witness` unfolds a predicate of this crate whose definition the call resolves to",
+            )
+        };
+        let definition = self
+            .analyzer
+            .formula_fn_with_args(local, instance_args, self.type_builder.owner_fn_id())
+            .expect("predicate formula function is not registered");
+        let Some((vars, body)) = definition.exists_parts().cloned() else {
+            self.not_an_exists(formula.span)
+        };
+        let arg_terms: Vec<_> = args.iter().map(|e| self.to_term(e)).collect();
+        (
+            vars,
+            body.subst_var(|idx| arg_terms[idx.as_usize()].clone()),
+        )
+    }
+
+    fn not_an_exists(&self, span: rustc_span::Span) -> ! {
+        self.tcx.dcx().span_fatal(
+            span,
+            "the formula of a `witness` is an `exists` or a call of a predicate whose body is one",
+        )
     }
 
     /// The body of a logic function past the `#[thrust::variant_path]` statement naming its
@@ -1631,6 +1938,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             if let Some(fn_ty) = known {
                 return fn_ty;
             }
+            if self.analyzer.has_def_ty(def_id) {
+                // A trait method with a contract (written or a std.rs spec) is promised it here; a miss would silently
+                // leave the call unconstrained.
+                self.tcx.dcx().span_fatal(
+                    span,
+                    format!("`pre!`/`post!` names `{def_id:?}` at its type parameters, whose contract was not found"),
+                );
+            }
             if names_precondition {
                 self.analyzer
                     .record_assumed_total_method(owner_fn_id, def_id, generic_args);
@@ -1639,11 +1954,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .type_builder
                 .build_unspecified_method_type(def_id, generic_args);
         };
-        let fn_ty = self.analyzer.known_function_ty_with_args(
-            instance.def_id(),
-            instance.args,
-            owner_fn_id,
-        );
+        let fn_ty = self
+            .analyzer
+            .named_contract_sources(def_id, generic_args, instance)
+            .into_iter()
+            .find_map(|(source, args)| {
+                self.analyzer
+                    .known_function_ty_with_args(source, args, owner_fn_id)
+            });
         fn_ty.unwrap_or_else(|| {
             self.tcx.dcx().span_fatal(
                 span,
@@ -1935,6 +2253,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 );
             };
             let param_ty = self.pat_ty(param.pat);
+            // The enums in the variable's type may occur nowhere else in the function or
+            // predicate, yet the query declares their datatypes.
+            self.analyzer
+                .register_enum_defs([param_ty], self.type_builder.clone());
             let param_rty = self.type_builder.build(param_ty);
             let sort = param_rty.to_sort();
             let var = self
@@ -2670,22 +2992,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             };
                             return self.translate_closure_hist_inv(from, to);
                         }
+                        if Some(def_id) == self.def_ids.witness() {
+                            let [formula, _] = args else {
+                                panic!("witness takes a formula and its witness");
+                            };
+                            return self.to_formula_or_term(formula);
+                        }
                         if Some(def_id) == self.def_ids.exists() {
-                            assert_eq!(args.len(), 1, "exists takes exactly 1 argument");
-                            let ExprKind::Closure(closure) = args[0].kind else {
-                                panic!("exists argument must be a closure");
-                            };
-                            let closure_body = self.tcx.hir_body(closure.body);
-
-                            let (vars, range, body_formula) =
-                                self.to_formula_with_quantified_vars(closure_body);
-                            let body_formula = match range {
-                                Some(range) => range.and(body_formula),
-                                None => body_formula,
-                            };
+                            let (vars, body) = self.exists_binders_and_body(args);
                             return FormulaOrTerm::Formula(chc::Formula::exists_over_payload(
-                                vars,
-                                body_formula,
+                                vars, body,
                             ));
                         }
                         if Some(def_id) == self.def_ids.forall() {

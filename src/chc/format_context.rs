@@ -190,6 +190,8 @@ impl<'a> SortSymbol<'a> {
     }
 }
 
+/// `<S1-S2-...>`. `standalone.rs` reads each piece between `<`, `-` and `>` of a symbol as a name
+/// the symbol uses.
 #[derive(Debug, Clone)]
 struct SortSymbols<'a> {
     inner: &'a [chc::Sort],

@@ -1457,13 +1457,14 @@ pub type QuantifiedVars = Vec<(chc::UserQuantifiedVarId, chc::Sort)>;
 /// existentials (an enum's payloads) are variables `fresh` makes, returned with their sorts to be
 /// quantified with the law's own, since `forall x. (exists f. p) => q` is
 /// `forall x f. p => q`.
-pub fn int_range_type_formula<W>(
-    ty: &Type<FunctionParamIdx>,
+pub fn int_range_type_formula<FV, W>(
+    ty: &Type<FV>,
     value: chc::Term<W>,
     mut fresh: impl FnMut() -> chc::UserQuantifiedVarId,
     defs: &dyn EnumDefProvider,
 ) -> Option<(QuantifiedVars, chc::Formula<W>)>
 where
+    FV: chc::Var,
     W: chc::Var,
 {
     let facts = RefinedType::unrefined(ty.clone()).formula_with(Some(defs));

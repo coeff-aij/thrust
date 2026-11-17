@@ -24,7 +24,6 @@ use case_study::counts;
 use rustc_index::IndexVec;
 use thrust_models::model::{Array, Int, Seq};
 use case_study::iter::Filter;
-use rustc_index::SliceIter;
 use thrust_models::forall;
 
 // The fail twin: `map_bound` of thrust/counts.rs with its induction on `k` and its statement, but
@@ -81,13 +80,13 @@ fn acc_bound_strict(fields: &IndexVec<u32, u32>, a: &IndexVec<u32, u32>, e: &u32
 // without a proof: refuted only by a run of the filter that yields an entry whose index is
 // `n - 1`, so `produces` and the slice iterator's model are evaluated.
 #[thrust_macros::context]
-#[thrust_macros::requires(forall(|p: case_study::USize, i: case_study::USize|
-    !((*it).0.1 <= p && p < (*(*it).0.0).len() && L::index_is((*(*it).0.0)[p], i)) || i < n))]
-#[thrust_macros::ensures(forall(|v: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<SliceIter<'a, L>, P> as thrust_models::Model>::Ty, j: Int|
-    !(<Filter<SliceIter<'a, L>, P> as IteratorSpec>::produces(*it, v, o) && 0 <= j && j < v.len())
+#[thrust_macros::requires(forall(|p: Int, i: case_study::USize|
+    !((*it).0.1 <= p && p < (*it).0.0.len() && L::index_is((*it).0.0[p], i)) || i < n))]
+#[thrust_macros::ensures(forall(|v: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<core::slice::Iter<'a, L>, P> as thrust_models::Model>::Ty, j: Int|
+    !(<Filter<core::slice::Iter<'a, L>, P> as IteratorSpec>::produces(*it, v, o) && 0 <= j && j < v.len())
         || L::index_logic(*v[j]) + 1 < n))]
 #[thrust_macros::lemma]
-fn filter_yields_below_strict<'a, L, P>(it: &Filter<SliceIter<'a, L>, P>, n: usize)
+fn filter_yields_below_strict<'a, L, P>(it: &Filter<core::slice::Iter<'a, L>, P>, n: usize)
 where
     L: rustc_index::Idx + thrust_models::Model,
     P: Fn(&&'a L) -> bool,

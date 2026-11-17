@@ -4,9 +4,9 @@
 //!
 //! On a function, every `thrust_macros::invariant!(...)`, `thrust_macros::partial_invariant!(...)`,
 //! `thrust_macros::proof_assert!(...)`, `thrust_macros::assume!(...)`,
-//! `thrust_macros::ghost!(...)` and `thrust_macros::closure!(...)` in the body is rewritten into
-//! its context-carrying counterpart, carrying the host signature and, for a method, the enclosing
-//! `impl`/`trait` header, so a formula may refer to generic- and `Self`-typed variables that the
+//! `thrust_macros::ghost!(...)`, `thrust_macros::choose!(...)` and `thrust_macros::closure!(...)`
+//! in the body is rewritten into its context-carrying counterpart, carrying the host signature
+//! and, for a method, the enclosing `impl`/`trait` header, so a formula may refer to generic- and `Self`-typed variables that the
 //! standalone macros cannot see. A `for` loop whose body starts with `invariant!` or
 //! `partial_invariant!` calls naming `iter` is desugared first, so that `iter`, and `iter_old` and
 //! `produced` when named, exist (see
@@ -428,6 +428,7 @@ fn context_carrying_form(path: &syn::Path) -> Option<syn::Path> {
     }
     match name.as_str() {
         "ghost" => Some(syn::parse_quote!(::thrust_macros::_ghost_with_context)),
+        "choose" => Some(syn::parse_quote!(::thrust_macros::_choose_with_context)),
         "closure" => Some(syn::parse_quote!(::thrust_macros::_closure_with_context)),
         _ => None,
     }

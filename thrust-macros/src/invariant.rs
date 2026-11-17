@@ -5,7 +5,9 @@
 //!
 //! The forms differ only in the marker they call: an `invariant!` is the loop head's whole
 //! invariant, a `partial_invariant!` is conjoined with the inferred one, a `proof_assert!` is
-//! checked where it is written and assumed after it, and an `assume!` is assumed there unchecked.
+//! checked where it is written and assumed after it, an `assume!` is assumed there unchecked, and
+//! a `block_requires!` and the `block_ensures!` after it are the contract of the code between
+//! them.
 //!
 //! All expand a predicate closure with explicit parameter types into a
 //! `#[thrust::formula_fn]` over `Model::Ty` parameters plus a marker call
@@ -45,6 +47,8 @@ pub enum Marker {
     Partial,
     Assert,
     Assume,
+    BlockRequires,
+    BlockEnsures,
 }
 
 impl Marker {
@@ -62,6 +66,8 @@ impl Marker {
         match name {
             "proof_assert" => Some(Marker::Assert),
             "assume" => Some(Marker::Assume),
+            "block_requires" => Some(Marker::BlockRequires),
+            "block_ensures" => Some(Marker::BlockEnsures),
             _ => None,
         }
     }
@@ -75,6 +81,10 @@ impl Marker {
             }
             Marker::Assert => syn::parse_quote!(::thrust_macros::_proof_assert_with_context),
             Marker::Assume => syn::parse_quote!(::thrust_macros::_assume_with_context),
+            Marker::BlockRequires => {
+                syn::parse_quote!(::thrust_macros::_block_requires_with_context)
+            }
+            Marker::BlockEnsures => syn::parse_quote!(::thrust_macros::_block_ensures_with_context),
         }
     }
 
@@ -84,6 +94,8 @@ impl Marker {
             Marker::Partial => format_ident!("__partial_invariant_marker"),
             Marker::Assert => format_ident!("__assert_marker"),
             Marker::Assume => format_ident!("__assume_marker"),
+            Marker::BlockRequires => format_ident!("__block_requires_marker"),
+            Marker::BlockEnsures => format_ident!("__block_ensures_marker"),
         }
     }
 
@@ -93,6 +105,8 @@ impl Marker {
             Marker::Full | Marker::Partial => "_thrust_invariant",
             Marker::Assert => "_thrust_assert",
             Marker::Assume => "_thrust_assume",
+            Marker::BlockRequires => "_thrust_block_requires",
+            Marker::BlockEnsures => "_thrust_block_ensures",
         }
     }
 }
@@ -103,7 +117,11 @@ pub fn expand(input: TokenStream, marker: Marker) -> TokenStream {
     if let Some(e) = crate::loop_label::outside_context_error(&input.clone().into()) {
         return e.to_compile_error().into();
     }
-    let input = crate::formula::wrap_closure_body(input.into());
+    let input = match rename_entry_values(input.into(), marker) {
+        Ok(input) => input,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let input = crate::formula::wrap_closure_body(input);
     let closure = match syn::parse2::<syn::ExprClosure>(input) {
         Ok(closure) => closure,
         Err(e) => return e.to_compile_error().into(),
@@ -117,7 +135,11 @@ pub fn expand(input: TokenStream, marker: Marker) -> TokenStream {
 /// Expands `_invariant_with_context!(#outer_attr #sig; CLOSURE)`, the form
 /// `#[thrust_macros::context]` rewrites each `invariant!` into.
 pub fn expand_with_context(input: TokenStream, marker: Marker) -> TokenStream {
-    let input = crate::formula::wrap_closure_body(input.into());
+    let input = match rename_entry_values(input.into(), marker) {
+        Ok(input) => input,
+        Err(e) => return e.to_compile_error().into(),
+    };
+    let input = crate::formula::wrap_closure_body(input);
     let ClosureWithContext { closure, context } = match syn::parse2::<ClosureWithContext>(input) {
         Ok(parsed) => parsed,
         Err(e) => return e.to_compile_error().into(),
@@ -125,6 +147,21 @@ pub fn expand_with_context(input: TokenStream, marker: Marker) -> TokenStream {
     match expand_invariant(&closure, Some(&context), marker) {
         Ok(expr) => expr.into_token_stream().into(),
         Err(e) => e.to_compile_error().into(),
+    }
+}
+
+/// `input` with the `old!(x)` of a loop invariant renamed ([`mod@crate::entry_value`]); the
+/// statement forms take no `old!`.
+fn rename_entry_values(
+    input: proc_macro2::TokenStream,
+    marker: Marker,
+) -> syn::Result<proc_macro2::TokenStream> {
+    match marker {
+        Marker::Full | Marker::Partial => crate::entry_value::rename_in_invariant(input),
+        Marker::Assert | Marker::Assume | Marker::BlockRequires | Marker::BlockEnsures => {
+            crate::entry_value::reject(&input)?;
+            Ok(input)
+        }
     }
 }
 

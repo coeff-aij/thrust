@@ -9,9 +9,10 @@
 // write and `set_len`, which together are what `push` does; and a ghost sequence `produced` records
 // the items taken, which Creusot gives a `for` loop and `while let` has none. The contract is
 // Creusot's `extend` (`examples/iterators/08_collect_extend.rs`, 3620de437).
-// Annotation code beside the invariant: the ghosts `old_vec`, `old_iter` and `produced`, the
-// ghost `x`, the item before it moves into the vector, and a call of the lemma `produces_refl`
-// before the loop.
+// The loop's `invariant!` states everything the rest of the function needs, the parameters' values
+// at entry among it, as `old!(vec)` and `old!(iterator)`. Annotation code beside the invariant:
+// the ghosts `old_vec`, `old_iter` and `produced`, the ghost `x`, the item before it moves into
+// the vector, and a call of the lemma `produces_refl` before the loop.
 use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, Ghost, Model};
 
@@ -25,8 +26,13 @@ fn extend_desugared<T: Model, I: IteratorSpec<Item = T>>(vec: &mut Vec<T>, mut i
     let mut produced = thrust_macros::ghost!(|| -> Seq<<T as Model>::Ty> { Seq::empty() });
     I::produces_refl(&iterator);
     while let Some(element) = iterator.next() {
-        thrust_macros::partial_invariant!(|iterator: I, vec: &mut Vec<T>, old_vec: Ghost<Seq<<T as Model>::Ty>>, old_iter: Ghost<I>, produced: Ghost<Seq<<T as Model>::Ty>>|
-            I::inv(iterator) && I::produces(old_iter, produced, iterator) && *vec == old_vec.concat(produced));
+        thrust_macros::invariant!(|iterator: I, vec: &mut Vec<T>, old_vec: Ghost<Seq<<T as Model>::Ty>>, old_iter: Ghost<I>, produced: Ghost<Seq<<T as Model>::Ty>>, old!(vec): &mut Vec<T>, old!(iterator): I|
+            I::inv(iterator)
+                && I::produces(old_iter, produced, iterator)
+                && *vec == old_vec.concat(produced)
+                && !vec == !old!(vec)
+                && old_vec == *old!(vec)
+                && old_iter == old!(iterator));
         let x = thrust_macros::ghost!(|element: T| -> T { element });
         vec.push(element);
         produced = thrust_macros::ghost!(|produced: Ghost<Seq<<T as Model>::Ty>>, x: Ghost<T>| -> Seq<<T as Model>::Ty> { produced.push(x) });

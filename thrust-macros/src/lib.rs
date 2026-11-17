@@ -4,6 +4,7 @@ use proc_macro2::{TokenStream as TokenStream2, TokenTree as TokenTree2};
 mod apit;
 mod closure;
 mod context;
+mod entry_value;
 mod fn_outer_item;
 mod for_loop;
 mod formula;
@@ -70,7 +71,21 @@ pub fn _closure_with_context(input: TokenStream) -> TokenStream {
 /// See [`mod@ghost`].
 #[proc_macro]
 pub fn ghost(input: TokenStream) -> TokenStream {
-    ghost::expand(input)
+    ghost::expand(input, ghost::Form::Term)
+}
+
+/// Introduces a ghost value that is a witness of a formula, checking that one exists:
+///
+/// ```ignore
+/// let ts = thrust_macros::choose!(|s: &Vec<u64>, w: u64| -> Seq<Int> { weight(*s, w) });
+/// ```
+///
+/// The closure is that of [`ghost`], with a formula in place of the term: an `exists`, or a
+/// call of a predicate whose body is one. The formula is checked where it is written, as by
+/// `proof_assert!`, and the value satisfies the body of the `exists` from then on.
+#[proc_macro]
+pub fn choose(input: TokenStream) -> TokenStream {
+    ghost::expand(input, ghost::Form::Witness)
 }
 
 /// Context-carrying counterpart of `ghost!`, emitted by
@@ -79,7 +94,13 @@ pub fn ghost(input: TokenStream) -> TokenStream {
 /// body is the ghost term closure (see [`ghost`]).
 #[proc_macro]
 pub fn _ghost_with_context(input: TokenStream) -> TokenStream {
-    ghost::expand_with_context(input)
+    ghost::expand_with_context(input, ghost::Form::Term)
+}
+
+/// Context-carrying counterpart of `choose!` (see [`_ghost_with_context`]).
+#[proc_macro]
+pub fn _choose_with_context(input: TokenStream) -> TokenStream {
+    ghost::expand_with_context(input, ghost::Form::Witness)
 }
 
 /// Makes the enclosing context available to the specifications written inside an
@@ -160,6 +181,40 @@ pub fn proof_assert(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn assume(input: TokenStream) -> TokenStream {
     invariant::expand(input, invariant::Marker::Assume)
+}
+
+/// Opens a block contract: the code from here to the next `block_ensures!` is checked once
+/// against the contract, under this formula, and the code after it reads only the contract:
+///
+/// ```ignore
+/// thrust_macros::block_requires!(|i: usize, v: &Vec<i64>| i < v.len());
+/// v[i] = 0;
+/// thrust_macros::block_ensures!(|i: usize, v: &Vec<i64>, v0: Ghost<Vec<i64>>| ...);
+/// ```
+///
+/// The argument is a closure as for [`proof_assert`]. It runs nothing.
+#[proc_macro]
+pub fn block_requires(input: TokenStream) -> TokenStream {
+    invariant::expand(input, invariant::Marker::BlockRequires)
+}
+
+/// Closes the block contract the last `block_requires!` opened (see [`block_requires`]). The
+/// argument is a closure as for [`proof_assert`]. It runs nothing.
+#[proc_macro]
+pub fn block_ensures(input: TokenStream) -> TokenStream {
+    invariant::expand(input, invariant::Marker::BlockEnsures)
+}
+
+/// Context-carrying counterpart of `block_requires!` (see [`_invariant_with_context`]).
+#[proc_macro]
+pub fn _block_requires_with_context(input: TokenStream) -> TokenStream {
+    invariant::expand_with_context(input, invariant::Marker::BlockRequires)
+}
+
+/// Context-carrying counterpart of `block_ensures!` (see [`_invariant_with_context`]).
+#[proc_macro]
+pub fn _block_ensures_with_context(input: TokenStream) -> TokenStream {
+    invariant::expand_with_context(input, invariant::Marker::BlockEnsures)
 }
 
 /// Context-carrying counterpart of `proof_assert!` (see [`_invariant_with_context`]).

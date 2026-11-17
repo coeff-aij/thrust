@@ -18,6 +18,10 @@ pub fn opaque_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("opaque")]
 }
 
+pub fn split_goals_path() -> [Symbol; 2] {
+    [Symbol::intern("thrust"), Symbol::intern("split_goals")]
+}
+
 pub fn reveal_path() -> [Symbol; 2] {
     [Symbol::intern("thrust"), Symbol::intern("reveal")]
 }
@@ -475,6 +479,38 @@ pub fn assume_marker_path() -> [Symbol; 3] {
         Symbol::intern("thrust"),
         Symbol::intern("def"),
         Symbol::intern("assume_marker"),
+    ]
+}
+
+pub fn block_requires_marker_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("block_requires_marker"),
+    ]
+}
+
+pub fn block_ensures_marker_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("block_ensures_marker"),
+    ]
+}
+
+pub fn choose_marker_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("choose_marker"),
+    ]
+}
+
+pub fn witness_path() -> [Symbol; 3] {
+    [
+        Symbol::intern("thrust"),
+        Symbol::intern("def"),
+        Symbol::intern("witness"),
     ]
 }
 

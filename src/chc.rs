@@ -24,11 +24,12 @@ mod prune;
 pub mod sexp;
 mod smtlib2;
 mod solver;
+mod standalone;
 mod unbox;
 
 pub use candidate_atoms::{conjuncts, instances, CandidateAtoms, CandidateAtomsMode, HeadTerms};
 pub use clause_builder::{ClauseBuilder, Var};
-pub use cones::{split_goals, NotHorn};
+pub use cones::{goals_by_conjunct, split_conjuncts_in_body, split_goals, NotHorn};
 pub use debug::DebugInfo;
 pub use dedup::dedup_pred_args;
 pub use flatten::flatten_recursive_pred_args;
@@ -2564,14 +2565,7 @@ impl<V> Formula<V> {
             .into_iter()
             .enumerate()
             .filter(|(i, _)| *i != pos)
-            .map(|(_, f)| {
-                candidate_atoms::map_formula_terms(f, &mut |t| match t {
-                    Term::UserQuantifiedVar(_, var) if selectors.contains_key(&var) => {
-                        selectors[&var].clone()
-                    }
-                    t => t,
-                })
-            });
+            .map(|(_, f)| f.subst_quantified(&selectors));
         std::iter::once(Formula::Atom(tester))
             .chain(rest)
             .fold(Formula::top(), Formula::and)
@@ -2579,6 +2573,17 @@ impl<V> Formula<V> {
 
     pub fn forall(vars: Vec<(UserQuantifiedVarId, Sort)>, body: Self) -> Self {
         Formula::Forall(vars, Box::new(body))
+    }
+
+    /// The formula with each quantified variable `terms` maps replaced by its term.
+    pub fn subst_quantified(self, terms: &HashMap<UserQuantifiedVarId, Term<V>>) -> Self
+    where
+        V: Clone,
+    {
+        candidate_atoms::map_formula_terms(self, &mut |t| match t {
+            Term::UserQuantifiedVar(_, var) if terms.contains_key(&var) => terms[&var].clone(),
+            t => t,
+        })
     }
 
     pub fn subst_var<F, W>(self, f: F) -> Formula<W>
@@ -3075,6 +3080,11 @@ pub struct UserDefinedPredDef {
     /// The variant of a recursive logic function, emitted as the `:decreases` annotation of its
     /// body so that the solver can take the function as total.
     pub decreases: Option<Term<TermVarIdx>>,
+    /// The facts of a logic function's result type stated of its value, a formula over its
+    /// parameters that its definition makes true at every argument. Emitted as the `:law` of the
+    /// function's declaration when it is opaque ([`System::make_opaque`]), which would otherwise
+    /// lose them with the definition.
+    pub result_facts: Option<Formula<TermVarIdx>>,
 }
 
 /// The forall predicates and functions `atoms` apply, as predicates or in their arguments, and in
@@ -3531,6 +3541,7 @@ impl System {
             sort_subst: Vec::new(),
             dependencies,
             decreases: None,
+            result_facts: None,
         })
     }
 
@@ -3551,6 +3562,7 @@ impl System {
             sort_subst: Vec::new(),
             dependencies: HashSet::new(),
             decreases: None,
+            result_facts: None,
         })
     }
 
@@ -3573,7 +3585,19 @@ impl System {
             sort_subst: Vec::new(),
             dependencies: HashSet::new(),
             decreases,
+            result_facts: None,
         })
+    }
+
+    /// States `facts`, a formula over the parameters of the logic function `symbol` defined
+    /// before, of its value at every argument ([`UserDefinedPredDef::result_facts`]).
+    pub fn set_result_facts(&mut self, symbol: &UserDefinedPred, facts: Formula<TermVarIdx>) {
+        let def = self
+            .user_defined_pred_defs
+            .iter_mut()
+            .find(|def| &def.symbol == symbol)
+            .expect("the logic function is defined");
+        def.result_facts = Some(facts);
     }
 
     /// Declares `symbol` as an unknown of the system ([`UserDefinedPredBody::Derived`]).
@@ -3585,6 +3609,7 @@ impl System {
             sort_subst: Vec::new(),
             dependencies: HashSet::new(),
             decreases: None,
+            result_facts: None,
         })
     }
 
@@ -3604,6 +3629,7 @@ impl System {
             sort_subst,
             dependencies: HashSet::new(),
             decreases: None,
+            result_facts: None,
         })
     }
 
@@ -4268,8 +4294,15 @@ impl System {
     /// names. Its query was saved when its verdict was taken ([`System::solve_parts`]), so this
     /// writes no file.
     pub fn solve_part_with(&self, config: &Config, requests: Requests) -> Answer {
-        let query = self.clone().prepared().query(config).to_string();
+        let query = self.clone().part_query(config);
         self.answer(config, query, requests)
+    }
+
+    /// The query `config`'s solver is given for a part ([`System::part`]) and for a refutation,
+    /// which declares only what its clauses use and numbers its names within it
+    /// ([`standalone::standalone_query`]).
+    fn part_query(self, config: &Config) -> String {
+        standalone::standalone_query(&self.prepared().query(config).to_string())
     }
 
     /// The answer to `query`, the system's, with the evidence `requests` names.
@@ -4297,13 +4330,14 @@ impl System {
     }
 
     /// Asks `config`'s solver for the refutation of the system, which is refuted, with its
-    /// clauses tagged and its goals marked.
+    /// clauses tagged and its goals marked. The query is made as a part's is
+    /// ([`System::part_query`]), so a part is refuted on the text its verdict was taken of; a
+    /// whole query left with fewer declarations is refuted whenever the whole one is.
     fn refute(&self, config: &Config, answer: &mut Answer) {
         let mut marked = self.clone();
         answer.clause_tags = marked.tag_clauses();
         answer.goal_markers = marked.mark_goals();
-        let marked = marked.prepared();
-        match config.refute(marked.query(config)) {
+        match config.refute(marked.part_query(config)) {
             Ok(proof) => answer.proof = Some(proof),
             Err(refused) => answer.z3_refused = Some(refused),
         }
@@ -4356,7 +4390,7 @@ impl System {
         let config = Config::from_env();
         let cache = cache::Cache::from_env();
         let solve = |i: usize| {
-            let query = self.part(&parts[i]).prepared().query(&config).to_string();
+            let query = self.part(&parts[i]).part_query(&config);
             let file = format!("thrust_output_part{}.smt2", i + 1);
             if let Err(err) = config.save_query(&file, &query) {
                 return cache::Verdict {

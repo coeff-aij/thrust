@@ -68,6 +68,33 @@ pub fn split_goals() -> bool {
     std::env::var("THRUST_SPLIT_GOALS").is_ok_and(|value| value.trim() == "1")
 }
 
+thread_local! {
+    static SPLIT_CONJUNCTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Restores, when dropped, whether the body analyzed before it split its goals' conjunctions.
+pub struct SplitConjunctsGuard(bool);
+
+/// Whether the goals of the body about to be analyzed are split per conjunct, as with
+/// `THRUST_SPLIT_GOALS=1`: those of a function marked `#[thrust::split_goals]` are, and those of
+/// a body analyzed while it is (a callee at an instance) are not unless it is marked too. Holds
+/// until the guard is dropped.
+pub fn split_conjuncts_in_body(split: bool) -> SplitConjunctsGuard {
+    SplitConjunctsGuard(SPLIT_CONJUNCTS.replace(split))
+}
+
+impl Drop for SplitConjunctsGuard {
+    fn drop(&mut self) {
+        SPLIT_CONJUNCTS.set(self.0);
+    }
+}
+
+/// Whether a goal made now that is a conjunction is one goal per conjunct (see
+/// [`ClauseBuilder::head`]).
+pub fn goals_by_conjunct() -> bool {
+    split_goals() || SPLIT_CONJUNCTS.get()
+}
+
 /// Why a system is not split into the cones of its goals.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotHorn {
@@ -358,6 +385,41 @@ impl<'a> Definitions<'a> {
 impl System {
     /// The cone of each goal, in the order of the goals, each in the order of its clauses.
     pub fn goal_cones(&self) -> Result<Vec<Vec<ClauseId>>, NotHorn> {
+        let cones = self.goals_with_cones()?;
+        Ok(cones.into_iter().map(|(_, cone)| cone).collect())
+    }
+
+    /// The classes of clauses that share an unknown, with each goal `apart` picks set apart as a
+    /// part of its own, its cone (`#[thrust::split_goals]`): a class holding such a goal keeps
+    /// only the union of the cones of its other goals, and is no part when that is empty; the
+    /// other classes are parts as they are, in their order, followed by the cones set apart.
+    /// Every part is a class, which shares no unknown with the other parts, or a union of cones,
+    /// which holds every clause deriving an unknown its bodies apply, so the argument for the
+    /// cones above gives the verdict of the system from those of the parts.
+    pub fn goals_apart(
+        &self,
+        apart: impl Fn(ClauseId) -> bool,
+    ) -> Result<Vec<Vec<ClauseId>>, NotHorn> {
+        let (set_apart, kept): (Vec<_>, Vec<_>) = self
+            .goals_with_cones()?
+            .into_iter()
+            .partition(|(goal, _)| apart(*goal));
+        let goals_apart: HashSet<ClauseId> = set_apart.iter().map(|(goal, _)| *goal).collect();
+        let kept: HashSet<ClauseId> = kept.into_iter().flat_map(|(_, cone)| cone).collect();
+        let classes = self.components().into_iter().filter_map(|class| {
+            if !class.iter().any(|id| goals_apart.contains(id)) {
+                return Some(class);
+            }
+            let rest: Vec<ClauseId> = class.into_iter().filter(|id| kept.contains(id)).collect();
+            (!rest.is_empty()).then_some(rest)
+        });
+        Ok(classes
+            .chain(set_apart.into_iter().map(|(_, cone)| cone))
+            .collect())
+    }
+
+    /// Each goal with its cone, in the order of the goals, each cone in the order of its clauses.
+    fn goals_with_cones(&self) -> Result<Vec<(ClauseId, Vec<ClauseId>)>, NotHorn> {
         if self
             .user_defined_pred_defs
             .iter()
@@ -405,7 +467,7 @@ impl System {
             }
             let mut clauses: Vec<ClauseId> = clauses.into_iter().collect();
             clauses.sort_by_key(|id| id.index());
-            clauses
+            (goal, clauses)
         };
         Ok(goals.into_iter().map(cone).collect())
     }
@@ -493,6 +555,18 @@ mod tests {
         let (system, [c0, c1, c2, c3, c4, _]) = two_goals();
         let cones = system.goal_cones().unwrap();
         assert_eq!(cones, vec![vec![c0, c1, c3], vec![c0, c1, c2, c4]]);
+    }
+
+    /// The goal set apart is a part with its cone; its class keeps the cone of the other goal,
+    /// and the class with no goal set apart, `s ⇐ ⊤`, stays as it is.
+    #[test]
+    fn a_goal_set_apart_leaves_its_class_the_cones_of_the_others() {
+        let (system, [c0, c1, c2, c3, c4, c5]) = two_goals();
+        let parts = system.goals_apart(|id| id == c4).unwrap();
+        assert_eq!(
+            parts,
+            vec![vec![c0, c1, c3], vec![c5], vec![c0, c1, c2, c4]]
+        );
     }
 
     #[test]

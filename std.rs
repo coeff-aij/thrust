@@ -995,6 +995,16 @@ mod thrust_models {
         unimplemented!()
     }
 
+    /// `formula`, an `exists` or a call of a predicate whose body is one, proved by `witness`
+    /// where it is a conjunct of a `proof_assert!`: that checks the body at `witness` (a tuple
+    /// when the `exists` binds several variables) and assumes `formula`.
+    #[allow(dead_code)]
+    #[thrust::def::witness]
+    #[thrust::ignored]
+    pub fn witness<T>(_formula: bool, _witness: T) -> bool {
+        unimplemented!()
+    }
+
     #[allow(dead_code)]
     #[thrust::def::implies]
     #[thrust::ignored]
@@ -1111,6 +1121,18 @@ mod thrust_models {
     #[inline(never)]
     pub fn __assume_marker<F>(_f: F) {}
 
+    #[doc(hidden)]
+    #[thrust::def::block_requires_marker]
+    #[thrust::ignored]
+    #[inline(never)]
+    pub fn __block_requires_marker<F>(_f: F) {}
+
+    #[doc(hidden)]
+    #[thrust::def::block_ensures_marker]
+    #[thrust::ignored]
+    #[inline(never)]
+    pub fn __block_ensures_marker<F>(_f: F) {}
+
     /// Proof-only data, introduced by `thrust_macros::ghost!`. In the logic it is its
     /// content, so a specification refers to a `Ghost<T>` as if it were a `T`.
     #[allow(dead_code)]
@@ -1162,6 +1184,14 @@ mod thrust_models {
     #[thrust::ignored]
     #[inline(never)]
     pub fn __ghost_marker<F, T: ?Sized>(_f: F) -> Ghost<T> {
+        Ghost(std::marker::PhantomData)
+    }
+
+    #[doc(hidden)]
+    #[thrust::def::choose_marker]
+    #[thrust::ignored]
+    #[inline(never)]
+    pub fn __choose_marker<F, T: ?Sized>(_f: F) -> Ghost<T> {
         Ghost(std::marker::PhantomData)
     }
 
@@ -2695,7 +2725,9 @@ fn _extern_spec_iterator_find<I, P>(it: &mut I, predicate: P) -> Option<I::Item>
 
 // `all` and `any` call the predicate on the items in order until it returns `stop` (`false` for
 // `all`, `true` for `any`), as core's default and `slice::Iter`'s override do. `fs` is the chain
-// of its states along the items `s` before, as in `find`, with the predicate taking `Item`.
+// of its states along the items `s` before, as in `find`, with the predicate taking `Item`. The
+// conformance test (tests/ui/pass/std_specs/option.rs) checks `slice::Iter`'s override, a loop
+// over `next`, against these contracts at every `IteratorSpec` type.
 #[thrust_macros::predicate]
 fn _iter_spec_short_circuit_chain<I, F>(
     iter: I,
@@ -2749,7 +2781,10 @@ fn _extern_spec_iterator_all<I, F>(it: &mut I, f: F) -> bool
           I::Item: thrust_models::Model,
           F: FnMut(I::Item) -> bool
 {
-    <I as std::iter::Iterator>::all(it, f)
+    thrust_std_target!(
+        <I as std::iter::Iterator>::all(it, f),
+        <crate::std_transcriptions::StdBodies as crate::std_transcriptions::IteratorMethods<I, F>>::iterator_all(it, f)
+    )
 }
 
 #[thrust::extern_spec_fn]
@@ -2782,7 +2817,10 @@ fn _extern_spec_iterator_any<I, F>(it: &mut I, f: F) -> bool
           I::Item: thrust_models::Model,
           F: FnMut(I::Item) -> bool
 {
-    <I as std::iter::Iterator>::any(it, f)
+    thrust_std_target!(
+        <I as std::iter::Iterator>::any(it, f),
+        <crate::std_transcriptions::StdBodies as crate::std_transcriptions::IteratorMethods<I, F>>::iterator_any(it, f)
+    )
 }
 
 // The sum of the first `n` items of `s`. It returns `Int`: the definition of a logic function
