@@ -21,8 +21,12 @@ use crate::analyze;
 
 /// Checks every lemma of the crate; the errors are reported with those of
 /// [`check_proof_branches`].
-pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
-    let checker = Checker { tcx, proof_branch };
+pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>, markers: [Option<DefId>; 2]) {
+    let checker = Checker {
+        tcx,
+        proof_branch,
+        markers,
+    };
     // A law's proof, an impl's definition of a law or a trait's default body for one, is a
     // lemma too: what it proves is assumed wherever the trait is used through a type parameter,
     // so a proof that does not return would prove anything.
@@ -54,6 +58,7 @@ pub fn is_proof(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     let checker = Checker {
         tcx,
         proof_branch: None,
+        markers: [None; 2],
     };
     checker.is_lemma(def_id) || checker.is_lemma_rec(def_id) || checker.is_law_proof(def_id)
 }
@@ -69,6 +74,7 @@ pub fn check_proof_branches(
         let checker = Checker {
             tcx,
             proof_branch: Some(proof_branch),
+            markers: [None; 2],
         };
         for &def_id in tcx.mir_keys(()) {
             let id = def_id.to_def_id();
@@ -83,6 +89,8 @@ pub fn check_proof_branches(
 struct Checker<'tcx> {
     tcx: TyCtxt<'tcx>,
     proof_branch: Option<DefId>,
+    /// The `ghost!` and `choose!` markers, as the crate's definition cache resolves them.
+    markers: [Option<DefId>; 2],
 }
 
 /// A call a lemma or a law's proof makes, at generic arguments in the caller's own parameters.
@@ -316,12 +324,7 @@ impl<'tcx> Checker<'tcx> {
         // (THRUST_NO_INJECT_STD) defines its own, which its laws' proofs use.
         let model_operation = (injected_std && analyze::is_ignored(self.tcx, def_id))
             || Some(def_id) == self.proof_branch;
-        let marker = [
-            analyze::annot::ghost_marker_path(),
-            analyze::annot::choose_marker_path(),
-        ]
-        .iter()
-        .any(|path| self.has_attr(def_id, path));
+        let marker = self.markers.contains(&Some(def_id));
         spec.iter().any(|path| self.has_attr(def_id, path)) || marker || model_operation
     }
 
