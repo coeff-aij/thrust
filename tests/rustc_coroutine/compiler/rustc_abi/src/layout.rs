@@ -1097,7 +1097,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// moved here (rewrite, rewrites.md R24), checked, with the four fields
     /// `univariant_biased_post` reads in its `ensures`. Its `requires` on `offsets`' length is
     /// established only in `univariant_biased_place`'s trusted body (`IndexVec::from_elem` over
-    /// `fields`, kept by `place_fields`' `ensures`), so it rests on that trust.
+    /// `fields`, kept by `place_fields`' `ensures`), so it rests on that trust. It stays a function:
+    /// in place, its code would sit in `univariant_biased_place`'s trusted body and go unchecked.
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
     #[thrust_macros::requires(offsets.len() == (*fields).len())]
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
@@ -1316,7 +1317,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
     /// The niche choice of `univariant_biased`'s field loop for `field` placed at `offset`: the
     /// chosen niche ends by the field's end; it stays when the field has none and is never
-    /// dropped, and with `End` the field's niche is taken while none has been.
+    /// dropped, and with `End` the field's niche is taken while none has been. It stays a function
+    /// (rewrites.md R18): in place under a block contract, `place_field` has to reveal
+    /// `niche_ends_by`, and four of its goals after the niche choice get no answer at 300 s.
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
         !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) || Self::field_wf::<FieldIdx, VariantIdx>(**d, *dl)))]
