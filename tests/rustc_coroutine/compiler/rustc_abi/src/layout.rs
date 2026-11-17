@@ -918,11 +918,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 #[cfg(thrust_univariant_biased_reach = "map_or")]
                                 thrust_macros::proof_assert!(|x: FieldIdx| false);
 
-                                // The capture `dl` bound to a local by `as_local` (below), so that a
-                                // `proof_assert!` can state `alignment_group_key`'s `requires` at
-                                // this call: `f` is the field at `x`, whose niche is well formed by
-                                // this closure's `requires`.
-                                let key_dl: &TargetDataLayout = as_local(dl);
+                                // `alignment_group_key`'s `requires` at this call: `f` is the
+                                // field at `x`, whose niche is well formed by this closure's
+                                // `requires`.
+                                let key_dl: &TargetDataLayout = dl;
                                 thrust_macros::proof_assert!(|f: &F, key_dl: &TargetDataLayout|
                                     forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
                                         !(thrust_macros::post!(<F as core::ops::Deref>::deref(f), d) && (**d).largest_niche == Some(n))
@@ -1722,13 +1721,4 @@ fn arbitrary_parts<FieldIdx: Idx + thrust_models::Model>(
             panic!("encountered a non-arbitrary layout during enum layout")
         }
     }
-}
-
-// Returns its argument. A reference copied from a closure's capture with `let` is folded into the
-// capture's place in the MIR Thrust reads, where an `assume!` cannot name it; the result of this
-// call is a local of its own.
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result == x)]
-fn as_local<T: thrust_models::Model>(x: T) -> T {
-    x
 }
