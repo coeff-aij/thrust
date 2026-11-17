@@ -25,7 +25,7 @@
  
 -// A caller of `univariant` that establishes its precondition, the size bound included.
 +// The fail twin: the caller of `univariant` does not establish that `F`'s `deref` is a function
-+// (`deref_functional`), which `univariant`'s `requires` demands.
++// and the weight graph (`deref_functional`), which `univariant`'s `requires` demands.
  #[thrust_macros::context]
  #[thrust_macros::requires(
      LayoutCalculator::<Cx>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, kind)

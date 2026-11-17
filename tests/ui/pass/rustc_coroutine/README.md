@@ -92,7 +92,7 @@ existential over a sequence to give a witness for. Its meaning comes from `deref
 `layout()`, `univariant` and the field loop require: `weight_of` of a value is the weight of every
 layout `post!` of `deref` allows for it, and is non-negative. No root instantiates `F`, so no root
 discharges it; a real field type satisfies it (rustc's `Layout`, which dereferences to an interned
-`&LayoutData`, with `weight_of` the weight of that referent). `tests/ui/pass/weight_sum_of_push.rs`
+`&LayoutData`, with `weight_of` the weight of that referent). `probes/weight_sum_of_push.rs`
 and its fail twin show the pattern on a small example: the weight of a pushed list follows by unfolding.
 
 `probes/` holds one small pass/fail pair per language feature the stages rely on (a `forall` over a
