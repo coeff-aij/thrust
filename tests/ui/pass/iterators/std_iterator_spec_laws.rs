@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_NO_INJECT_STD=1 THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
+//@rustc-env: THRUST_SPLIT=4 THRUST_SPLIT_GOALS=1
 // std.rs specializes its spec impls, so a crate compiling it as a source file enables
 // `specialization` itself.
 #![feature(specialization)]
