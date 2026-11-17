@@ -66,6 +66,12 @@ impl Marker {
         }
     }
 
+    /// Whether the form is a statement (`proof_assert!`, `assume!`), whose closure may name a
+    /// closure local as `|f: _|`.
+    fn is_statement(self) -> bool {
+        matches!(self, Marker::Assert | Marker::Assume)
+    }
+
     /// The context-carrying counterpart `#[thrust_macros::context]` rewrites the form into.
     pub fn with_context_path(self) -> syn::Path {
         match self {
@@ -172,8 +178,13 @@ fn expand_invariant(
 
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = format_ident!("{}_{}", marker.item_prefix(), id);
-    let LiftedFormulaFn { item, reference } =
-        formula_fn_lifting::lift(&name, &params, &closure.body, context)?;
+    let LiftedFormulaFn { item, reference } = formula_fn_lifting::lift_with(
+        &name,
+        &params,
+        &closure.body,
+        context,
+        marker.is_statement(),
+    )?;
     let marker = marker.ident();
 
     Ok(syn::parse_quote!({

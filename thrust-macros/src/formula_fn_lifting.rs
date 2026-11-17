@@ -102,8 +102,44 @@ pub fn lift(
     body: &syn::Expr,
     context: Option<&EnclosingContext>,
 ) -> syn::Result<LiftedFormulaFn> {
+    lift_with(name, params, body, context, false)
+}
+
+/// The prefix of the name of the type parameter a closure local named `|f: _|` gets; the
+/// analyzer reads the local's name from the rest (`resolve_closure_local_args`).
+const ELIDED_CLOSURE_LOCAL_PREFIX: &str = "__ThrustClosureOf_";
+
+/// [`lift`], where, when `elide_closure_locals` holds, a parameter written `x: _` stands for a
+/// closure local `x`, whose type cannot be written: the item takes a type parameter for it (as
+/// a `Fn` bound would make one, so the parameter is the closure's model) and the reference
+/// instantiates it with a placeholder, which the analyzer replaces with the local's type.
+pub fn lift_with(
+    name: &syn::Ident,
+    params: &[FnArg],
+    body: &syn::Expr,
+    context: Option<&EnclosingContext>,
+    elide_closure_locals: bool,
+) -> syn::Result<LiftedFormulaFn> {
     let mut params = params.to_vec();
     let mut body = body.clone();
+    let mut closure_locals: Vec<syn::Ident> = Vec::new();
+    if elide_closure_locals {
+        for param in &mut params {
+            let FnArg::Typed(pt) = param else { continue };
+            if !matches!(*pt.ty, syn::Type::Infer(_)) {
+                continue;
+            }
+            let syn::Pat::Ident(pat) = &*pt.pat else {
+                return Err(syn::Error::new_spanned(
+                    &pt.pat,
+                    "a parameter written `_` must be a plain variable name",
+                ));
+            };
+            let ty = format_ident!("{}{}", ELIDED_CLOSURE_LOCAL_PREFIX, pat.ident);
+            pt.ty = syn::parse_quote!(#ty);
+            closure_locals.push(ty);
+        }
+    }
 
     let mut def_params: Vec<TokenStream2> = Vec::new();
     let mut turbofish_args: Vec<TokenStream2> = Vec::new();
@@ -119,6 +155,11 @@ pub fn lift(
         }
     }
 
+    for ty in &closure_locals {
+        def_params.push(ty.to_token_stream());
+        turbofish_args.push(quote!(crate::thrust_models::model::LocalType));
+    }
+
     let mut def_wheres: Vec<WherePredicate> = context
         .into_iter()
         .flat_map(EnclosingContext::where_predicates)
@@ -126,10 +167,11 @@ pub fn lift(
         .collect();
 
     let dummy_sig = syn::parse_quote!(fn f());
-    let type_lowering = match context {
+    let mut type_lowering = match context {
         Some(context) => context.type_lowering(),
         None => FormulaFnTypeLowering::new(&dummy_sig),
     };
+    type_lowering.add_closure_type_params(closure_locals.iter().cloned());
 
     def_wheres.extend(type_lowering.model_where_predicates());
 
@@ -243,6 +285,7 @@ pub fn lift(
         item: syn::parse_quote!(
             #[allow(unused_variables)]
             #[allow(non_snake_case)]
+            #[allow(non_camel_case_types)]
             #[thrust::formula_fn]
             fn #name #def_generics(#model_ty_params) -> bool #where_clause {
                 #body
