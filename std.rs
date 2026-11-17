@@ -438,6 +438,11 @@ mod thrust_models {
         #[thrust::def::closure_model]
         pub struct Closure<T: ?Sized>(PhantomData<T>);
 
+        /// What `proof_assert!` and `assume!` instantiate the type parameter of a closure local
+        /// named `|f: _|` with, where the closure's type cannot be written. The analyzer
+        /// replaces it with the type of the local.
+        pub struct LocalType;
+
         impl<T: ?Sized> PartialEq for Closure<T> {
             #[thrust::ignored]
             fn eq(&self, _other: &Self) -> bool {

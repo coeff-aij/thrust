@@ -36,6 +36,11 @@ impl<'a> FormulaFnTypeLowering<'a> {
         }
     }
 
+    /// Treats the type parameters `params` as closure types, as an `Fn` bound does.
+    pub fn add_closure_type_params(&mut self, params: impl IntoIterator<Item = syn::Ident>) {
+        self.closure_type_params.extend(params);
+    }
+
     /// Maps each function parameter `x: T` to `x: <T as crate::thrust_models::Model>::Ty`.
     ///
     /// Closure/function type parameters are first rewritten to

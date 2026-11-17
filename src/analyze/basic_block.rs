@@ -137,6 +137,66 @@ pub fn formula_marker_call<'tcx>(
     Some((marker, formula_def_id, generic_args))
 }
 
+/// The prefix of the name of the type parameter a formula function declares for a closure local
+/// its `proof_assert!` or `assume!` names as `|f: _|`
+/// (`thrust-macros/src/formula_fn_lifting.rs`); the rest of the name is the local's.
+const ELIDED_CLOSURE_LOCAL_PREFIX: &str = "__ThrustClosureOf_";
+
+/// `generic_args` of the formula function `formula_def_id` of a `proof_assert!` or `assume!` at
+/// `scope`, with the type argument of each closure local named `|f: _|` taken from that local:
+/// a closure's type cannot be written, so the marker call gives a placeholder there, as a
+/// Creusot or Verus specification names a closure through its value.
+pub fn resolve_closure_local_args<'tcx>(
+    ctx: &analyze::Analyzer<'tcx>,
+    body: &mir::Body<'tcx>,
+    scope: mir::SourceScope,
+    span: rustc_span::Span,
+    formula_def_id: LocalDefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+) -> mir_ty::GenericArgsRef<'tcx> {
+    let tcx = ctx.tcx();
+    let mut args: Vec<mir_ty::GenericArg<'tcx>> = generic_args.to_vec();
+    for param in &tcx.generics_of(formula_def_id.to_def_id()).own_params {
+        let Some(var) = param
+            .name
+            .as_str()
+            .strip_prefix(ELIDED_CLOSURE_LOCAL_PREFIX)
+        else {
+            continue;
+        };
+        let var = rustc_span::Symbol::intern(var);
+        let tys: Vec<mir_ty::Ty<'tcx>> = bindings_in_scope(body, var, scope)
+            .into_iter()
+            .filter_map(|vdi| match &vdi.value {
+                mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
+                    Some(body.local_decls[place.local].ty)
+                }
+                _ => None,
+            })
+            .collect();
+        let Some(&ty) = tys.first().filter(|ty| tys.iter().all(|t| t == *ty)) else {
+            let is_capture = bindings_in_scope(body, var, scope).iter().any(|vdi| {
+                matches!(&vdi.value, mir::VarDebugInfoContents::Place(place) if !place.projection.is_empty())
+            });
+            let why = if is_capture {
+                "a variable this closure captures, which `_` does not name: bind it to a local first"
+            } else {
+                "not one live variable here"
+            };
+            tcx.dcx()
+                .span_fatal(span, format!("`{var}: _` names `{var}`, which is {why}"));
+        };
+        if !ty.is_closure() {
+            tcx.dcx().span_fatal(
+                span,
+                format!("`{var}: _` stands for a closure's type, but `{var}` has the type `{ty}`; write the type of `{var}`"),
+            );
+        }
+        args[param.index as usize] = ty.into();
+    }
+    tcx.mk_args(&args)
+}
+
 /// The debug entries of the variables the name `name` can stand for in `scope`: those of the
 /// innermost enclosing scope that binds the name, as Rust's shadowing resolves it.
 pub fn bindings_in_scope<'a, 'tcx>(
@@ -2361,7 +2421,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// The operand a ghost term at the current terminator reads for the variable `name`: the
     /// binding Rust's scoping resolves it to ([`bindings_in_scope`], as the liveness the block
-    /// parameters come from resolves it), when it holds a value here.
+    /// parameters come from resolves it), when it holds a value here. A variable a closure body
+    /// reads from its captures is a place of the closure's environment (`*((*_1).0)`), which is
+    /// read as such.
     fn operand_of_name(&self, name: rustc_span::Symbol) -> Option<Operand<'tcx>> {
         let scope = self.body.basic_blocks[self.basic_block]
             .terminator()
@@ -2380,7 +2442,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         for vdi in bindings_in_scope(&self.body, name, scope) {
             let operand = match &vdi.value {
                 mir::VarDebugInfoContents::Place(place) => {
-                    if !place.projection.is_empty() || !self.is_defined(place.local) {
+                    if !self.is_defined(place.local) {
                         continue;
                     }
                     Operand::Copy(*place)
@@ -2400,6 +2462,32 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
 
         found
+    }
+
+    /// Gives the closure behind each `|f: _|` of the formula function `formula_def_id` its
+    /// function type at the instance being analyzed, as a call of the closure does: the formula
+    /// reads that type (`pre!`, `post!`), and in a generic body it exists only once asked for.
+    /// `generic_args` are those [`resolve_closure_local_args`] gave.
+    fn register_closure_local_types(
+        &mut self,
+        formula_def_id: LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) {
+        let owner = self.type_builder.owner_fn_id();
+        for param in &self.tcx.generics_of(formula_def_id.to_def_id()).own_params {
+            if !param.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX) {
+                continue;
+            }
+            let ty = generic_args.type_at(param.index as usize);
+            let mir_ty::TyKind::Closure(closure_def_id, closure_args) = ty.kind() else {
+                continue;
+            };
+            let parent_count = self.tcx.generics_of(*closure_def_id).parent_count;
+            let parent_args = self.tcx.mk_args(&closure_args[..parent_count]);
+            let _ = self
+                .ctx
+                .def_ty_with_args(*closure_def_id, parent_args, owner);
+        }
     }
 
     /// `proof_assert!` and `assume!`: the formula over the live variables it names holds from
@@ -3417,6 +3505,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 args,
             )) = formula_marker_call(self.ctx, &self.local_decls, func, args)
             {
+                let args = resolve_closure_local_args(
+                    self.ctx,
+                    &self.body,
+                    term.source_info.scope,
+                    term.source_info.span,
+                    def_id,
+                    args,
+                );
+                self.register_closure_local_types(def_id, args);
                 let formula_fn = self
                     .ctx
                     .formula_fn_with_args(def_id, args, self.type_builder.owner_fn_id())
