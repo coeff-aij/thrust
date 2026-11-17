@@ -906,7 +906,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                             |n: Niche| -> u64 { n.offset.bytes() },
                                         );
                                         thrust_macros::proof_assert!(|niche: Option<Niche>, offset_of_niche: _|
-                                    niche == None || exists(|i: <Niche as thrust_models::Model>::Ty| niche == Some(i) && thrust_macros::pre!(offset_of_niche(i))));
+                                            niche == None || exists(|i: <Niche as thrust_models::Model>::Ty| niche == Some(i) && thrust_macros::pre!(offset_of_niche(i))));
                                         niche.map_or(0, offset_of_niche)
                                     }
                                     NicheBias::End => {
@@ -931,7 +931,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                         },
                                         );
                                         thrust_macros::assume!(|niche: Option<Niche>, end_offset_of_niche: _|
-                                    niche == None || exists(|i: <Niche as thrust_models::Model>::Ty| niche == Some(i) && thrust_macros::pre!(end_offset_of_niche(i))));
+                                            niche == None || exists(|i: <Niche as thrust_models::Model>::Ty| niche == Some(i) && thrust_macros::pre!(end_offset_of_niche(i))));
                                         niche.map_or(0, end_offset_of_niche)
                                     }
                                 };
