@@ -1196,7 +1196,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// `Box` optimizations make of one, and the transmuted pointer of a `Box`) with the place it
     /// copies, unless that place may change
     /// between the copy and a use of the temporary. Optimizations make that possible: a
-    /// reborrow `q = &mut *_k` becomes `q = copy _k` and `q` is merged into `_k`.
+    /// reborrow `q = &mut *_k` becomes `q = copy _k` and `q` is merged into `_k`. A formula
+    /// that names the variable a temporary holds (`let k: &T = c;` of a capture `c`) uses it
+    /// at its marker, so the variable is read at the place only where the place holds the
+    /// copied value there, and at the kept temporary otherwise.
     fn unelaborate_derefs(&mut self) {
         let original = self.body.clone();
         let replaced = self.replace_deref_temps(&HashSet::new());
@@ -1246,6 +1249,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 v.visit_terminator(tmnt);
             }
         }
+        for info in &mut self.body.var_debug_info {
+            mir::visit::MutVisitor::visit_var_debug_info(&mut v, info);
+        }
         replaced
     }
 
@@ -1258,6 +1264,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         replaced: &[(Local, mir::Location, mir::Place<'tcx>)],
     ) -> HashSet<Local> {
         let mut uses = local_mentions(original);
+        for (local, loc) in self.formula_name_reads(original) {
+            uses.entry(local).or_default().push(loc);
+        }
         let mut defs: HashMap<Local, Vec<mir::Location>> = HashMap::new();
         for (temp, def, _) in replaced {
             defs.entry(*temp).or_default().push(*def);
@@ -1283,6 +1292,35 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
         kept
+    }
+
+    /// The local each name of a formula over live variables resolves to in `body`, with the
+    /// location of the formula's marker call, which reads the variable there
+    /// ([`Self::body_with_ghost_reads`]).
+    fn formula_name_reads(&self, body: &Body<'tcx>) -> Vec<(Local, mir::Location)> {
+        let mut reads = Vec::new();
+        for (block, data) in body.basic_blocks.iter_enumerated() {
+            let terminator = data.terminator();
+            let mir::TerminatorKind::Call { func, args, .. } = &terminator.kind else {
+                continue;
+            };
+            let Some((formula_def_id, _, first_named_param)) = self.formula_read_call(func, args)
+            else {
+                continue;
+            };
+            let location = body.terminator_loc(block);
+            let idents = self.tcx.fn_arg_idents(formula_def_id.to_def_id());
+            for ident in idents.iter().skip(first_named_param).flatten() {
+                let name = analyze::annot_fn::lifted_param_source_name(*ident);
+                let scope = terminator.source_info.scope;
+                for info in analyze::basic_block::bindings_in_scope(body, name, scope) {
+                    if let mir::VarDebugInfoContents::Place(place) = info.value {
+                        reads.push((place.local, location));
+                    }
+                }
+            }
+        }
+        reads
     }
 
     fn has_unknown_aliases(&self, place: &mir::Place<'tcx>) -> bool {
