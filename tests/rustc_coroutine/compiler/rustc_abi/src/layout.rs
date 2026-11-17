@@ -1349,23 +1349,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         (abi, unadjusted_abi_align)
     }
 
-    /// Pads the offset to the field's alignment and raises the struct's alignment to it: the
-    /// offset grows by less than the alignment's bytes, and the struct's alignment's bytes by at
-    /// most them.
-    #[thrust_macros::requires((*offset).raw <= 4611686018427387904u64)]
-    #[thrust_macros::ensures((*offset).raw <= (!offset).raw && (!offset).raw < (*offset).raw + 9223372036854775808u64)]
-    #[thrust_macros::ensures(forall(|q: USize, q2: USize, qa: USize|
-        !(q == (*align).pow2 && q2 == (!align).pow2 && qa == field_align.abi.pow2)
-        || ((!offset).raw < (*offset).raw + pow2(qa) && pow2(q2) <= pow2(q) + pow2(qa))))]
-    fn align_step(offset: &mut Size, align: &mut Align, field_align: AbiAlign) {
-        let aligned = (*offset).align_to(field_align.abi);
-        thrust_macros::proof!(aligned_within(*offset, field_align.abi, aligned));
-        thrust_macros::proof!(pow2_pos((*align).pow2 as u64));
-        thrust_macros::proof!(pow2_pos(field_align.abi.pow2 as u64));
-        *offset = aligned;
-        *align = (*align).max(field_align.abi);
-    }
-
     /// The write of a field's offset in `univariant_biased`'s field loop.
     #[thrust_macros::requires(forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || j < (*offsets).len()))]
     #[thrust_macros::ensures((!offsets).len() == (*offsets).len())]
@@ -1508,7 +1491,32 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // `pack` only lowers the alignment, so its bytes stay within the field's.
         thrust_macros::proof!(pow2_mono(field_align.abi.pow2 as u64, field.align.abi.pow2 as u64));
         let before = *offset;
-        Self::align_step(offset, align, field_align);
+        // Rewrite (rewrites.md R18): a block contract on rustc's padding to the field's alignment
+        // and the struct alignment's maximum, which the rest of the body reads in place of the
+        // results of `align_to` and `max`: the offset grows by less than the alignment's bytes,
+        // and the struct's alignment's bytes by at most them.
+        let offset_before = thrust_macros::ghost!(|offset: &mut Size| -> Size { *offset });
+        let align_before = thrust_macros::ghost!(|align: &mut Align| -> Align { *align });
+        thrust_macros::block_requires!(
+            |offset: &mut Size, align: &mut Align,
+             offset_before: thrust_models::Ghost<Size>, align_before: thrust_models::Ghost<Align>|
+            offset_before == *offset && align_before == *align
+            && (*offset).raw <= 4611686018427387904u64
+        );
+        let aligned = (*offset).align_to(field_align.abi);
+        thrust_macros::proof!(aligned_within(*offset, field_align.abi, aligned));
+        thrust_macros::proof!(pow2_pos((*align).pow2 as u64));
+        thrust_macros::proof!(pow2_pos(field_align.abi.pow2 as u64));
+        *offset = aligned;
+        *align = (*align).max(field_align.abi);
+        thrust_macros::block_ensures!(
+            |offset: &mut Size, align: &mut Align, field_align: AbiAlign,
+             offset_before: thrust_models::Ghost<Size>, align_before: thrust_models::Ghost<Align>|
+            offset_before.raw <= (*offset).raw && (*offset).raw < offset_before.raw + 9223372036854775808u64
+            && forall(|q: USize, q2: USize, qa: USize|
+                !(q == align_before.pow2 && q2 == (*align).pow2 && qa == field_align.abi.pow2)
+                || ((*offset).raw < offset_before.raw + pow2(qa) && pow2(q2) <= pow2(q) + pow2(qa)))
+        );
         thrust_macros::proof!(niche_ends_later(&*largest_niche, dl, before, *offset));
         *max_repr_align = (*max_repr_align).max(field.max_repr_align);
 
