@@ -178,13 +178,12 @@ fn expand_invariant(
 
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = format_ident!("{}_{}", marker.item_prefix(), id);
-    let LiftedFormulaFn { item, reference } = formula_fn_lifting::lift_with(
-        &name,
-        &params,
-        &closure.body,
-        context,
-        marker.is_statement(),
-    )?;
+    let lifted = if marker.is_statement() {
+        formula_fn_lifting::lift_statement(&name, &params, &closure.body, context)
+    } else {
+        formula_fn_lifting::lift(&name, &params, &closure.body, context)
+    };
+    let LiftedFormulaFn { item, reference } = lifted?;
     let marker = marker.ident();
 
     Ok(syn::parse_quote!({

@@ -102,18 +102,29 @@ pub fn lift(
     body: &syn::Expr,
     context: Option<&EnclosingContext>,
 ) -> syn::Result<LiftedFormulaFn> {
-    lift_with(name, params, body, context, false)
+    lift_inner(name, params, body, context, false)
+}
+
+/// [`lift`] for the formula of a statement (`proof_assert!`, `assume!`), where a parameter
+/// written `x: _` names a closure local `x`, whose type cannot be written: the item takes a type
+/// parameter for it (as a `Fn` bound would make one, so the parameter is the closure's model)
+/// and the reference instantiates it with a placeholder, which the analyzer replaces with the
+/// local's type.
+pub fn lift_statement(
+    name: &syn::Ident,
+    params: &[FnArg],
+    body: &syn::Expr,
+    context: Option<&EnclosingContext>,
+) -> syn::Result<LiftedFormulaFn> {
+    lift_inner(name, params, body, context, true)
 }
 
 /// The prefix of the name of the type parameter a closure local named `|f: _|` gets; the
 /// analyzer reads the local's name from the rest (`resolve_closure_local_args`).
 const ELIDED_CLOSURE_LOCAL_PREFIX: &str = "__ThrustClosureOf_";
 
-/// [`lift`], where, when `elide_closure_locals` holds, a parameter written `x: _` stands for a
-/// closure local `x`, whose type cannot be written: the item takes a type parameter for it (as
-/// a `Fn` bound would make one, so the parameter is the closure's model) and the reference
-/// instantiates it with a placeholder, which the analyzer replaces with the local's type.
-pub fn lift_with(
+/// [`lift`] and [`lift_statement`]; `elide_closure_locals` is set by the latter.
+fn lift_inner(
     name: &syn::Ident,
     params: &[FnArg],
     body: &syn::Expr,

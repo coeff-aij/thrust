@@ -163,10 +163,16 @@ pub fn resolve_closure_local_args<'tcx>(
             })
             .collect();
         let Some(&ty) = tys.first().filter(|ty| tys.iter().all(|t| t == *ty)) else {
-            tcx.dcx().span_fatal(
-                span,
-                format!("`{var}: _` names `{var}`, which is not one live variable here"),
-            );
+            let is_capture = bindings_in_scope(body, var, scope).iter().any(|vdi| {
+                matches!(&vdi.value, mir::VarDebugInfoContents::Place(place) if !place.projection.is_empty())
+            });
+            let why = if is_capture {
+                "a variable this closure captures, which `_` does not name: bind it to a local first"
+            } else {
+                "not one live variable here"
+            };
+            tcx.dcx()
+                .span_fatal(span, format!("`{var}: _` names `{var}`, which is {why}"));
         };
         if !ty.is_closure() {
             tcx.dcx().span_fatal(
@@ -2432,13 +2438,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         found
     }
 
-    /// Gives each closure among `generic_args` its function type at the instance being analyzed,
-    /// as a call of it would: a formula that names the closure (`pre!`, `post!`) reads that type,
-    /// and in a generic body the closure's type exists only once it is asked for at the
-    /// instance, as a call asks.
-    fn register_closure_args(&mut self, generic_args: mir_ty::GenericArgsRef<'tcx>) {
+    /// Gives the closure behind each `|f: _|` of the formula function `formula_def_id` its
+    /// function type at the instance being analyzed, as a call of the closure does: the formula
+    /// reads that type (`pre!`, `post!`), and in a generic body it exists only once asked for.
+    /// `generic_args` are those [`resolve_closure_local_args`] gave.
+    fn register_closure_local_types(
+        &mut self,
+        formula_def_id: LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) {
         let owner = self.type_builder.owner_fn_id();
-        for ty in generic_args.types() {
+        for param in &self.tcx.generics_of(formula_def_id.to_def_id()).own_params {
+            if !param.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX) {
+                continue;
+            }
+            let ty = generic_args.type_at(param.index as usize);
             let mir_ty::TyKind::Closure(closure_def_id, closure_args) = ty.kind() else {
                 continue;
             };
@@ -3303,7 +3317,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     def_id,
                     args,
                 );
-                self.register_closure_args(args);
+                self.register_closure_local_types(def_id, args);
                 let formula_fn = self
                     .ctx
                     .formula_fn_with_args(def_id, args, self.type_builder.owner_fn_id())

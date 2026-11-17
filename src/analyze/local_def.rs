@@ -2240,7 +2240,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             generic_args,
         );
         // Read from the signature, not from a translation of the formula: a closure of a generic
-        // body that the formula names has no function type before the body is analyzed.
+        // body that the formula names has no function type before the body is analyzed. A
+        // formula without `|f: _|` is translated here as before, which fixes the order in which
+        // its predicates are numbered.
+        if !self
+            .tcx
+            .generics_of(formula_def_id.to_def_id())
+            .own_params
+            .iter()
+            .any(|param| param.name.as_str().starts_with("__ThrustClosureOf_"))
+        {
+            self.ctx
+                .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
+                .expect("marker formula function is not registered");
+        }
         let inputs = self
             .tcx
             .fn_sig(formula_def_id.to_def_id())
