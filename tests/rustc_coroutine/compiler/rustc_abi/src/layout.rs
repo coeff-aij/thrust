@@ -879,9 +879,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                             |&x: &FieldIdx| {
                                 let f = &fields[x];
                                 let field_size = f.size.bytes();
-                                // Fallback (open `map_or` goals): the three `map_or` calls with their
-                                // preconditions assumed; restore `f.largest_niche.map_or(..)` once
-                                // the solver answers them.
+                                // The three `map_or` calls' preconditions, stated before each call: the
+                                // first two are `proof_assert!`s; the third is assumed (fallback, open
+                                // goal), restore it without the `assume!` once the solver answers it.
                                 let niche = f.largest_niche;
                                 let size_of_niche = thrust_macros::closure!(
                                     captures(dl: &&&TargetDataLayout),
@@ -889,7 +889,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                     ensures(true),
                                     |n: Niche| -> u128 { n.available(dl) },
                                 );
-                                thrust_macros::assume!(|niche: Option<Niche>, size_of_niche: _|
+                                thrust_macros::proof_assert!(|niche: Option<Niche>, size_of_niche: _|
                                     niche == None || exists(|i: <Niche as thrust_models::Model>::Ty| niche == Some(i) && thrust_macros::pre!(size_of_niche(i))));
                                 let niche_size = niche.map_or(0, size_of_niche);
                                 let niche_size_key = match niche_bias {
@@ -905,7 +905,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                             ensures(true),
                                             |n: Niche| -> u64 { n.offset.bytes() },
                                         );
-                                        thrust_macros::assume!(|niche: Option<Niche>, offset_of_niche: _|
+                                        thrust_macros::proof_assert!(|niche: Option<Niche>, offset_of_niche: _|
                                     niche == None || exists(|i: <Niche as thrust_models::Model>::Ty| niche == Some(i) && thrust_macros::pre!(offset_of_niche(i))));
                                         niche.map_or(0, offset_of_niche)
                                     }
@@ -1250,9 +1250,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             thrust_macros::assume!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
             #[cfg(thrust_univariant_biased_reach = "iter_enumerated")]
             thrust_macros::proof_assert!(|kind: StructKind| false);
-            // Rewrite (rewrites.md R8): `Filter::new(it, p)` for `it.filter(p)`.
-            // Fallback: `Filter::new` and `next` with their preconditions assumed; restore them
-            // without the `assume!`s once the solver answers them.
+            // Rewrite (rewrites.md R8): `Filter::new(it, p)` for `it.filter(p)`. The preconditions
+            // of `Filter::new` and of each `next` are `proof_assert!`s before the calls; the closure
+            // is bound to a name for the formula to take its type.
             // Rewrite: `iter_enumerated` through `iter_enumerated_trusted` of thrust/iter.rs, whose
             // contract states the iterator's start and whose body the root checks.
             let field_iter = crate::case_study::iter::iter_enumerated_trusted(fields);
@@ -1261,7 +1261,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 ensures(true),
                 |&(_, f): &(FieldIdx, &F)| -> bool { !f.is_zst() },
             );
-            thrust_macros::assume!(<P: Fn(&(FieldIdx, &F)) -> bool> |field_iter: crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, is_not_zst: P|
+            thrust_macros::proof_assert!(<P: Fn(&(FieldIdx, &F)) -> bool> |field_iter: crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, is_not_zst: P|
                 <crate::rustc_index::IterEnumerated<'_, FieldIdx, F> as crate::IteratorSpec>::inv(field_iter)
                     && Filter::<crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, P>::reinitialize()
                     && Filter::<crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, P>::pre_all(field_iter, is_not_zst));
@@ -1269,20 +1269,20 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
             match (
                 {
-                    // Fallback: `next`'s precondition assumed (the filter's `inv`).
-                    thrust_macros::assume!(<P: Fn(&(FieldIdx, &F)) -> bool> |non_zst_fields: Filter<crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, P>|
+                    // `next`'s precondition, the filter's `inv`.
+                    thrust_macros::proof_assert!(<P: Fn(&(FieldIdx, &F)) -> bool> |non_zst_fields: Filter<crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, P>|
                         <Filter<crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, P> as crate::IteratorSpec>::inv(non_zst_fields));
                     non_zst_fields.next()
                 },
                 {
-                    // Fallback: `next`'s precondition assumed (the filter's `inv`).
-                    thrust_macros::assume!(<P: Fn(&(FieldIdx, &F)) -> bool> |non_zst_fields: Filter<crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, P>|
+                    // `next`'s precondition, the filter's `inv`.
+                    thrust_macros::proof_assert!(<P: Fn(&(FieldIdx, &F)) -> bool> |non_zst_fields: Filter<crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, P>|
                         <Filter<crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, P> as crate::IteratorSpec>::inv(non_zst_fields));
                     non_zst_fields.next()
                 },
                 {
-                    // Fallback: `next`'s precondition assumed (the filter's `inv`).
-                    thrust_macros::assume!(<P: Fn(&(FieldIdx, &F)) -> bool> |non_zst_fields: Filter<crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, P>|
+                    // `next`'s precondition, the filter's `inv`.
+                    thrust_macros::proof_assert!(<P: Fn(&(FieldIdx, &F)) -> bool> |non_zst_fields: Filter<crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, P>|
                         <Filter<crate::rustc_index::IterEnumerated<'_, FieldIdx, F>, P> as crate::IteratorSpec>::inv(non_zst_fields));
                     non_zst_fields.next()
                 },
