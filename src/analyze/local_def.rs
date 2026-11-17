@@ -2239,18 +2239,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             formula_def_id,
             generic_args,
         );
-        let formula_fn = self
-            .ctx
-            .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
-            .expect("marker formula function is not registered");
+        // Read from the signature, not from a translation of the formula: a closure of a generic
+        // body that the formula names has no function type before the body is analyzed.
         let inputs = self
             .tcx
             .fn_sig(formula_def_id.to_def_id())
             .instantiate(self.tcx, generic_args)
             .skip_binder()
             .inputs();
-        let names = formula_fn
-            .param_idents()
+        let names = self
+            .tcx
+            .fn_arg_idents(formula_def_id.to_def_id())
             .iter()
             .zip(inputs)
             .skip(first_named_param)

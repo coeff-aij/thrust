@@ -2432,6 +2432,24 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         found
     }
 
+    /// Gives each closure among `generic_args` its function type at the instance being analyzed,
+    /// as a call of it would: a formula that names the closure (`pre!`, `post!`) reads that type,
+    /// and in a generic body the closure's type exists only once it is asked for at the
+    /// instance, as a call asks.
+    fn register_closure_args(&mut self, generic_args: mir_ty::GenericArgsRef<'tcx>) {
+        let owner = self.type_builder.owner_fn_id();
+        for ty in generic_args.types() {
+            let mir_ty::TyKind::Closure(closure_def_id, closure_args) = ty.kind() else {
+                continue;
+            };
+            let parent_count = self.tcx.generics_of(*closure_def_id).parent_count;
+            let parent_args = self.tcx.mk_args(&closure_args[..parent_count]);
+            let _ = self
+                .ctx
+                .def_ty_with_args(*closure_def_id, parent_args, owner);
+        }
+    }
+
     /// `proof_assert!` and `assume!`: the formula over the live variables it names holds from
     /// here on, checked here for `proof_assert!` and assumed unchecked for `assume!`, as Creusot's
     /// `proof_assert!` and Verus's `assert` and `assume` are. The variables are those a ghost
@@ -3285,6 +3303,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     def_id,
                     args,
                 );
+                self.register_closure_args(args);
                 let formula_fn = self
                     .ctx
                     .formula_fn_with_args(def_id, args, self.type_builder.owner_fn_id())
