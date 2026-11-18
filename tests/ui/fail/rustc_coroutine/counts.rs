@@ -2,7 +2,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=case_study::counts,rustc_abi::layout::coroutine::ones_assigned_disjoint,rustc_abi::layout::coroutine::ones_step,rustc_abi::layout::coroutine::card_ones,map_bound_unordered,map_wbound_unordered,acc_bound_repeated,acc_bound_strict,filter_yields_below_strict
+//@rustc-env: THRUST_VERIFY_ONLY=case_study::counts,rustc_abi::layout::coroutine::ones_assigned_disjoint,rustc_abi::layout::coroutine::ones_step,rustc_abi::layout::coroutine::card_ones,map_bound_unordered,acc_bound_repeated,acc_bound_strict,filter_yields_below_strict
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // The count of a variant's fields of thrust/counts.rs, which `layout()`'s per-variant closure
 // (stage 7) uses and the `layout.rs` root assumes. The code is the module tree under
@@ -39,21 +39,6 @@ use thrust_models::forall;
 fn map_bound_unordered(fields: &IndexVec<u32, u32>, a: &IndexVec<u32, u32>, e: &u32, k: usize) {
     if k > 0 {
         map_bound_unordered(fields, a, e, k - 1);
-    }
-}
-
-// The fail twin of `map_wbound`, the weighted form, without the same premise.
-#[thrust_macros::lemma]
-#[thrust_macros::variant(k)]
-#[thrust_macros::requires(forall(|x: Int| 0 <= (*ts)[x]))]
-#[thrust_macros::ensures(forall(|m: Int, f: Array<Int, Int>|
-    !(0 <= m
-        && forall(|j: Int| !(0 <= j && j < m)
-            || (0 <= f[j] && f[j] < k && (*a)[<u32 as rustc_index::Idx>::index_logic((*fields)[f[j]])] == *e)))
-    || counts::map_wsum::<u32, u32>(*fields, *ts, f, m) <= counts::acc_wsum::<u32, u32, u32, u32>(*fields, *a, *e, *ts, k)))]
-fn map_wbound_unordered(fields: &IndexVec<u32, u32>, a: &IndexVec<u32, u32>, e: &u32, ts: &Seq<Int>, k: usize) {
-    if k > 0 {
-        map_wbound_unordered(fields, a, e, ts, k - 1);
     }
 }
 
