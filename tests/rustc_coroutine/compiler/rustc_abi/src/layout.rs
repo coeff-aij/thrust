@@ -789,8 +789,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 // Rewrite (rewrites.md R8): `Map::new` of the niche's `available`, 0 without one,
                 // for `filter_map` of the niche and `map` of `available`: the two maxima agree,
                 // as `available` is never negative.
-                // Fallback: `Map::new` with its precondition assumed; restore it without the
-                // `assume!` once the solver answers it.
+                // Assumed (fallback, with fptprove): delete once the solver answers it. `Map::new`'s `requires`.
+                // Proved in place, all 4 parts of this site get no answer at 300 s with fptprove e74f0750b.
+                // Scoped as a block contract with the lemma `fields_ok_of_layout_pre`: one part of it gets no answer
+                // (the form is fork commit 5f12bc6d).
                 let field_iter = fields_excluding_tail.iter();
                 let niche_available = thrust_macros::closure!(
                     captures(dl: &&&TargetDataLayout),
@@ -858,9 +860,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
                 match kind {
                     StructKind::AlwaysSized | StructKind::MaybeUnsized => {
-                        // Fallback: `sort_by_key` with its `requires` assumed (a goal of
-                        // `univariant_biased` the solver does not answer); restore it without the
-                        // `assume!` once the solver answers it.
+                        // Assumed (fallback, with fptprove): delete once the solver answers it. `sort_by_key`'s `requires`.
+                        // Proved in place, the 1 part of this site gets no answer at 300 s with fptprove
+                        // e74f0750b. Scoped as a block contract with the lemma `fields_ok_of_layout_pre`: one part of it
+                        // gets no answer (the form is fork commit 5f12bc6d).
                         let sort_key = thrust_macros::closure!(
                             captures(fields: &&IndexSlice<FieldIdx, F>, dl: &&&TargetDataLayout),
                             requires(LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()),
@@ -879,9 +882,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                             |&x: &FieldIdx| {
                                 let f = &fields[x];
                                 let field_size = f.size.bytes();
-                                // The three `map_or` calls' preconditions, stated before each call: the
-                                // first two are `proof_assert!`s; the third is assumed (fallback, open
-                                // goal), restore it without the `assume!` once the solver answers it.
+                                // The three `map_or` calls' preconditions, stated before each call: the first two are `proof_assert!`s;
+                                // the third is assumed (fallback, with fptprove): delete once the solver answers it. Proved in place, all 2 parts
+                                // of this site get no answer at 300 s with fptprove e74f0750b.
                                 let niche = f.largest_niche;
                                 let size_of_niche = thrust_macros::closure!(
                                     captures(dl: &&&TargetDataLayout),

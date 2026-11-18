@@ -32,6 +32,16 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup component add clippy
       - run: cargo clippy -- -D warnings
+  # Each fail root of tests/ui/fail/rustc_coroutine/ that a patch in tests/rustc_coroutine/fail/
+  # derives from a pass root must be what the patch gives; this needs no solver.
+  fail-twins:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - run: sh tests/rustc_coroutine/fail/check.sh
   # The ui tests that name a CoAR wrapper need the CoAR image built from fptprove, which CI does
   # not have; THRUST_UI_SKIP_COAR=1 skips them and runs the ones Z3 decides.
   test:
