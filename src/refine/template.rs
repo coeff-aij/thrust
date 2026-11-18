@@ -978,9 +978,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                 }
                 if def.is_enum() {
                     let sym = refine::datatype_symbol(self.tcx, def.did());
-                    if rty::int_range_mode() != rty::IntRange::Off {
-                        self.register_enum_def(def.did());
-                    }
+                    self.register_enum_def(def.did());
                     let args: IndexVec<_, _> =
                         params.types().map(|ty| m.enum_arg(self, ty)).collect();
                     rty::EnumType::new(sym, args).into()
