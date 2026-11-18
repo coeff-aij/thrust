@@ -1122,7 +1122,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// moved here (rewrite, rewrites.md R24), checked, with the four fields
     /// `univariant_biased_post` reads in its `ensures`. Its `requires` on `offsets`' length is
     /// established only in `univariant_biased_place`'s trusted body (`IndexVec::from_elem` over
-    /// `fields`, kept by `place_fields`' `ensures`), so it rests on that trust.
+    /// `fields`, kept by `place_fields`' `ensures`), so it rests on that trust. It stays a function:
+    /// in place, its code would sit in `univariant_biased_place`'s trusted body and go unchecked.
     #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
     #[thrust_macros::requires(offsets.len() == (*fields).len())]
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
@@ -1140,6 +1141,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         super::Primitive::size_in,
         super::FieldsShape::arbitrary_of
     )]
+    #[thrust::split_goals]
     fn univariant_biased_finish<
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
@@ -1163,81 +1165,16 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     where
         Cx: thrust_models::Model<Ty: PartialEq>,
     {
-        // Rewrite (rewrites.md R23): the backend representation and the unadjusted alignment
-        // by `backend_repr_of`, so that what the postcondition reads reaches the return without
-        // the joins of that code.
-        let (abi, unadjusted_abi_align) = self.backend_repr_of::<FieldIdx, VariantIdx, F>(
-            fields, repr, kind, &offsets, align, size, sized, unadjusted_abi_align,
+        // Rewrite (rewrites.md R23): a block contract on rustc's backend representation and
+        // unadjusted alignment, so that what the postcondition reads reaches the return without
+        // the joins of that code. Its `ensures` says nothing of them, which the postcondition
+        // does not read.
+        thrust_macros::block_requires!(
+            |self: &LayoutCalculator<Cx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind, offsets: IndexVec<FieldIdx, Size>|
+            Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind)
+            && offsets.len() == (*fields).len()
+            && Self::deref_functional::<FieldIdx, VariantIdx, F>()
         );
-        // Rewrite (rewrites.md R8): `!iter_all(it, |f| !p(f))` for `it.any(p)`.
-        let uninhabited = !crate::case_study::iter::iter_all(fields.iter(), |f| !f.is_uninhabited());
-
-
-        let seed = field_seed.wrapping_add(repr.field_shuffle_seed);
-
-        // Assumed (fallback, with fptprove): delete once the solver answers it. The goal is
-        // `layout_pre`'s `can_new` at 0, cut off at 300 s with 4 CPUs when checked here (a
-        // lemma from `layout_pre` does not change that). `VariantIdx::new(0)`'s requires.
-        thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)));
-        #[cfg(thrust_univariant_biased_reach = "variant_index")]
-        thrust_macros::proof_assert!(|kind: StructKind| false);
-        LayoutData {
-            variants: Variants::Single {
-                index: VariantIdx::new(0),
-            },
-            fields: FieldsShape::Arbitrary {
-                offsets,
-                in_memory_order,
-            },
-            backend_repr: abi,
-            largest_niche,
-            uninhabited,
-            align: AbiAlign::new(align),
-            size,
-            max_repr_align,
-            unadjusted_abi_align,
-            randomization_seed: seed,
-        }
-    }
-
-    /// The backend representation of `univariant_biased`'s layout and its unadjusted alignment:
-    /// the code `univariant_biased` runs after its size check, moved here (rewrite, rewrites.md
-    /// R23) so that the values its postcondition reads reach its return without this
-    /// code's joins. The body is checked; the contract says nothing of the result, which the
-    /// postcondition does not read.
-    #[thrust_macros::requires(Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind))]
-    #[thrust_macros::requires((*offsets).len() == (*fields).len())]
-    #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
-    #[thrust_macros::ensures(true)]
-    #[thrust::reveal(
-        LayoutCalculator::layout_pre,
-        LayoutCalculator::fits_in_any_order,
-        LayoutCalculator::weighs,
-        LayoutCalculator::unsized_misplaced,
-        LayoutCalculator::some_field_niche,
-        super::Primitive::size_in,
-        super::FieldsShape::arbitrary_of
-    )]
-    #[thrust::split_goals]
-    fn backend_repr_of<
-        'a,
-        FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
-    >(
-        &self,
-        fields: &IndexSlice<FieldIdx, F>,
-        repr: &ReprOptions,
-        kind: StructKind,
-        offsets: &IndexVec<FieldIdx, Size>,
-        align: Align,
-        size: Size,
-        sized: bool,
-        unadjusted_abi_align: Align,
-    ) -> (BackendRepr, Align)
-    where
-        Cx: thrust_models::Model<Ty: PartialEq>,
-    {
         let mut layout_of_single_non_zst_field = None;
         let mut abi = BackendRepr::Memory { sized };
 
@@ -1317,8 +1254,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         // The indexes `offsets[i]` and `offsets[j]`'s requires. They hold: `i` and `j` are
                         // positions of `iter_enumerated(fields)`, and `offsets` has as many entries as
                         // `fields` (the `requires`).
-                        thrust_macros::proof_assert!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
-                        thrust_macros::proof_assert!(|j: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets).len());
+                        thrust_macros::proof_assert!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
+                        thrust_macros::proof_assert!(|j: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < offsets.len());
                         #[cfg(thrust_univariant_biased_reach = "pair")]
                         thrust_macros::proof_assert!(|kind: StructKind| false);
                         let ((i, a), (j, b)) = if offsets[i] < offsets[j] {
@@ -1360,8 +1297,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         // many entries as `fields` (the `requires`), and `FieldIdx::new(0)` is in range.
                         // The bound of `offsets[i]` is assumed (fallback, with fptprove: delete once the
                         // solver answers it); the others are checked.
-                        thrust_macros::assume!(|i: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < (*offsets).len());
-                        thrust_macros::proof_assert!(|j: FieldIdx, offsets: &IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < (*offsets).len());
+                        thrust_macros::assume!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
+                        thrust_macros::proof_assert!(|j: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < offsets.len());
                         thrust_macros::proof_assert!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <FieldIdx as Idx>::can_new(z)));
                         let k0 = FieldIdx::new(0);
                         thrust_macros::proof_assert!(|kind: StructKind| forall(|z: USize| z == 1usize ==> <FieldIdx as Idx>::can_new(z)));
@@ -1392,43 +1329,43 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         } else {
             unadjusted_abi_align
         };
-        (abi, unadjusted_abi_align)
-    }
+        thrust_macros::block_ensures!(|abi: BackendRepr, unadjusted_abi_align: Align| true);
+        // Rewrite (rewrites.md R8): `!iter_all(it, |f| !p(f))` for `it.any(p)`.
+        let uninhabited = !crate::case_study::iter::iter_all(fields.iter(), |f| !f.is_uninhabited());
 
-    /// Pads the offset to the field's alignment and raises the struct's alignment to it: the
-    /// offset grows by less than the alignment's bytes, and the struct's alignment's bytes by at
-    /// most them.
-    #[thrust_macros::requires((*offset).raw <= 4611686018427387904u64)]
-    #[thrust_macros::ensures((*offset).raw <= (!offset).raw && (!offset).raw < (*offset).raw + 9223372036854775808u64)]
-    #[thrust_macros::ensures(forall(|q: USize, q2: USize, qa: USize|
-        !(q == (*align).pow2 && q2 == (!align).pow2 && qa == field_align.abi.pow2)
-        || ((!offset).raw < (*offset).raw + pow2(qa) && pow2(q2) <= pow2(q) + pow2(qa))))]
-    fn align_step(offset: &mut Size, align: &mut Align, field_align: AbiAlign) {
-        let aligned = (*offset).align_to(field_align.abi);
-        thrust_macros::proof!(aligned_within(*offset, field_align.abi, aligned));
-        thrust_macros::proof!(pow2_pos((*align).pow2 as u64));
-        thrust_macros::proof!(pow2_pos(field_align.abi.pow2 as u64));
-        *offset = aligned;
-        *align = (*align).max(field_align.abi);
-    }
 
-    /// The write of a field's offset in `univariant_biased`'s field loop.
-    #[thrust_macros::requires(forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || j < (*offsets).len()))]
-    #[thrust_macros::ensures((!offsets).len() == (*offsets).len())]
-    #[thrust_macros::ensures(forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || (!offsets)[j] == value))]
-    #[thrust_macros::ensures(forall(|j: USize|
-        !(0 <= j && j < (*offsets).len() && !<FieldIdx as Idx>::index_is(i, j)) || (!offsets)[j] == (*offsets)[j]))]
-    fn set_offset<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
-        offsets: &mut IndexVec<FieldIdx, Size>,
-        i: FieldIdx,
-        value: Size,
-    ) {
-        offsets[i] = value;
+        let seed = field_seed.wrapping_add(repr.field_shuffle_seed);
+
+        // Assumed (fallback, with fptprove): delete once the solver answers it. The goal is
+        // `layout_pre`'s `can_new` at 0, cut off at 300 s with 4 CPUs when checked here (a
+        // lemma from `layout_pre` does not change that). `VariantIdx::new(0)`'s requires.
+        thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)));
+        #[cfg(thrust_univariant_biased_reach = "variant_index")]
+        thrust_macros::proof_assert!(|kind: StructKind| false);
+        LayoutData {
+            variants: Variants::Single {
+                index: VariantIdx::new(0),
+            },
+            fields: FieldsShape::Arbitrary {
+                offsets,
+                in_memory_order,
+            },
+            backend_repr: abi,
+            largest_niche,
+            uninhabited,
+            align: AbiAlign::new(align),
+            size,
+            max_repr_align,
+            unadjusted_abi_align,
+            randomization_seed: seed,
+        }
     }
 
     /// The niche choice of `univariant_biased`'s field loop for `field` placed at `offset`: the
     /// chosen niche ends by the field's end; it stays when the field has none and is never
-    /// dropped, and with `End` the field's niche is taken while none has been.
+    /// dropped, and with `End` the field's niche is taken while none has been. It stays a function
+    /// (rewrites.md R18): in place under a block contract, `place_field` has to reveal
+    /// `niche_ends_by`, and four of its goals after the niche choice get no answer at 300 s.
     #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
         !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) || Self::field_wf::<FieldIdx, VariantIdx>(**d, *dl)))]
@@ -1554,12 +1491,56 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // `pack` only lowers the alignment, so its bytes stay within the field's.
         thrust_macros::proof!(pow2_mono(field_align.abi.pow2 as u64, field.align.abi.pow2 as u64));
         let before = *offset;
-        Self::align_step(offset, align, field_align);
+        // Rewrite (rewrites.md R18): a block contract on rustc's padding to the field's alignment
+        // and the struct alignment's maximum, which the rest of the body reads in place of the
+        // results of `align_to` and `max`: the offset grows by less than the alignment's bytes,
+        // and the struct's alignment's bytes by at most them.
+        let offset_before = thrust_macros::ghost!(|offset: &mut Size| -> Size { *offset });
+        let align_before = thrust_macros::ghost!(|align: &mut Align| -> Align { *align });
+        thrust_macros::block_requires!(
+            |offset: &mut Size, align: &mut Align,
+             offset_before: thrust_models::Ghost<Size>, align_before: thrust_models::Ghost<Align>|
+            offset_before == *offset && align_before == *align
+            && (*offset).raw <= 4611686018427387904u64
+        );
+        let aligned = (*offset).align_to(field_align.abi);
+        thrust_macros::proof!(aligned_within(*offset, field_align.abi, aligned));
+        thrust_macros::proof!(pow2_pos((*align).pow2 as u64));
+        thrust_macros::proof!(pow2_pos(field_align.abi.pow2 as u64));
+        *offset = aligned;
+        *align = (*align).max(field_align.abi);
+        thrust_macros::block_ensures!(
+            |offset: &mut Size, align: &mut Align, field_align: AbiAlign,
+             offset_before: thrust_models::Ghost<Size>, align_before: thrust_models::Ghost<Align>|
+            offset_before.raw <= (*offset).raw && (*offset).raw < offset_before.raw + 9223372036854775808u64
+            && forall(|q: USize, q2: USize, qa: USize|
+                !(q == align_before.pow2 && q2 == (*align).pow2 && qa == field_align.abi.pow2)
+                || ((*offset).raw < offset_before.raw + pow2(qa) && pow2(q2) <= pow2(q) + pow2(qa)))
+        );
         thrust_macros::proof!(niche_ends_later(&*largest_niche, dl, before, *offset));
         *max_repr_align = (*max_repr_align).max(field.max_repr_align);
 
         // debug!("univariant offset: {:?} field: {:#?}", offset, field);
-        Self::set_offset::<FieldIdx>(offsets, i, *offset);
+        // Rewrite (rewrites.md R18): a block contract on rustc's write of the offset, which the
+        // rest of the body reads in place of the result of `index_mut`. The assignment evaluates
+        // `*offset` before the place, as the call evaluated its argument before the body.
+        let offsets_before = thrust_macros::ghost!(|offsets: &mut IndexVec<FieldIdx, Size>| -> IndexVec<FieldIdx, Size> {
+            *offsets
+        });
+        thrust_macros::block_requires!(
+            |offsets: &mut IndexVec<FieldIdx, Size>, i: FieldIdx, offsets_before: thrust_models::Ghost<IndexVec<FieldIdx, Size>>|
+            offsets_before == *offsets
+            && forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || j < (*offsets).len())
+        );
+        offsets[i] = *offset;
+        thrust_macros::block_ensures!(
+            |offsets: &mut IndexVec<FieldIdx, Size>, i: FieldIdx, offset: &mut Size,
+             offsets_before: thrust_models::Ghost<IndexVec<FieldIdx, Size>>|
+            (*offsets).len() == offsets_before.len()
+            && forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || (*offsets)[j] == *offset)
+            && forall(|j: USize|
+                !(0 <= j && j < offsets_before.len() && !<FieldIdx as Idx>::index_is(i, j)) || (*offsets)[j] == offsets_before[j])
+        );
 
         Self::offer_niche::<FieldIdx, VariantIdx, F>(largest_niche, largest_niche_available, field, *offset, niche_bias, dl);
 

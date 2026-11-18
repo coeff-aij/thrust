@@ -4,7 +4,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off --cfg 'thrust_univariant_biased_reach="pair_condition"'
 //@no-rustfix
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::univariant_biased,rustc_abi::layout::LayoutCalculator::backend_repr_of,rustc_abi::layout::LayoutCalculator::univariant_biased_finish,rustc_abi::layout::as_local,case_study::iter::iter_enumerated_trusted
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::univariant_biased,rustc_abi::layout::LayoutCalculator::univariant_biased_finish,rustc_abi::layout::as_local,case_study::iter::iter_enumerated_trusted
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1 THRUST_CALL_RESULT_DIRECT=1
 // A reachability twin of the fallback's `univariant_biased.rs`: with `cfg(thrust_univariant_biased_reach = "pair_condition")`
 // `univariant_biased` asserts `false` right after the assumptions at that point, so the twin is

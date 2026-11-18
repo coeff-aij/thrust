@@ -306,7 +306,6 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
         sig: &host_sig,
         outer: outer.as_ref(),
         injected: false,
-        self_used: false,
     };
     if let Some(body) = func.block_mut() {
         injector.visit_block_mut(body);
@@ -319,10 +318,11 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
         Some(outer) => crate::FormulaFnTypeLowering::with_outer_context(&host_sig, outer),
         None => crate::FormulaFnTypeLowering::new(&host_sig),
     };
+    // In a trait these include `Self`'s, a type parameter there. In an impl `Self` is the impl's
+    // type, whose `Model` the impl's own predicates give: a `Self: Model` here would shadow the
+    // `Model` impl, so that `<Self as Model>::Ty` no longer normalizes in the function and its
+    // formulas read `Self` at a sort of its own.
     let mut predicates = type_lowering.model_where_predicates();
-    if injector.self_used {
-        predicates.extend(type_lowering.model_where_predicates_for(&quote::format_ident!("Self")));
-    }
     let in_trait_impl =
         matches!(&outer, Some(FnOuterItem::ItemImpl(item_impl)) if item_impl.trait_.is_some());
     if !in_trait_impl {
@@ -349,7 +349,6 @@ pub(crate) fn inject_into_expr(sig: &Signature, outer: Option<&FnOuterItem>, exp
         sig,
         outer,
         injected: false,
-        self_used: false,
     };
     injector.visit_expr_mut(expr);
 }
@@ -358,7 +357,6 @@ struct ContextInjector<'a> {
     sig: &'a Signature,
     outer: Option<&'a FnOuterItem>,
     injected: bool,
-    self_used: bool,
 }
 
 impl ContextInjector<'_> {
@@ -397,9 +395,6 @@ impl VisitMut for ContextInjector<'_> {
             return;
         }
         self.injected = true;
-        if crate::tokens_contain_ident(&mac.tokens, "Self") {
-            self.self_used = true;
-        }
         mac.tokens = self.inject_context(&mac.tokens);
         mac.path = with_context;
     }
