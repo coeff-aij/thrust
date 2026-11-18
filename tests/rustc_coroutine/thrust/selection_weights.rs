@@ -10,6 +10,7 @@ use crate::thrust_models;
 use thrust_models::model::{Array, Int, Seq};
 use thrust_models::{exists, forall};
 
+use crate::case_study::counts::acc_cnt;
 use crate::case_study::lemmas::occ;
 use crate::case_study::weights::{weight_all_below, weight_below, weight_first, weight_at, weight_l0, weight_l3, weight_of_le};
 use thrust_models::Ghost;
@@ -331,4 +332,56 @@ pub fn sel_list_disjoint<J: Idx + thrust_models::Model, L: Idx + thrust_models::
     occ_sel_once::<J, L, K, T>(m);
     occ_sel_class::<J, L, K, T>(m);
     occ_list_class::<L, T>(c);
+}
+
+/// There are at most `k` entries of one class among the first `k` entries of a list.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|fields: Seq<<L as thrust_models::Model>::Ty>, a: Seq<<T as thrust_models::Model>::Ty>, e: <T as thrust_models::Model>::Ty|
+    acc_cnt::<J, L, K, T>(fields, a, e, k) <= k))]
+pub fn acc_cnt_le<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(k: usize) {
+    if k > 0 {
+        acc_cnt_le::<J, L, K, T>(k - 1);
+    }
+}
+
+/// `sel_list_le` for every position count up to `k`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(forall(|j: Int| !(0 <= j && j < c) || L::index_logic(p[j]) < n))]
+#[thrust_macros::requires(forall(|x: Int| !(0 <= x && x < n) || 0 <= ts[x]))]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>, m: USize|
+    !(m <= k
+        && forall(|x: USize| occ_sel::<J, L>(x, vf, f, m) + occ::<L>(x, p, c) <= 1)
+        && forall(|j: Int| !(0 <= j && j < m) || L::index_logic(vf[f[j]]) < n))
+        || wat_sel::<J, L>(ts, vf, f, m) + weight_at::<L>(ts, p, c) <= weight_first(ts, n)))]
+pub fn sel_list_le_upto<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(
+    ts: Ghost<Seq<Int>>,
+    p: Ghost<IndexVec<u32, L>>,
+    c: usize,
+    n: usize,
+    k: usize,
+) {
+    if k > 0 {
+        sel_list_le_upto::<J, L>(ts, p, c, n, k - 1);
+    }
+    sel_list_le::<J, L>(ts, p, c, k, n);
+}
+
+/// `sel_list_disjoint` for every position count up to `k`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>,
+        a: Seq<<T as thrust_models::Model>::Ty>, e: <T as thrust_models::Model>::Ty,
+        p: Seq<<L as thrust_models::Model>::Ty>, m: USize, x: USize|
+    !(m <= k
+        && sel_ok::<J, L, K, T>(vf, f, a, e, m)
+        && forall(|j: Int| !(0 <= j && j < c) || !(a[L::index_logic(p[j])] == e))
+        && occ::<L>(x, p, c) <= 1)
+        || occ_sel::<J, L>(x, vf, f, m) + occ::<L>(x, p, c) <= 1))]
+pub fn sel_list_disjoint_upto<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(c: usize, k: usize) {
+    if k > 0 {
+        sel_list_disjoint_upto::<J, L, K, T>(c, k - 1);
+    }
+    sel_list_disjoint::<J, L, K, T>(k, c);
 }

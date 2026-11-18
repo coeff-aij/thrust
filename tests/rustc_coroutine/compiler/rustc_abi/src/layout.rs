@@ -211,6 +211,28 @@ pub(crate) fn weight_total_of_selection<F: Weighted, J: Idx + thrust_models::Mod
     }
 }
 
+/// `weight_total_of_selection` for every position count up to `k`.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(n <= l.len())]
+#[thrust_macros::ensures(forall(|fs: Seq<<F as thrust_models::Model>::Ty>, vf: Seq<<L as thrust_models::Model>::Ty>, f: crate::thrust_models::model::Array<Int, Int>, m: USize|
+    !(m <= k && m <= fs.len()
+        && forall(|j: Int| !(0 <= j && j < m)
+            || (fs[j] == l[L::index_logic(vf[f[j]])] && L::index_logic(vf[f[j]]) < n)))
+        || sum_first(weight_seq::<F>(fs, m), m)
+            == crate::case_study::selection_weights::wat_sel::<J, L>(weight_seq::<F>(l, n), vf, f, m)))]
+pub(crate) fn weight_total_of_selection_upto<F: Weighted, J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(
+    l: Ghost<Seq<<F as thrust_models::Model>::Ty>>,
+    n: usize,
+    k: usize,
+) {
+    if k > 0 {
+        weight_total_of_selection_upto::<F, J, L>(l, n, k - 1);
+    }
+    weight_total_of_selection::<F, J, L>(l, n, k);
+}
+
 /// A list pushed with one more field keeps the weights of its first `k` fields.
 #[thrust_macros::context]
 #[thrust_macros::lemma]
