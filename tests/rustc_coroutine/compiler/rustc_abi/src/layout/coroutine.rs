@@ -2685,6 +2685,12 @@ pub fn layout<
     let picked = promote_locals(calc, &mut prefix_layouts, tag_layout, &ineligible_locals, local_layouts);
     // Rewrite (rewrites.md R13): the `repr` argument is bound to a name, for the `assume!`.
     let repr = ReprOptions::default();
+    // The twin of the proofs that replace the two `assume!`s below (fail root
+    // layout_proofs_need_premises.rs): a `repr` with an alignment falsifies the premise
+    // `(*repr).align == None` of `prefix_fits_in_any_order` and of `variant_weights_ok_of`, so
+    // neither call is provable and a context in which the proofs held vacuously would be refuted.
+    #[cfg(thrust_layout_proofs_fail)]
+    let repr = ReprOptions { align: Some(Align::ONE), ..repr };
     // `univariant`'s `fits_in_any_order` for the prefix. rustc's code makes it true under
     // `layout()`'s size bound: the prefix's fields are the entry `prefix_layouts`, the tag's layout
     // and the promoted locals, which are distinct locals (the set's members, each yielded once),
