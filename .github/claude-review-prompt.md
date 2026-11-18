@@ -80,6 +80,10 @@ speculative code, modes nothing uses, scaffolding from development, comments and
 the change made stale? Do names and APIs follow the codebase and Rust conventions? You see the
 large changed files only around their changes; when you suspect duplication with code not shown, say where to look.
 
+A change that adds or extends a feature states in its description which existing functions it checked
+(`scripts/similar_functions.py`, `AGENTS.md`) and what it reused or merged; when the description says
+nothing or the change still copies a near-identical function, raise it as a `check`.
+
 Names the change adds or renames follow `AGENTS.md` (Names). Raise one as a `suggestion`, with a
 name that states the purpose, when a reader cannot tell from it what the thing is for: it names
 only a technique, an internal analogy, or an abbreviation the codebase does not already use. This
