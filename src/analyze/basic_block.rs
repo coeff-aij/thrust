@@ -137,15 +137,20 @@ pub fn formula_marker_call<'tcx>(
     Some((marker, formula_def_id, generic_args))
 }
 
-/// The prefix of the name of the type parameter a formula function declares for a closure local
-/// its `proof_assert!` or `assume!` names as `|f: _|`
-/// (`thrust-macros/src/formula_fn_lifting.rs`); the rest of the name is the local's.
+/// The prefix of the name of a type parameter a formula function declares for a closure type its
+/// `proof_assert!` or `assume!` leaves to a local: a `_` in a written parameter type, or a type
+/// parameter declared before the closure (`thrust-macros/src/formula_fn_lifting.rs`).
 const ELIDED_CLOSURE_LOCAL_PREFIX: &str = "__ThrustClosureOf_";
 
+pub fn is_closure_local_param(param: &mir_ty::GenericParamDef) -> bool {
+    param.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX)
+}
+
 /// `generic_args` of the formula function `formula_def_id` of a `proof_assert!` or `assume!` at
-/// `scope`, with the type argument of each closure local named `|f: _|` taken from that local:
-/// a closure's type cannot be written, so the marker call gives a placeholder there, as a
-/// Creusot or Verus specification names a closure through its value.
+/// `scope`, with each type argument the formula leaves to a local taken from that local's type:
+/// a closure's type cannot be written, so the marker call gives a placeholder there, and the
+/// written type of each parameter is matched against the type of the local it names, as rustc
+/// infers the `_` of a Creusot or Verus assertion written in the body.
 pub fn resolve_closure_local_args<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     body: &mir::Body<'tcx>,
@@ -155,46 +160,246 @@ pub fn resolve_closure_local_args<'tcx>(
     generic_args: mir_ty::GenericArgsRef<'tcx>,
 ) -> mir_ty::GenericArgsRef<'tcx> {
     let tcx = ctx.tcx();
-    let mut args: Vec<mir_ty::GenericArg<'tcx>> = generic_args.to_vec();
-    for param in &tcx.generics_of(formula_def_id.to_def_id()).own_params {
-        let Some(var) = param
-            .name
-            .as_str()
-            .strip_prefix(ELIDED_CLOSURE_LOCAL_PREFIX)
-        else {
+    let def_id = formula_def_id.to_def_id();
+    let holes: Vec<&mir_ty::GenericParamDef> = tcx
+        .generics_of(def_id)
+        .own_params
+        .iter()
+        .filter(|param| is_closure_local_param(param))
+        .collect();
+    if holes.is_empty() {
+        return generic_args;
+    }
+    let mut matcher = ClosureLocalMatcher {
+        tcx,
+        closure_model: ctx.def_ids().closure_model(),
+        bound: HashMap::new(),
+    };
+    let inputs = tcx
+        .fn_sig(def_id)
+        .instantiate_identity()
+        .skip_binder()
+        .inputs();
+    for (ident, &input) in tcx.fn_arg_idents(def_id).iter().zip(inputs) {
+        let Some(var) = ident.map(|ident| ident.name) else {
             continue;
         };
-        let var = rustc_span::Symbol::intern(var);
-        let tys: Vec<mir_ty::Ty<'tcx>> = bindings_in_scope(body, var, scope)
-            .into_iter()
-            .filter_map(|vdi| match &vdi.value {
-                mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
-                    Some(body.local_decls[place.local].ty)
-                }
-                _ => None,
-            })
-            .collect();
-        let Some(&ty) = tys.first().filter(|ty| tys.iter().all(|t| t == *ty)) else {
-            let is_capture = bindings_in_scope(body, var, scope).iter().any(|vdi| {
-                matches!(&vdi.value, mir::VarDebugInfoContents::Place(place) if !place.projection.is_empty())
-            });
-            let why = if is_capture {
-                "a variable this closure captures, which `_` does not name: bind it to a local first"
-            } else {
-                "not one live variable here"
-            };
-            tcx.dcx()
-                .span_fatal(span, format!("`{var}: _` names `{var}`, which is {why}"));
-        };
-        if !ty.is_closure() {
+        if !matcher.has_hole(input) {
+            continue;
+        }
+        let local_ty = closure_local_ty(body, var, scope).unwrap_or_else(|why| {
             tcx.dcx().span_fatal(
                 span,
-                format!("`{var}: _` stands for a closure's type, but `{var}` has the type `{ty}`; write the type of `{var}`"),
-            );
+                format!("`{var}` has a type left to its local (`_` or a type parameter of the formula), but `{var}` is {why}"),
+            )
+        });
+        if let Err(msg) = matcher.match_ty(written_ty(input), local_ty) {
+            tcx.dcx()
+                .span_fatal(span, format!("in the type of `{var}`: {msg}"));
         }
+    }
+    let mut args: Vec<mir_ty::GenericArg<'tcx>> = generic_args.to_vec();
+    for param in holes {
+        let Some(&ty) = matcher.bound.get(&param.index) else {
+            tcx.dcx().span_fatal(
+                span,
+                format!("`{}` occurs in no parameter's type", hole_name(param.name)),
+            );
+        };
         args[param.index as usize] = ty.into();
     }
-    tcx.mk_args(&args)
+    let args = tcx.mk_args(&args);
+    check_closure_local_bounds(tcx, body, span, def_id, args);
+    args
+}
+
+/// The type of the local `var` names in `scope`, or why it names none.
+fn closure_local_ty<'tcx>(
+    body: &mir::Body<'tcx>,
+    var: rustc_span::Symbol,
+    scope: mir::SourceScope,
+) -> Result<mir_ty::Ty<'tcx>, &'static str> {
+    let bindings = bindings_in_scope(body, var, scope);
+    let tys: Vec<mir_ty::Ty<'tcx>> = bindings
+        .iter()
+        .filter_map(|vdi| match &vdi.value {
+            mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
+                Some(body.local_decls[place.local].ty)
+            }
+            _ => None,
+        })
+        .collect();
+    if let Some(&ty) = tys.first().filter(|ty| tys.iter().all(|t| t == *ty)) {
+        return Ok(ty);
+    }
+    let is_capture = bindings.iter().any(|vdi| {
+        matches!(&vdi.value, mir::VarDebugInfoContents::Place(place) if !place.projection.is_empty())
+    });
+    if is_capture {
+        Err("a variable this closure captures, whose type is not left to it: bind it to a local first")
+    } else {
+        Err("not one live variable here")
+    }
+}
+
+/// The type written for a parameter of a formula function, which lowers it to
+/// `<T as Model>::Ty`.
+fn written_ty(input: mir_ty::Ty<'_>) -> mir_ty::Ty<'_> {
+    match input.kind() {
+        mir_ty::TyKind::Alias(mir_ty::AliasTyKind::Projection, alias) => alias.self_ty(),
+        _ => input,
+    }
+}
+
+/// The name a type parameter left to a local is written with: `_`, or the declared one.
+fn hole_name(name: rustc_span::Symbol) -> String {
+    let rest = name
+        .as_str()
+        .strip_prefix(ELIDED_CLOSURE_LOCAL_PREFIX)
+        .unwrap_or_default();
+    if rest.starts_with(|c: char| c.is_ascii_digit()) {
+        "_".to_owned()
+    } else {
+        rest.to_owned()
+    }
+}
+
+/// Rejects a closure that does not meet a bound the formula declares for the type parameter it
+/// stands for: rustc checked the formula only at the placeholder, and it is translated at the
+/// closure's type.
+fn check_closure_local_bounds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mir::Body<'tcx>,
+    span: rustc_span::Span,
+    formula_def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+) {
+    use rustc_infer::infer::TyCtxtInferExt as _;
+    use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
+    use rustc_trait_selection::traits::{Obligation, ObligationCause};
+
+    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, body.source.def_id());
+    let (infcx, param_env) = tcx.infer_ctxt().build_with_typing_env(typing_env);
+    for &(clause, _) in tcx.predicates_of(formula_def_id).predicates {
+        let self_ty = match clause.kind().skip_binder() {
+            mir_ty::ClauseKind::Trait(pred) => pred.self_ty(),
+            mir_ty::ClauseKind::Projection(pred) => pred.self_ty(),
+            _ => continue,
+        };
+        let mir_ty::TyKind::Param(hole) = self_ty.kind() else {
+            continue;
+        };
+        if !hole.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX) {
+            continue;
+        }
+        let clause = mir_ty::EarlyBinder::bind(clause).instantiate(tcx, args);
+        let obligation = Obligation::new(tcx, ObligationCause::dummy(), param_env, clause);
+        if infcx.predicate_must_hold_modulo_regions(&obligation) {
+            continue;
+        }
+        tcx.dcx().span_fatal(
+            span,
+            format!(
+                "`{}` stands for `{}`, which does not meet its bound: `{clause}` does not hold",
+                hole_name(hole.name),
+                args.type_at(hole.index as usize),
+            ),
+        );
+    }
+}
+
+/// Matches a written type against a local's type, binding each type parameter left to the
+/// local to the closure type at its position.
+struct ClosureLocalMatcher<'tcx> {
+    tcx: TyCtxt<'tcx>,
+    closure_model: Option<DefId>,
+    bound: HashMap<u32, mir_ty::Ty<'tcx>>,
+}
+
+impl<'tcx> ClosureLocalMatcher<'tcx> {
+    fn hole(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::ParamTy> {
+        match ty.kind() {
+            mir_ty::TyKind::Param(param)
+                if param.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX) =>
+            {
+                Some(*param)
+            }
+            _ => None,
+        }
+    }
+
+    fn has_hole(&self, ty: mir_ty::Ty<'tcx>) -> bool {
+        ty.walk()
+            .any(|arg| arg.as_type().is_some_and(|ty| self.hole(ty).is_some()))
+    }
+
+    /// Matches `written` against `actual` where `written` has a hole; a part without one is
+    /// rustc's to check.
+    fn match_ty(
+        &mut self,
+        written: mir_ty::Ty<'tcx>,
+        actual: mir_ty::Ty<'tcx>,
+    ) -> Result<(), String> {
+        if !self.has_hole(written) {
+            return Ok(());
+        }
+        if let Some(param) = self.hole(written) {
+            return self.bind(param, actual);
+        }
+        use mir_ty::TyKind;
+        match (written.kind(), actual.kind()) {
+            // A closure written at the top of a type, behind a reference or in a tuple is lowered
+            // to its model `Closure<F>`.
+            (TyKind::Adt(def, args), _) if Some(def.did()) == self.closure_model => {
+                self.match_ty(args.type_at(0), actual)
+            }
+            (TyKind::Adt(wdef, wargs), TyKind::Adt(adef, aargs)) if wdef == adef => {
+                self.match_args(wargs, aargs)
+            }
+            (TyKind::Ref(_, w, wm), TyKind::Ref(_, a, am)) if wm == am => self.match_ty(*w, *a),
+            (TyKind::RawPtr(w, wm), TyKind::RawPtr(a, am)) if wm == am => self.match_ty(*w, *a),
+            (TyKind::Array(w, _), TyKind::Array(a, _)) | (TyKind::Slice(w), TyKind::Slice(a)) => {
+                self.match_ty(*w, *a)
+            }
+            (TyKind::Tuple(ws), TyKind::Tuple(as_)) if ws.len() == as_.len() => ws
+                .iter()
+                .zip(as_.iter())
+                .try_for_each(|(w, a)| self.match_ty(w, a)),
+            _ => Err(format!(
+                "the written type does not have the shape of `{}` there",
+                self.tcx.erase_regions(actual)
+            )),
+        }
+    }
+
+    fn match_args(
+        &mut self,
+        written: mir_ty::GenericArgsRef<'tcx>,
+        actual: mir_ty::GenericArgsRef<'tcx>,
+    ) -> Result<(), String> {
+        for (w, a) in written.iter().zip(actual.iter()) {
+            if let (Some(w), Some(a)) = (w.as_type(), a.as_type()) {
+                self.match_ty(w, a)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn bind(&mut self, param: mir_ty::ParamTy, actual: mir_ty::Ty<'tcx>) -> Result<(), String> {
+        let name = hole_name(param.name);
+        if !actual.is_closure() {
+            return Err(format!(
+                "`{name}` stands for a closure's type, but it has the type `{}` there; write that type",
+                self.tcx.erase_regions(actual)
+            ));
+        }
+        match self.bound.insert(param.index, actual) {
+            Some(previous) if previous != actual => Err(format!(
+                "`{name}` stands for two closures' types, `{previous}` and `{actual}`"
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// The debug entries of the variables the name `name` can stand for in `scope`: those of the
@@ -2475,7 +2680,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     ) {
         let owner = self.type_builder.owner_fn_id();
         for param in &self.tcx.generics_of(formula_def_id.to_def_id()).own_params {
-            if !param.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX) {
+            if !is_closure_local_param(param) {
                 continue;
             }
             let ty = generic_args.type_at(param.index as usize);

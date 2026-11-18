@@ -2406,7 +2406,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .generics_of(formula_def_id.to_def_id())
             .own_params
             .iter()
-            .any(|param| param.name.as_str().starts_with("__ThrustClosureOf_"))
+            .any(analyze::basic_block::is_closure_local_param)
         {
             self.ctx
                 .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
