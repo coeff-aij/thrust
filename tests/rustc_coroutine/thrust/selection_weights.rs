@@ -428,3 +428,16 @@ pub fn wat_sel_nonneg<J: Idx + thrust_models::Model, L: Idx + thrust_models::Mod
         wat_sel_nonneg::<J, L>(ts, n, m - 1);
     }
 }
+
+// The fail twin of the selection_weights root sets this cfg: `l3_sel` with its proof unchanged and a
+// sum one too large, refuted.
+#[cfg(thrust_selection_weights_fail)]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>|
+    wbelow_sel::<J, L>(ts, vf, f, m, b + 1) == wbelow_sel::<J, L>(ts, vf, f, m, b) + wof_sel::<J, L>(ts, vf, f, m, b) + 1))]
+pub fn l3_sel_off_by_one<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(m: usize, b: usize) {
+    if m > 0 {
+        l3_sel_off_by_one::<J, L>(m - 1, b);
+    }
+}
