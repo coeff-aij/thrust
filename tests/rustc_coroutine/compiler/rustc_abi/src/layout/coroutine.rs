@@ -1002,6 +1002,42 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
 }
 
 
+// The promoted locals as the existential `promote_locals` ensures: distinct members of the set below
+// n, and the weight of the new prefix as that of the entry fields, the tag and those locals.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    lemmas::distinct::<LocalIdx>(picked, picked.len())
+        && picked.len() == DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+        && forall(|j: USize| !(0 <= j && j < picked.len())
+            || (<LocalIdx as Idx>::index_logic(picked[j]) < (*local_layouts).len()
+                && DenseBitSet::<LocalIdx>::mem(*ineligible_locals, <LocalIdx as Idx>::index_logic(picked[j]))))
+        && super::weight_total::<FieldIdx, F>(&current)
+            == super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
+                + weights::weight_at::<LocalIdx>(super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), picked, picked.len())
+)]
+#[thrust_macros::ensures(exists(|p: Seq<<LocalIdx as thrust_models::Model>::Ty>|
+    lemmas::distinct::<LocalIdx>(p, p.len())
+        && p.len() == DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+        && forall(|j: USize| !(0 <= j && j < p.len())
+            || (<LocalIdx as Idx>::index_logic(p[j]) < (*local_layouts).len()
+                && DenseBitSet::<LocalIdx>::mem(*ineligible_locals, <LocalIdx as Idx>::index_logic(p[j]))))
+        && super::weight_total::<FieldIdx, F>(&current)
+            == super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
+                + weights::weight_at::<LocalIdx>(super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), p, p.len())))]
+fn promoted_selection_exists<
+    F: Copy + super::Weighted + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+>(
+    current: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    tag_layout: F,
+    picked: thrust_models::Ghost<IndexVec<u32, LocalIdx>>,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+    ineligible_locals: &DenseBitSet<LocalIdx>,
+) {
+}
+
 // The entries after the tag are layouts of `local_layouts`, as the set's members `picked` index
 // them.
 #[thrust_macros::lemma]
@@ -1269,6 +1305,15 @@ fn prefix_fits_in_any_order<
 )]
 #[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k <= (!prefix_layouts).len()) || <FieldIdx as Idx>::can_new(k)))]
 #[thrust_macros::ensures(layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &!prefix_layouts))]
+#[thrust_macros::ensures(exists(|p: Seq<<LocalIdx as thrust_models::Model>::Ty>|
+    lemmas::distinct::<LocalIdx>(p, p.len())
+        && p.len() == DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+        && forall(|j: USize| !(0 <= j && j < p.len())
+            || (<LocalIdx as Idx>::index_logic(p[j]) < (*local_layouts).len()
+                && DenseBitSet::<LocalIdx>::mem(*ineligible_locals, <LocalIdx as Idx>::index_logic(p[j]))))
+        && super::weight_total::<FieldIdx, F>(&!prefix_layouts)
+            == super::weight_total::<FieldIdx, F>(&*prefix_layouts) + F::weight_of(tag_layout)
+                + weights::weight_at::<LocalIdx>(super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), p, p.len())))]
 #[thrust_macros::context]
 #[thrust::split_goals]
 fn promote_locals<
@@ -1319,6 +1364,9 @@ fn promote_locals<
                     && DenseBitSet::<LocalIdx>::card(*ineligible_locals) <= (*local_layouts).len()
                     && forall(|k: USize|
                         0 <= k && k <= (*prefix_layouts.at_entry()).len() + 1 + (*local_layouts).len() ==> <FieldIdx as Idx>::can_new(k))
+                    && forall(|l: USize| !(iter_old.7[l] != 0) || DenseBitSet::<LocalIdx>::mem(*ineligible_locals, l))
+                    && forall(|j: USize| !(0 <= j && j < produced.len())
+                        || DenseBitSet::<LocalIdx>::mem(*ineligible_locals, <LocalIdx as Idx>::index_logic(picked[j])))
                     && iter_old.4 == (*ineligible_locals).0
                     && iter_old.5 == 0
                     && iter_old.6 == DenseBitSet::<LocalIdx>::card(*ineligible_locals)
@@ -1356,6 +1404,7 @@ fn promote_locals<
     thrust_macros::proof!(weights::weight_at_le_distinct(picked_ghost, ts, picked.len(), (*local_layouts).len()));
     let current_ghost = thrust_macros::ghost!(|current: &mut IndexVec<FieldIdx, F>| -> IndexVec<FieldIdx, F> { *current });
     thrust_macros::proof!(promoted_entries_exist(current_ghost, entry_ghost, picked_ghost, local_layouts));
+    thrust_macros::proof!(promoted_selection_exists(current_ghost, entry_ghost, tag_layout, picked_ghost, local_layouts, ineligible_locals));
     thrust_macros::proof!(layouts_wf_of_promoted::<F, FieldIdx, VariantIdx, LocalIdx, C>(calc, current_ghost, entry_ghost, tag_layout, picked_ghost, local_layouts));
 }
 
