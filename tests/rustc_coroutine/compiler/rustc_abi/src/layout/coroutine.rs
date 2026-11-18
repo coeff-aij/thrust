@@ -1055,6 +1055,143 @@ fn layouts_wf_of_promoted<
 ) {
 }
 
+// `weighs` of fields that no prefix and no `repr` alignment adds to is the weight of the fields and
+// the aggregate and `i8` alignments' bytes.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|fields: thrust_models::model::Seq<<F as thrust_models::Model>::Ty>, rp: ReprOptions, dl: TargetDataLayout, s: USize, qa: USize, qi: USize|
+    !(rp.align == None && qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2)
+        || (LayoutCalculator::<C>::weighs::<FieldIdx, VariantIdx, F>(&fields, &rp, StructKind::AlwaysSized, dl, s)
+            == (s == super::weight_total::<FieldIdx, F>(&fields) + pow2(qa) + pow2(qi)))))]
+#[thrust_macros::ensures(forall(|fields: thrust_models::model::Seq<<F as thrust_models::Model>::Ty>, rp: ReprOptions, dl: TargetDataLayout, qa: USize, qi: USize|
+    !(rp.align == None && qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2)
+        || exists(|s0: USize| s0 == super::weight_total::<FieldIdx, F>(&fields) + pow2(qa) + pow2(qi)
+            && LayoutCalculator::<C>::weighs::<FieldIdx, VariantIdx, F>(&fields, &rp, StructKind::AlwaysSized, dl, s0))))]
+#[thrust::reveal(LayoutCalculator::weighs)]
+fn weighs_always_sized<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    C: HasDataLayout,
+>() {
+}
+
+// `weighs` of fields after a prefix and without a `repr` alignment is the weight of the fields, the
+// prefix's size and twice its alignment's bytes, and the aggregate and `i8` alignments' bytes.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|fields: thrust_models::model::Seq<<F as thrust_models::Model>::Ty>, rp: ReprOptions, dl: TargetDataLayout, s: USize, ps: Size, pa: Align, qa: USize, qi: USize, q: USize|
+    !(rp.align == None && qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2 && q == pa.pow2)
+        || (LayoutCalculator::<C>::weighs::<FieldIdx, VariantIdx, F>(&fields, &rp, StructKind::Prefixed(ps, pa), dl, s)
+            == (s == super::weight_total::<FieldIdx, F>(&fields) + pow2(q) * 2 + ps.raw + pow2(qa) + pow2(qi)))))]
+#[thrust_macros::ensures(forall(|fields: thrust_models::model::Seq<<F as thrust_models::Model>::Ty>, rp: ReprOptions, dl: TargetDataLayout, ps: Size, pa: Align, qa: USize, qi: USize, q: USize|
+    !(rp.align == None && qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2 && q == pa.pow2)
+        || exists(|s0: USize| s0 == super::weight_total::<FieldIdx, F>(&fields) + pow2(q) * 2 + ps.raw + pow2(qa) + pow2(qi)
+            && LayoutCalculator::<C>::weighs::<FieldIdx, VariantIdx, F>(&fields, &rp, StructKind::Prefixed(ps, pa), dl, s0))))]
+#[thrust::reveal(LayoutCalculator::weighs)]
+fn weighs_prefixed<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    C: HasDataLayout,
+>() {
+}
+
+// The arithmetic of `variant_fits_of_weights`: with S_p the prefix's weighs sum (its weight wp and
+// the aggregate and `i8` alignments' bytes q), its size ps and its alignment's bytes pq below it,
+// and wp = we + wt + wpr (the entry fields, the tag, the promoted locals), a variant's fields of
+// weight wf, with wf + wpr <= wl, weigh below b when 3 (we + wt + wl + q) + q < b.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|wf: Int, wpr: Int, wl: Int, we: Int, wt: Int, wp: Int, ps: Int, pq: Int, q: Int, b: Int|
+    !(0 <= wf && 0 <= wpr && 0 <= we && 0 <= wt && 0 < q
+        && wf + wpr <= wl
+        && wp == we + wt + wpr
+        && ps < wp + q && pq <= wp + q
+        && 3 * (we + wt + wl + q) + q < b)
+        || wf + pq * 2 + ps + q < b))]
+fn variant_sum_below() {
+}
+
+// `variant_fits_wf` of a variant from the weights: the fields of a selection of the variant's
+// Assigned entries weigh, with the promoted locals, at most all of `local_layouts`
+// (`selection_weight_bound`, as `bound`), and the prefix after the promotion weighs the entry fields,
+// the tag and the promoted locals (`new_weight`). A variant's weighs sum is the weight of its fields
+// plus the prefix's size and twice its alignment's bytes, each below the prefix's weighs sum
+// (`univariant`'s `ensures`, as `prefix_below`), so it is below (selected) + 3 S_p + 2^qa + 2^qi
+// where S_p = the prefix's weight + 2^qa + 2^qi, which `layout()`'s size bound (as `size_bound`) keeps
+// below the object size bound.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
+        || exists(|b: USize, qa: USize, qi: USize|
+            qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+            && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
+            && 3 * (super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
+                    + super::weight_total::<LocalIdx, F>(local_layouts)
+                    + pow2(qa) + pow2(qi))
+                + pow2(qa) + pow2(qi) < b))
+)]
+#[thrust_macros::requires(
+    forall(|dl: TargetDataLayout, s: USize, q: USize|
+        C::dl_of(*calc, dl)
+            && LayoutCalculator::<C>::weighs::<FieldIdx, VariantIdx, F>(new, repr, StructKind::AlwaysSized, dl, s)
+            && q == prefix_align.abi.pow2 ==> (prefix_size.raw < s && pow2(q) <= s))
+)]
+#[thrust_macros::requires(
+    super::weight_total::<FieldIdx, F>(new)
+        == super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
+            + crate::case_study::weights::weight_at::<LocalIdx>(
+                super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), picked, c)
+)]
+#[thrust_macros::requires(
+    0 <= super::weight_total::<FieldIdx, F>(&entry) && 0 <= F::weight_of(tag_layout)
+        && 0 <= crate::case_study::weights::weight_at::<LocalIdx>(
+            super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), picked, c)
+        && (*repr).align == None
+)]
+#[thrust_macros::requires(
+    forall(|fs: thrust_models::model::Seq<<F as thrust_models::Model>::Ty>|
+        !counts::selection_of::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>, F>(
+            &fs, *vf, *assignments, SavedLocalEligibility::Assigned(index), local_layouts)
+            || (0 <= super::sum_first(super::weight_seq::<F>(fs, fs.len()), fs.len())
+                && super::sum_first(super::weight_seq::<F>(fs, fs.len()), fs.len())
+                    + crate::case_study::weights::weight_at::<LocalIdx>(
+                        super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), picked, c)
+                    <= super::weight_total::<LocalIdx, F>(local_layouts)))
+)]
+#[thrust_macros::ensures(
+    variant_fits_wf::<F, VariantIdx, FieldIdx, LocalIdx, C>(*calc, local_layouts, assignments, index, vf, prefix_size, prefix_align)
+)]
+#[thrust::reveal(variant_fits_wf, LayoutCalculator::fits_in_any_order)]
+fn variant_fits_of_weights<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    new: &IndexVec<FieldIdx, F>,
+    tag_layout: F,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    index: VariantIdx,
+    vf: &IndexVec<FieldIdx, LocalIdx>,
+    prefix_size: Size,
+    prefix_align: AbiAlign,
+    repr: &ReprOptions,
+    picked: thrust_models::Ghost<IndexVec<u32, LocalIdx>>,
+    c: usize,
+) {
+    weighs_always_sized::<F, VariantIdx, FieldIdx, C>();
+    weighs_prefixed::<F, VariantIdx, FieldIdx, C>();
+    variant_sum_below();
+}
+
 // `univariant`'s `fits_in_any_order` for the prefix of `layout()`: the prefix after the promotion
 // weighs at most the entry fields, the tag and all of `local_layouts` (`promote_locals`' `ensures`),
 // which the size bound of `layout()`'s `requires` keeps below the object size bound together with
