@@ -2244,6 +2244,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let (_, formula_def_id, generic_args) =
             analyze::basic_block::formula_marker_call(self.ctx, &self.body.local_decls, func, args)
                 .expect("an opening block ends in the marker call");
+        let generic_args = analyze::basic_block::resolve_closure_local_args(
+            self.ctx,
+            &self.body,
+            terminator.source_info.scope,
+            terminator.source_info.span,
+            formula_def_id,
+            generic_args,
+        );
         WrittenPrecondition {
             formula_def_id,
             generic_args,
@@ -2578,8 +2586,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let mut bty = self
                     .type_builder
                     .build_basic_block(&self.body, live_locals, ret_ty);
-                let requires =
-                    self.build_written_precondition(&self.block_requires_site(contract), &bty);
+                let site = self.block_requires_site(contract);
+                analyze::basic_block::register_closure_local_types(
+                    self.ctx,
+                    site.formula_def_id,
+                    site.generic_args,
+                    self.owner_fn_id,
+                );
+                let requires = self.build_written_precondition(&site, &bty);
                 bty.conjoin_precondition(requires);
                 self.ctx
                     .register_basic_block_ty_with_precondition(self.analysis_key(), bb, bty);
