@@ -13,7 +13,7 @@ use crate::rustc_index::bit_set::{ones, BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated};
 use crate::case_study::USize;
 use crate::case_study::{counts, lemmas};
-use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all, map_new_assumed};
+use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all};
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
 
@@ -2278,12 +2278,10 @@ pub fn layout<
     // `hist_inv` bounds `size` and `align`: nothing after the `collect` needs a bound, as
     // `Size::align_to` requires nothing (its body checked by the `values.rs` root) and `max`
     // neither.
-    // Fallback: through `map_new_assumed`, which assumes `Map::new`'s precondition (the map's
-    // `inv`), as the solver does not answer it; call `Map::new` again once it does. `collect`'s
-    // precondition, the same `inv`, is `map_new_assumed`'s `ensures`.
-    let variants = collect_index_vec_result::<VariantIdx, _, _, _>(map_new_assumed(
-        variant_iter,
-        thrust_macros::closure!(
+    // Fallback: `Map::new`'s precondition (the map's `inv`) assumed, as the solver does not
+    // answer it; drop the `assume!` once it does. `collect`'s precondition, the same `inv`, is
+    // `Map::new`'s `ensures`.
+    let variant_layout_of = thrust_macros::closure!(
         captures(
             calc: &mut &LayoutCalculator<C>,
             local_layouts: &mut &IndexSlice<LocalIdx, F>,
@@ -2324,8 +2322,14 @@ pub fn layout<
             // `ensures`.
             Ok(VariantLayout::from_layout(variant))
         },
-        ),
-    ))?;
+        );
+    thrust_macros::assume!(<P: FnMut((VariantIdx, &IndexVec<FieldIdx, LocalIdx>)) -> Result<VariantLayout<FieldIdx>, crate::rustc_abi::layout::LayoutCalculatorError<F>>>
+        |variant_iter: IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>>, variant_layout_of: P|
+        <IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>> as crate::IteratorSpec>::inv(variant_iter)
+            && Map::<IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>>, P>::reinitialize()
+            && Map::<IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>>, P>::preservation_inv(variant_iter, variant_layout_of)
+            && Map::<IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>>, P>::next_precondition(variant_iter, variant_layout_of));
+    let variants = collect_index_vec_result::<VariantIdx, _, _, _>(Map::new(variant_iter, variant_layout_of))?;
     // Reachability twin of the fallback's assumptions in this function (fail root
     // layout_reach_fallback.rs).
     #[cfg(thrust_layout_reach_fallback)]
