@@ -791,6 +791,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 // as `available` is never negative.
                 // Assumed (fallback, with fptprove): delete once the solver answers it. `Map::new`'s `requires`.
                 // Proved in place, all 4 parts of this site get no answer at 300 s with fptprove e74f0750b.
+                // Scoped as a block contract with the lemma `fields_ok_of_layout_pre`: one part of it gets no answer
+                // (the form is fork commit 5f12bc6d).
                 let field_iter = fields_excluding_tail.iter();
                 let niche_available = thrust_macros::closure!(
                     captures(dl: &&&TargetDataLayout),
@@ -860,7 +862,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     StructKind::AlwaysSized | StructKind::MaybeUnsized => {
                         // Assumed (fallback, with fptprove): delete once the solver answers it. `sort_by_key`'s `requires`.
                         // Proved in place, the 1 part of this site gets no answer at 300 s with fptprove
-                        // e74f0750b.
+                        // e74f0750b. Scoped as a block contract with the lemma `fields_ok_of_layout_pre`: one part of it
+                        // gets no answer (the form is fork commit 5f12bc6d).
                         let sort_key = thrust_macros::closure!(
                             captures(fields: &&IndexSlice<FieldIdx, F>, dl: &&&TargetDataLayout),
                             requires(LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()),
