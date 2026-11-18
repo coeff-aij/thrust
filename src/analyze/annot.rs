@@ -12,19 +12,19 @@ use crate::rty;
 /// segments: `attr` paths are `thrust::<name>` (attributes), `def` paths are
 /// `thrust::def::<name>` (items of the model, sequence, logic and marker library in std.rs).
 macro_rules! thrust_paths {
-    ($kind:ident; $($(#[$doc:meta])* $fn_name:ident = $ident:literal;)*) => {
+    ($kind:ident; $($(#[$doc:meta])* $fn_name:ident = $segment:literal;)*) => {
         $(
             $(#[$doc])*
             pub fn $fn_name() -> thrust_paths!(@ty $kind) {
-                thrust_paths!(@path $kind, $ident)
+                thrust_paths!(@path $kind, $segment)
             }
         )*
     };
     (@ty attr) => { [Symbol; 2] };
     (@ty def) => { [Symbol; 3] };
-    (@path attr, $ident:literal) => { [Symbol::intern("thrust"), Symbol::intern($ident)] };
-    (@path def, $ident:literal) => {
-        [Symbol::intern("thrust"), Symbol::intern("def"), Symbol::intern($ident)]
+    (@path attr, $segment:literal) => { [Symbol::intern("thrust"), Symbol::intern($segment)] };
+    (@path def, $segment:literal) => {
+        [Symbol::intern("thrust"), Symbol::intern("def"), Symbol::intern($segment)]
     };
 }
 
