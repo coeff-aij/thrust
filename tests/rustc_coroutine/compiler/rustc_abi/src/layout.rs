@@ -791,6 +791,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 // as `available` is never negative.
                 // Assumed (fallback, with fptprove): delete once the solver answers it. `Map::new`'s `requires`.
                 // Proved in place, all 4 parts of this site get no answer at 300 s with fptprove e74f0750b.
+                // Scoped as `block_requires!` (`layout_pre`, `dl_of`, the iterator's items being
+                // the fields, `niche_available`'s `requires` from the niche's `wf_in`) / `fields_ok_of_layout_pre` /
+                // `proof_assert!` / `block_ensures!` of the formula, 16 of the 17 parts it adds are `sat`
+                // within 2 s; the one for `preservation_inv` gets no answer at 300 s.
                 let field_iter = fields_excluding_tail.iter();
                 let niche_available = thrust_macros::closure!(
                     captures(dl: &&&TargetDataLayout),
@@ -860,7 +864,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     StructKind::AlwaysSized | StructKind::MaybeUnsized => {
                         // Assumed (fallback, with fptprove): delete once the solver answers it. `sort_by_key`'s `requires`.
                         // Proved in place, the 1 part of this site gets no answer at 300 s with fptprove
-                        // e74f0750b.
+                        // e74f0750b. Scoped as `block_requires!` (`layout_pre`, `dl_of`, `deref_functional`, the
+                        // indices of `optimizing` being field indices, `sort_key`'s `requires` from the niche's
+                        // `wf_in`) / `fields_ok_of_layout_pre` / `proof_assert!` / `block_ensures!` of the formula,
+                        // 6 of the 7 parts it adds are `sat` within 1 s; the other gets no answer at 300 s.
                         let sort_key = thrust_macros::closure!(
                             captures(fields: &&IndexSlice<FieldIdx, F>, dl: &&&TargetDataLayout),
                             requires(LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()),
