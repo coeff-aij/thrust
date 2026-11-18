@@ -3259,7 +3259,10 @@ fn subst_ty_params_in_formula<T, V>(formula: &mut chc::Formula<V>, subst: &TypeP
                 subst_ty_params_in_sort(sort, subst);
             }
         }
-        _ => {}
+        chc::Formula::Not(_)
+        | chc::Formula::And(_)
+        | chc::Formula::Or(_)
+        | chc::Formula::Implies(..) => {}
     }
     for f in formula.subformulas_mut() {
         subst_ty_params_in_formula(f, subst);
@@ -3288,7 +3291,23 @@ fn subst_ty_params_in_term<T, V>(term: &mut chc::Term<V>, subst: &TypeParamSubst
                 subst_ty_params_in_sort(arg, subst);
             }
         }
-        _ => {}
+        chc::Term::Null
+        | chc::Term::ForallDefault(_)
+        | chc::Term::Var(_)
+        | chc::Term::Bool(_)
+        | chc::Term::Int(_)
+        | chc::Term::String(_)
+        | chc::Term::Box(_)
+        | chc::Term::Mut(..)
+        | chc::Term::BoxCurrent(_)
+        | chc::Term::MutCurrent(_)
+        | chc::Term::MutFinal(_)
+        | chc::Term::App(..)
+        | chc::Term::Tuple(_)
+        | chc::Term::TupleProj(..)
+        | chc::Term::DatatypeDiscr(..)
+        | chc::Term::ForallFn(..)
+        | chc::Term::IntToBitVec { .. } => {}
     }
     for t in term.subterms_mut() {
         subst_ty_params_in_term(t, subst);

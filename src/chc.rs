@@ -385,7 +385,18 @@ impl Sort {
     pub fn subst_forall(&self, f: &impl Fn(ForallSortIdx) -> Option<Sort>) -> Sort {
         match self {
             Sort::Forall(idx) => f(*idx).unwrap_or_else(|| self.clone()),
-            _ => self.clone().map_children(|s| s.subst_forall(f)),
+            Sort::Null
+            | Sort::Int
+            | Sort::BitVec { .. }
+            | Sort::Bool
+            | Sort::String
+            | Sort::Param(_)
+            | Sort::Box(_)
+            | Sort::Mut(_)
+            | Sort::Seq(_)
+            | Sort::Tuple(_)
+            | Sort::Array(..)
+            | Sort::Datatype(_) => self.clone().map_children(|s| s.subst_forall(f)),
         }
     }
 
@@ -1092,7 +1103,31 @@ impl<V> Term<V> {
     fn fv_impl(&self) -> Box<dyn Iterator<Item = &V> + '_> {
         match self {
             Term::Var(v) => Box::new(std::iter::once(v)),
-            _ => Box::new(self.subterms().into_iter().flat_map(|t| t.fv_impl())),
+            Term::Null
+            | Term::ForallDefault(_)
+            | Term::Bool(_)
+            | Term::Int(_)
+            | Term::String(_)
+            | Term::Box(_)
+            | Term::Mut(..)
+            | Term::BoxCurrent(_)
+            | Term::MutCurrent(_)
+            | Term::MutFinal(_)
+            | Term::App(..)
+            | Term::ArrayEmpty(..)
+            | Term::SeqEmpty(_)
+            | Term::Tuple(_)
+            | Term::TupleProj(..)
+            | Term::DatatypeCtor(..)
+            | Term::DatatypeDiscr(..)
+            | Term::DatatypeSelector(..)
+            | Term::UserDefinedFn(..)
+            | Term::ForallFn(..)
+            | Term::IntToBitVec { .. }
+            | Term::UserQuantifiedVar(..)
+            | Term::ArrayLambda(..) => {
+                Box::new(self.subterms().into_iter().flat_map(|t| t.fv_impl()))
+            }
         }
     }
 
@@ -2665,7 +2700,12 @@ impl<V> Formula<V> {
     fn fv_impl(&self) -> Box<dyn Iterator<Item = &V> + '_> {
         match self {
             Formula::Atom(atom) => Box::new(atom.fv()),
-            _ => Box::new(self.subformulas().into_iter().flat_map(Formula::fv)),
+            Formula::Not(_)
+            | Formula::And(_)
+            | Formula::Or(_)
+            | Formula::Implies(..)
+            | Formula::Exists(..)
+            | Formula::Forall(..) => Box::new(self.subformulas().into_iter().flat_map(Formula::fv)),
         }
     }
 
@@ -2676,7 +2716,14 @@ impl<V> Formula<V> {
     fn iter_atoms_impl(&self) -> Box<dyn Iterator<Item = &Atom<V>> + '_> {
         match self {
             Formula::Atom(atom) => Box::new(std::iter::once(atom)),
-            _ => Box::new(self.subformulas().into_iter().flat_map(Formula::iter_atoms)),
+            Formula::Not(_)
+            | Formula::And(_)
+            | Formula::Or(_)
+            | Formula::Implies(..)
+            | Formula::Exists(..)
+            | Formula::Forall(..) => {
+                Box::new(self.subformulas().into_iter().flat_map(Formula::iter_atoms))
+            }
         }
     }
 
@@ -4585,7 +4632,27 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
         // writer synthesises `default_for(elem)` for it at print time, so ask the
         // same function which defaults that will reference.
         Term::ArrayEmpty(_, elem) => collect_forall_defaults(&Term::default_for(elem), used),
-        _ => {}
+        Term::Null
+        | Term::Var(_)
+        | Term::Bool(_)
+        | Term::Int(_)
+        | Term::String(_)
+        | Term::Box(_)
+        | Term::Mut(..)
+        | Term::BoxCurrent(_)
+        | Term::MutCurrent(_)
+        | Term::MutFinal(_)
+        | Term::App(..)
+        | Term::SeqEmpty(_)
+        | Term::Tuple(_)
+        | Term::TupleProj(..)
+        | Term::DatatypeCtor(..)
+        | Term::DatatypeDiscr(..)
+        | Term::DatatypeSelector(..)
+        | Term::UserDefinedFn(..)
+        | Term::ForallFn(..)
+        | Term::IntToBitVec { .. }
+        | Term::UserQuantifiedVar(..) => {}
     }
     for t in term.subterms() {
         collect_forall_defaults(t, used);

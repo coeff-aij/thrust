@@ -70,7 +70,12 @@ one_line!(Formula, Term, chc::Sort);
 pub fn map_atoms(f: Formula, g: &impl Fn(Atom) -> Formula) -> Formula {
     match f {
         Formula::Atom(atom) => g(atom),
-        f => f.map_subformulas(|f| map_atoms(f, g)),
+        f @ (Formula::Not(_)
+        | Formula::And(_)
+        | Formula::Or(_)
+        | Formula::Implies(..)
+        | Formula::Exists(..)
+        | Formula::Forall(..)) => f.map_subformulas(|f| map_atoms(f, g)),
     }
 }
 
@@ -393,7 +398,9 @@ pub fn tidy<V: Clone + PartialEq>(f: chc::Formula<V>) -> chc::Formula<V> {
             f => f.not(),
         },
         Formula::And(fs) => Formula::And(equalities(all(fs))),
-        f => f.map_subformulas(tidy),
+        f @ (Formula::Or(_) | Formula::Implies(..) | Formula::Exists(..) | Formula::Forall(..)) => {
+            f.map_subformulas(tidy)
+        }
     }
 }
 

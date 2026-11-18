@@ -68,7 +68,28 @@ fn term_sorts(
         chc::Term::ArrayLambda(_, s, _) => {
             sorts.insert(s.clone());
         }
-        _ => {}
+        chc::Term::Null
+        | chc::Term::ForallDefault(_)
+        | chc::Term::Var(_)
+        | chc::Term::Bool(_)
+        | chc::Term::Int(_)
+        | chc::Term::String(_)
+        | chc::Term::Box(_)
+        | chc::Term::Mut(..)
+        | chc::Term::BoxCurrent(_)
+        | chc::Term::MutCurrent(_)
+        | chc::Term::MutFinal(_)
+        | chc::Term::App(..)
+        | chc::Term::SeqEmpty(_)
+        | chc::Term::Tuple(_)
+        | chc::Term::TupleProj(..)
+        | chc::Term::DatatypeCtor(..)
+        | chc::Term::DatatypeDiscr(..)
+        | chc::Term::DatatypeSelector(..)
+        | chc::Term::UserDefinedFn(..)
+        | chc::Term::ForallFn(..)
+        | chc::Term::IntToBitVec { .. }
+        | chc::Term::UserQuantifiedVar(..) => {}
     }
     for t in t.subterms() {
         term_sorts(var_sorts, t, sorts);
@@ -98,7 +119,10 @@ fn formula_sorts(
         chc::Formula::Exists(vars, _) | chc::Formula::Forall(vars, _) => {
             sorts.extend(vars.iter().map(|(_, sort)| sort.clone()));
         }
-        _ => {}
+        chc::Formula::Not(_)
+        | chc::Formula::And(_)
+        | chc::Formula::Or(_)
+        | chc::Formula::Implies(..) => {}
     }
     for formula in formula.subformulas() {
         formula_sorts(var_sorts, formula, sorts);

@@ -22,7 +22,20 @@ fn unbox_term<V>(term: Term<V>) -> Term<V> {
         Term::ForallFn(pred, args) => Term::ForallFn(unbox_forall_pred_var_def(pred), args),
         Term::UserQuantifiedVar(sort, var) => Term::UserQuantifiedVar(unbox_sort(sort), var),
         Term::ArrayLambda(var, sort, t) => Term::ArrayLambda(var, unbox_sort(sort), t),
-        term => term,
+        term @ (Term::Null
+        | Term::ForallDefault(_)
+        | Term::Var(_)
+        | Term::Bool(_)
+        | Term::Int(_)
+        | Term::String(_)
+        | Term::Mut(..)
+        | Term::MutCurrent(_)
+        | Term::MutFinal(_)
+        | Term::App(..)
+        | Term::Tuple(_)
+        | Term::TupleProj(..)
+        | Term::DatatypeDiscr(..)
+        | Term::IntToBitVec { .. }) => term,
     };
     term.map_subterms(unbox_term)
 }
@@ -67,7 +80,18 @@ fn unbox_datatype_sort(sort: DatatypeSort) -> DatatypeSort {
 pub fn unbox_sort(sort: Sort) -> Sort {
     match sort {
         Sort::Box(inner) => unbox_sort(*inner),
-        sort => sort.map_children(unbox_sort),
+        sort @ (Sort::Null
+        | Sort::Int
+        | Sort::BitVec { .. }
+        | Sort::Bool
+        | Sort::String
+        | Sort::Param(_)
+        | Sort::Mut(_)
+        | Sort::Seq(_)
+        | Sort::Tuple(_)
+        | Sort::Array(..)
+        | Sort::Datatype(_)
+        | Sort::Forall(_)) => sort.map_children(unbox_sort),
     }
 }
 
@@ -76,7 +100,9 @@ pub fn unbox_formula<V>(formula: Formula<V>) -> Formula<V> {
         Formula::Atom(atom) => return Formula::Atom(unbox_atom(atom)),
         Formula::Exists(vars, fo) => Formula::Exists(unbox_quantified_vars(vars), fo),
         Formula::Forall(vars, fo) => Formula::Forall(unbox_quantified_vars(vars), fo),
-        formula => formula,
+        formula @ (Formula::Not(_) | Formula::And(_) | Formula::Or(_) | Formula::Implies(..)) => {
+            formula
+        }
     };
     formula.map_subformulas(unbox_formula)
 }
