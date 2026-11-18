@@ -262,9 +262,10 @@ pub(crate) fn weight_seq_nonneg<F: Weighted>(s: Ghost<Seq<<F as thrust_models::M
         || p1 == q1))]
 #[thrust_macros::ensures(forall(|fs: Seq<<F as thrust_models::Model>::Ty>|
     !crate::case_study::counts::selection_of::<J, L, K, T, F>(&fs, *vf, *a, *e, local_layouts)
-        || sum_first(weight_seq::<F>(fs, fs.len()), fs.len())
-            + crate::case_study::weights::weight_at::<L>(weight_seq::<F>(*local_layouts, n), p, c)
-            <= sum_first(weight_seq::<F>(*local_layouts, n), n)))]
+        || (0 <= sum_first(weight_seq::<F>(fs, fs.len()), fs.len())
+            && sum_first(weight_seq::<F>(fs, fs.len()), fs.len())
+                + crate::case_study::weights::weight_at::<L>(weight_seq::<F>(*local_layouts, n), p, c)
+                <= sum_first(weight_seq::<F>(*local_layouts, n), n))))]
 #[thrust::reveal(crate::case_study::counts::selection_of, crate::case_study::counts::selects)]
 pub(crate) fn selection_weight_bound<'a, F: Weighted, J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
     local_layouts: &crate::rustc_index::IndexSlice<L, F>,
@@ -286,6 +287,7 @@ pub(crate) fn selection_weight_bound<'a, F: Weighted, J: Idx + thrust_models::Mo
     thrust_macros::proof!(weight_total_of_selection_upto::<F, J, L>(l, n, nv));
     thrust_macros::proof!(crate::case_study::selection_weights::sel_list_le_upto::<J, L>(ts, p, c, n, nv));
     thrust_macros::proof!(crate::case_study::selection_weights::sel_list_disjoint_upto::<J, L, K, T>(c, nv));
+    thrust_macros::proof!(crate::case_study::selection_weights::wat_sel_nonneg_upto::<J, L>(ts, n, nv));
     thrust_macros::proof!(weight_first_is_sum_first(n));
 }
 

@@ -400,3 +400,31 @@ pub fn sel_list_disjoint_upto<J: Idx + thrust_models::Model, L: Idx + thrust_mod
 #[thrust::reveal(selects, sel_ok)]
 pub fn sel_ok_intro<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>() {
 }
+
+/// A selection's weights are not negative when none is.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(forall(|x: Int| !(0 <= x && x < n) || 0 <= ts[x]))]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>, m: USize|
+    !(m <= k && forall(|j: Int| !(0 <= j && j < m) || L::index_logic(vf[f[j]]) < n))
+        || 0 <= wat_sel::<J, L>(ts, vf, f, m)))]
+pub fn wat_sel_nonneg_upto<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(ts: Ghost<Seq<Int>>, n: usize, k: usize) {
+    if k > 0 {
+        wat_sel_nonneg_upto::<J, L>(ts, n, k - 1);
+    }
+    wat_sel_nonneg::<J, L>(ts, n, k);
+}
+
+/// The weights at the first `m` positions of a selection whose indices are below `n` are not
+/// negative when none is.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::requires(forall(|x: Int| !(0 <= x && x < n) || 0 <= ts[x]))]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>|
+    !(forall(|j: Int| !(0 <= j && j < m) || L::index_logic(vf[f[j]]) < n))
+        || 0 <= wat_sel::<J, L>(ts, vf, f, m)))]
+pub fn wat_sel_nonneg<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(ts: Ghost<Seq<Int>>, n: usize, m: usize) {
+    if m > 0 {
+        wat_sel_nonneg::<J, L>(ts, n, m - 1);
+    }
+}
