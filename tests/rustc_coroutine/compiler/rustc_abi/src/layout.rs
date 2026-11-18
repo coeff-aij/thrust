@@ -160,6 +160,31 @@ pub(crate) fn sum_first_push_prefix(ts: Ghost<Seq<Int>>, w: Ghost<Int>, k: usize
     }
 }
 
+/// A sequence pushed with one more entry keeps the sum of its first `k` entries, for every sequence.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, w: Int| k <= ts.len() ==> sum_first(ts.push(w), k) == sum_first(ts, k)))]
+pub(crate) fn sum_first_push_prefix_all(k: usize) {
+    if k > 0 {
+        sum_first_push_prefix_all(k - 1);
+    }
+}
+
+/// The weight of the first `k` fields of `s` is not negative when no weight is.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(k <= s.len())]
+#[thrust_macros::requires(forall(|x: <F as thrust_models::Model>::Ty| 0 <= F::weight_of(x)))]
+#[thrust_macros::ensures(0 <= sum_first(weight_seq::<F>(s, k), k))]
+pub(crate) fn weight_seq_sum_nonneg<F: Weighted>(s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, k: usize) {
+    if k > 0 {
+        weight_seq_sum_nonneg::<F>(s, k - 1);
+        weight_seq_len_of::<F>(s, k - 1);
+        sum_first_push_prefix_all(k - 1);
+    }
+}
+
 /// A list pushed with one more field keeps the weights of its first `k` fields.
 #[thrust_macros::context]
 #[thrust_macros::lemma]
