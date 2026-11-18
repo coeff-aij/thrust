@@ -3220,36 +3220,15 @@ impl RefinedType<Closed> {
 
 /// Substitutes type parameters in a sort.
 fn subst_ty_params_in_sort<T>(sort: &mut chc::Sort, subst: &TypeParamSubst<T>) {
-    match sort {
-        chc::Sort::Null
-        | chc::Sort::Int
-        | chc::Sort::BitVec { .. }
-        | chc::Sort::Bool
-        | chc::Sort::String
-        | chc::Sort::Forall(_) => {}
-        chc::Sort::Param(idx) => {
-            let type_param_idx = TypeParamIdx::from_usize(*idx);
-            if let Some(rty) = subst.get(type_param_idx) {
-                *sort = rty.ty.to_sort();
-            }
+    if let chc::Sort::Param(idx) = sort {
+        let type_param_idx = TypeParamIdx::from_usize(*idx);
+        if let Some(rty) = subst.get(type_param_idx) {
+            *sort = rty.ty.to_sort();
         }
-        chc::Sort::Box(s) | chc::Sort::Mut(s) | chc::Sort::Seq(s) => {
-            subst_ty_params_in_sort(s, subst);
-        }
-        chc::Sort::Tuple(sorts) => {
-            for s in sorts {
-                subst_ty_params_in_sort(s, subst);
-            }
-        }
-        chc::Sort::Array(s1, s2) => {
-            subst_ty_params_in_sort(s1, subst);
-            subst_ty_params_in_sort(s2, subst);
-        }
-        chc::Sort::Datatype(dt_sort) => {
-            for s in dt_sort.args_mut() {
-                subst_ty_params_in_sort(s, subst);
-            }
-        }
+        return;
+    }
+    for s in sort.children_mut() {
+        subst_ty_params_in_sort(s, subst);
     }
 }
 
@@ -3275,96 +3254,44 @@ fn subst_ty_params_in_atom<T, V>(atom: &mut chc::Atom<V>, subst: &TypeParamSubst
 fn subst_ty_params_in_formula<T, V>(formula: &mut chc::Formula<V>, subst: &TypeParamSubst<T>) {
     match formula {
         chc::Formula::Atom(atom) => subst_ty_params_in_atom(atom, subst),
-        chc::Formula::Not(f) => subst_ty_params_in_formula(f, subst),
-        chc::Formula::And(fs) | chc::Formula::Or(fs) => {
-            for f in fs {
-                subst_ty_params_in_formula(f, subst);
-            }
-        }
-        chc::Formula::Implies(lhs, rhs) => {
-            subst_ty_params_in_formula(lhs, subst);
-            subst_ty_params_in_formula(rhs, subst);
-        }
-        chc::Formula::Exists(vars, f) => {
+        chc::Formula::Exists(vars, _) | chc::Formula::Forall(vars, _) => {
             for (_, sort) in vars {
                 subst_ty_params_in_sort(sort, subst);
             }
-            subst_ty_params_in_formula(f, subst);
         }
-        chc::Formula::Forall(vars, f) => {
-            for (_, sort) in vars {
-                subst_ty_params_in_sort(sort, subst);
-            }
-            subst_ty_params_in_formula(f, subst);
-        }
+        _ => {}
+    }
+    for f in formula.subformulas_mut() {
+        subst_ty_params_in_formula(f, subst);
     }
 }
 
 /// Substitutes type parameters in all sorts appearing in a term.
 fn subst_ty_params_in_term<T, V>(term: &mut chc::Term<V>, subst: &TypeParamSubst<T>) {
     match term {
-        chc::Term::Null
-        | chc::Term::ForallDefault(_)
-        | chc::Term::Var(_)
-        | chc::Term::Bool(_)
-        | chc::Term::Int(_)
-        | chc::Term::String(_) => {}
-        chc::Term::Box(t)
-        | chc::Term::BoxCurrent(t)
-        | chc::Term::MutCurrent(t)
-        | chc::Term::MutFinal(t)
-        | chc::Term::TupleProj(t, _)
-        | chc::Term::DatatypeDiscr(_, t)
-        | chc::Term::IntToBitVec { term: t, .. } => {
-            subst_ty_params_in_term(t, subst);
-        }
-        chc::Term::DatatypeSelector(sel, t) => {
+        chc::Term::DatatypeSelector(sel, _) => {
             for arg in sel.sort.args_mut() {
                 subst_ty_params_in_sort(arg, subst);
             }
             subst_ty_params_in_sort(&mut sel.field, subst);
-            subst_ty_params_in_term(t, subst);
         }
-        chc::Term::Mut(t1, t2) => {
-            subst_ty_params_in_term(t1, subst);
-            subst_ty_params_in_term(t2, subst);
-        }
-        chc::Term::App(_, args) | chc::Term::Tuple(args) => {
-            for arg in args {
-                subst_ty_params_in_term(arg, subst);
-            }
-        }
-        chc::Term::UserDefinedFn(_, sort, args) => {
-            subst_ty_params_in_sort(sort, subst);
-            for arg in args {
-                subst_ty_params_in_term(arg, subst);
-            }
-        }
-        chc::Term::ForallFn(_, args) => {
-            for arg in args {
-                subst_ty_params_in_term(arg, subst);
-            }
-        }
+        chc::Term::UserDefinedFn(_, sort, _)
+        | chc::Term::SeqEmpty(sort)
+        | chc::Term::UserQuantifiedVar(sort, _)
+        | chc::Term::ArrayLambda(_, sort, _) => subst_ty_params_in_sort(sort, subst),
         chc::Term::ArrayEmpty(s1, s2) => {
             subst_ty_params_in_sort(s1, subst);
             subst_ty_params_in_sort(s2, subst);
         }
-        chc::Term::SeqEmpty(sort) => subst_ty_params_in_sort(sort, subst),
-        chc::Term::DatatypeCtor(s, _, args) => {
+        chc::Term::DatatypeCtor(s, _, _) => {
             for arg in s.args_mut() {
                 subst_ty_params_in_sort(arg, subst);
             }
-            for arg in args {
-                subst_ty_params_in_term(arg, subst);
-            }
         }
-        chc::Term::UserQuantifiedVar(sort, _) => {
-            subst_ty_params_in_sort(sort, subst);
-        }
-        chc::Term::ArrayLambda(_, sort, t) => {
-            subst_ty_params_in_sort(sort, subst);
-            subst_ty_params_in_term(t, subst);
-        }
+        _ => {}
+    }
+    for t in term.subterms_mut() {
+        subst_ty_params_in_term(t, subst);
     }
 }
 

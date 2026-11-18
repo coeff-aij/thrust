@@ -60,55 +60,18 @@ fn term_sorts(
 ) {
     sorts.insert(t.sort(|v| var_sorts[*v].clone()));
     match t {
-        chc::Term::Null => {}
-        chc::Term::ForallDefault(_) => {}
-        chc::Term::Var(_) => {}
-        chc::Term::Bool(_) => {}
-        chc::Term::Int(_) => {}
-        chc::Term::String(_) => {}
-        chc::Term::Box(t) => term_sorts(var_sorts, t, sorts),
-        chc::Term::Mut(t1, t2) => {
-            term_sorts(var_sorts, t1, sorts);
-            term_sorts(var_sorts, t2, sorts);
-        }
-        chc::Term::BoxCurrent(t) => term_sorts(var_sorts, t, sorts),
-        chc::Term::MutCurrent(t) => term_sorts(var_sorts, t, sorts),
-        chc::Term::MutFinal(t) => term_sorts(var_sorts, t, sorts),
-        chc::Term::App(_fun, args) => {
-            for arg in args {
-                term_sorts(var_sorts, arg, sorts);
-            }
-        }
         // The writer synthesises `default_for(elem)` for an empty array at print time, so the
         // sorts that term mentions have to be declared even though no clause spells it out.
         chc::Term::ArrayEmpty(_, elem) => {
             term_sorts(var_sorts, &chc::Term::default_for(elem), sorts)
         }
-        chc::Term::SeqEmpty(_) => {}
-        chc::Term::Tuple(ts) => {
-            for t in ts {
-                term_sorts(var_sorts, t, sorts);
-            }
-        }
-        chc::Term::TupleProj(t, _) => term_sorts(var_sorts, t, sorts),
-        chc::Term::DatatypeCtor(_, _, args) => {
-            for arg in args {
-                term_sorts(var_sorts, arg, sorts);
-            }
-        }
-        chc::Term::UserDefinedFn(_, _, args) | chc::Term::ForallFn(_, args) => {
-            for arg in args {
-                term_sorts(var_sorts, arg, sorts);
-            }
-        }
-        chc::Term::DatatypeDiscr(_, t)
-        | chc::Term::DatatypeSelector(.., t)
-        | chc::Term::IntToBitVec { term: t, .. } => term_sorts(var_sorts, t, sorts),
-        chc::Term::UserQuantifiedVar(_, _) => {}
-        chc::Term::ArrayLambda(_, s, t) => {
+        chc::Term::ArrayLambda(_, s, _) => {
             sorts.insert(s.clone());
-            term_sorts(var_sorts, t, sorts);
         }
+        _ => {}
+    }
+    for t in t.subterms() {
+        term_sorts(var_sorts, t, sorts);
     }
 }
 
@@ -132,20 +95,13 @@ fn formula_sorts(
 ) {
     match formula {
         chc::Formula::Atom(atom) => atom_sorts(var_sorts, atom, sorts),
-        chc::Formula::Not(formula) => formula_sorts(var_sorts, formula, sorts),
-        chc::Formula::And(formulas) | chc::Formula::Or(formulas) => {
-            for formula in formulas {
-                formula_sorts(var_sorts, formula, sorts);
-            }
-        }
-        chc::Formula::Implies(lhs, rhs) => {
-            formula_sorts(var_sorts, lhs, sorts);
-            formula_sorts(var_sorts, rhs, sorts);
-        }
-        chc::Formula::Exists(vars, formula) | chc::Formula::Forall(vars, formula) => {
+        chc::Formula::Exists(vars, _) | chc::Formula::Forall(vars, _) => {
             sorts.extend(vars.iter().map(|(_, sort)| sort.clone()));
-            formula_sorts(var_sorts, formula, sorts);
         }
+        _ => {}
+    }
+    for formula in formula.subformulas() {
+        formula_sorts(var_sorts, formula, sorts);
     }
 }
 
