@@ -8,7 +8,7 @@
 
 use crate::thrust_models;
 use thrust_models::model::{Array, Int, Seq};
-use thrust_models::forall;
+use thrust_models::{exists, forall};
 
 use crate::case_study::lemmas::occ;
 use crate::case_study::weights::{weight_all_below, weight_below, weight_first, weight_at, weight_l0, weight_l3, weight_of_le};
@@ -194,4 +194,141 @@ pub fn sel_list_le<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>
     l5_sel_list::<J, L>(ts, p, c, m, n);
     all_below_sel::<J, L>(m, n);
     weight_all_below(ts, p, c, n);
+}
+
+/// An index no position of the selection has occurs in none.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>, x: USize|
+    !(forall(|j: Int| !(0 <= j && j < k) || L::index_logic(vf[f[j]]) != x))
+        || occ_sel::<J, L>(x, vf, f, k) == 0))]
+pub fn occ_sel_zero<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(k: usize) {
+    if k > 0 {
+        occ_sel_zero::<J, L>(k - 1);
+    }
+}
+
+/// An index that occurs in the selection is the index of one of its positions.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>, x: USize|
+    !(occ_sel::<J, L>(x, vf, f, k) > 0)
+        || exists(|j: Int| 0 <= j && j < k && L::index_logic(vf[f[j]]) == x)))]
+pub fn occ_sel_pos<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(k: usize) {
+    occ_sel_zero::<J, L>(k);
+}
+
+/// The first `m` positions of `f` select entries of the class `e` of `a` from `vf`, at increasing
+/// positions (`selects` of `counts`), and `vf` holds no local of that class twice (the property of
+/// the locals Assigned to a variant that eligibility gives).
+#[thrust_macros::predicate]
+#[thrust::opaque]
+pub fn sel_ok<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    vf: IndexVec<J, L>,
+    f: Array<Int, Int>,
+    a: IndexVec<K, T>,
+    e: T,
+    m: USize,
+) -> bool {
+    forall(|i: Int, j: Int| !(0 <= i && i < j && j < m) || f[i] < f[j])
+        && forall(|j: Int| !(0 <= j && j < m) || (0 <= f[j] && f[j] < vf.len() && a[L::index_logic(vf[f[j]])] == e))
+        && forall(|p: Int, q: Int|
+            !(0 <= p && p < vf.len() && 0 <= q && q < vf.len()
+                && L::index_logic(vf[p]) == L::index_logic(vf[q]) && a[L::index_logic(vf[p])] == e)
+                || p == q)
+}
+
+/// `sel_ok` of fewer positions.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>,
+        a: Seq<<T as thrust_models::Model>::Ty>, e: <T as thrust_models::Model>::Ty|
+    !(0 < m && sel_ok::<J, L, K, T>(vf, f, a, e, m)) || sel_ok::<J, L, K, T>(vf, f, a, e, m - 1)))]
+#[thrust::reveal(sel_ok)]
+pub fn sel_ok_prefix<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(m: usize) {
+}
+
+/// The positions of a `sel_ok` selection have different indices.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>,
+        a: Seq<<T as thrust_models::Model>::Ty>, e: <T as thrust_models::Model>::Ty, i: Int, j: Int|
+    !(sel_ok::<J, L, K, T>(vf, f, a, e, m) && 0 <= i && i < j && j < m)
+        || !(L::index_logic(vf[f[i]]) == L::index_logic(vf[f[j]]))))]
+#[thrust::reveal(sel_ok)]
+pub fn sel_positions_differ<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(m: usize) {
+}
+
+/// The index of the last position of a `sel_ok` selection occurs in none before it.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(0 < m)]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>,
+        a: Seq<<T as thrust_models::Model>::Ty>, e: <T as thrust_models::Model>::Ty|
+    !sel_ok::<J, L, K, T>(vf, f, a, e, m)
+        || occ_sel::<J, L>(L::index_logic(vf[f[m - 1]]), vf, f, m - 1) == 0))]
+pub fn occ_before_last<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(m: usize) {
+    sel_positions_differ::<J, L, K, T>(m);
+    occ_sel_zero::<J, L>(m - 1);
+}
+
+/// The unfolding of `occ_sel` at one more position.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(0 < m)]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>, x: USize|
+    occ_sel::<J, L>(x, vf, f, m)
+        == occ_sel::<J, L>(x, vf, f, m - 1) + if L::index_logic(vf[f[m - 1]]) == x { 1 } else { 0 }))]
+pub fn occ_sel_step<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(m: usize) {
+}
+
+/// A `sel_ok` selection holds no index twice.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>,
+        a: Seq<<T as thrust_models::Model>::Ty>, e: <T as thrust_models::Model>::Ty, x: USize|
+    !sel_ok::<J, L, K, T>(vf, f, a, e, m) || occ_sel::<J, L>(x, vf, f, m) <= 1))]
+pub fn occ_sel_once<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(m: usize) {
+    if m > 0 {
+        sel_ok_prefix::<J, L, K, T>(m);
+        occ_sel_once::<J, L, K, T>(m - 1);
+        occ_before_last::<J, L, K, T>(m);
+        occ_sel_step::<J, L>(m);
+    }
+}
+
+/// An index that occurs in a `sel_ok` selection is of its class.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>,
+        a: Seq<<T as thrust_models::Model>::Ty>, e: <T as thrust_models::Model>::Ty, x: USize|
+    !(sel_ok::<J, L, K, T>(vf, f, a, e, k) && occ_sel::<J, L>(x, vf, f, k) > 0)
+        || a[x] == e))]
+#[thrust::reveal(sel_ok)]
+pub fn occ_sel_class<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(k: usize) {
+    occ_sel_pos::<J, L>(k);
+}
+
+/// An index that occurs in a list none of whose entries is of one class of `a` is not of that class.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(c)]
+#[thrust_macros::ensures(forall(|p: Seq<<L as thrust_models::Model>::Ty>,
+        a: Seq<<T as thrust_models::Model>::Ty>, e: <T as thrust_models::Model>::Ty, x: USize|
+    !(forall(|j: Int| !(0 <= j && j < c) || !(a[L::index_logic(p[j])] == e))
+        && occ::<L>(x, p, c) > 0)
+        || !(a[x] == e)))]
+pub fn occ_list_class<L: Idx + thrust_models::Model, T: thrust_models::Model>(c: usize) {
+    if c > 0 {
+        occ_list_class::<L, T>(c - 1);
+    }
+}
+
+/// A `sel_ok` selection and a list of distinct indices none of which is of its class hold no index
+/// twice in the two together.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>,
+        a: Seq<<T as thrust_models::Model>::Ty>, e: <T as thrust_models::Model>::Ty,
+        p: Seq<<L as thrust_models::Model>::Ty>, x: USize|
+    !(sel_ok::<J, L, K, T>(vf, f, a, e, m)
+        && forall(|j: Int| !(0 <= j && j < c) || !(a[L::index_logic(p[j])] == e))
+        && occ::<L>(x, p, c) <= 1)
+        || occ_sel::<J, L>(x, vf, f, m) + occ::<L>(x, p, c) <= 1))]
+pub fn sel_list_disjoint<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(m: usize, c: usize) {
+    occ_sel_once::<J, L, K, T>(m);
+    occ_sel_class::<J, L, K, T>(m);
+    occ_list_class::<L, T>(c);
 }
