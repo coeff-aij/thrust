@@ -138,7 +138,7 @@ pub fn formula_marker_call<'tcx>(
 }
 
 /// The prefix of the name of a type parameter a formula function declares for a closure type its
-/// `proof_assert!` or `assume!` leaves to a local: a `_` in a written parameter type, or a type
+/// statement (`proof_assert!`, `assume!`, `block_requires!`, `block_ensures!`) leaves to a local: a `_` in a written parameter type, or a type
 /// parameter declared before the closure (`thrust-macros/src/formula_fn_lifting.rs`).
 const ELIDED_CLOSURE_LOCAL_PREFIX: &str = "__ThrustClosureOf_";
 
@@ -146,8 +146,8 @@ pub fn is_closure_local_param(param: &mir_ty::GenericParamDef) -> bool {
     param.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX)
 }
 
-/// `generic_args` of the formula function `formula_def_id` of a `proof_assert!` or `assume!` at
-/// `scope`, with each type argument the formula leaves to a local taken from that local's type:
+/// `generic_args` of the formula function `formula_def_id` of a statement (`proof_assert!`,
+/// `assume!`, `block_requires!`, `block_ensures!`) at `scope`, with each type argument the formula leaves to a local taken from that local's type:
 /// a closure's type cannot be written, so the marker call gives a placeholder there, and the
 /// written type of each parameter is matched against the type of the local it names, as rustc
 /// infers the `_` of a Creusot or Verus assertion written in the body.
@@ -211,6 +211,31 @@ pub fn resolve_closure_local_args<'tcx>(
     let args = tcx.mk_args(&args);
     check_closure_local_bounds(tcx, body, span, def_id, args);
     args
+}
+
+/// Gives the closure behind each `|f: _|` of the formula function `formula_def_id` its function
+/// type at the instance `owner` being analyzed, as a call of the closure does: the formula reads
+/// that type (`pre!`, `post!`), and in a generic body it exists only once asked for.
+/// `generic_args` are those [`resolve_closure_local_args`] gave.
+pub fn register_closure_local_types<'tcx>(
+    ctx: &mut analyze::Analyzer<'tcx>,
+    formula_def_id: LocalDefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+    owner: DefId,
+) {
+    let tcx = ctx.tcx();
+    for param in &tcx.generics_of(formula_def_id.to_def_id()).own_params {
+        if !is_closure_local_param(param) {
+            continue;
+        }
+        let ty = generic_args.type_at(param.index as usize);
+        let mir_ty::TyKind::Closure(closure_def_id, closure_args) = ty.kind() else {
+            continue;
+        };
+        let parent_count = tcx.generics_of(*closure_def_id).parent_count;
+        let parent_args = tcx.mk_args(&closure_args[..parent_count]);
+        let _ = ctx.def_ty_with_args(*closure_def_id, parent_args, owner);
+    }
 }
 
 /// The type of the local `var` names in `scope`, or why it names none.
@@ -2669,32 +2694,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         found
     }
 
-    /// Gives the closure behind each `|f: _|` of the formula function `formula_def_id` its
-    /// function type at the instance being analyzed, as a call of the closure does: the formula
-    /// reads that type (`pre!`, `post!`), and in a generic body it exists only once asked for.
-    /// `generic_args` are those [`resolve_closure_local_args`] gave.
-    fn register_closure_local_types(
-        &mut self,
-        formula_def_id: LocalDefId,
-        generic_args: mir_ty::GenericArgsRef<'tcx>,
-    ) {
-        let owner = self.type_builder.owner_fn_id();
-        for param in &self.tcx.generics_of(formula_def_id.to_def_id()).own_params {
-            if !is_closure_local_param(param) {
-                continue;
-            }
-            let ty = generic_args.type_at(param.index as usize);
-            let mir_ty::TyKind::Closure(closure_def_id, closure_args) = ty.kind() else {
-                continue;
-            };
-            let parent_count = self.tcx.generics_of(*closure_def_id).parent_count;
-            let parent_args = self.tcx.mk_args(&closure_args[..parent_count]);
-            let _ = self
-                .ctx
-                .def_ty_with_args(*closure_def_id, parent_args, owner);
-        }
-    }
-
     /// `proof_assert!` and `assume!`: the formula over the live variables it names holds from
     /// here on, checked here for `proof_assert!` and assumed unchecked for `assume!`, as Creusot's
     /// `proof_assert!` and Verus's `assert` and `assume` are. The variables are those a ghost
@@ -2801,6 +2800,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let (_, formula_def_id, generic_args) =
             formula_marker_call(self.ctx, &self.local_decls, func, args)
                 .expect("a closing block ends in the marker call");
+        let generic_args = resolve_closure_local_args(
+            self.ctx,
+            &self.body,
+            closing.source_info.scope,
+            closing.source_info.span,
+            formula_def_id,
+            generic_args,
+        );
+        register_closure_local_types(
+            self.ctx,
+            formula_def_id,
+            generic_args,
+            self.type_builder.owner_fn_id(),
+        );
         let formula_fn = self
             .ctx
             .formula_fn_with_args(
@@ -3718,7 +3731,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     def_id,
                     args,
                 );
-                self.register_closure_local_types(def_id, args);
+                register_closure_local_types(
+                    self.ctx,
+                    def_id,
+                    args,
+                    self.type_builder.owner_fn_id(),
+                );
                 let formula_fn = self
                     .ctx
                     .formula_fn_with_args(def_id, args, self.type_builder.owner_fn_id())
