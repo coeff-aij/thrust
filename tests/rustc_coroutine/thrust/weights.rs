@@ -132,6 +132,56 @@ pub fn weight_at_le<I: Idx + thrust_models::Model>(ts: Ghost<Seq<Int>>, s: Ghost
     weight_all_below(ts, s, k, n);
 }
 
+/// The weighted L5 for two lists: when every index below `b` occurs at most once in the two lists
+/// together, the entries of both below `b` weigh at most the first `b` entries of `ts`, none of
+/// which is negative.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(b)]
+#[thrust_macros::requires(forall(|x: USize| x < b ==> occ::<I>(x, s, k) + occ::<I>(x, t, c) <= 1))]
+#[thrust_macros::requires(forall(|x: Int| !(0 <= x && x < b) || 0 <= (ts)[x]))]
+#[thrust_macros::ensures(weight_below::<I>(ts, s, k, b) + weight_below::<I>(ts, t, c, b) <= weight_first(ts, b))]
+pub fn weight_l5_two<I: Idx + thrust_models::Model>(
+    ts: Ghost<Seq<Int>>,
+    s: Ghost<IndexVec<u32, I>>,
+    k: usize,
+    t: Ghost<IndexVec<u32, I>>,
+    c: usize,
+    b: usize,
+) {
+    if b > 0 {
+        weight_l5_two(ts, s, k, t, c, b - 1);
+        weight_l3(ts, s, k, b - 1);
+        weight_l3(ts, t, c, b - 1);
+        weight_of_le(ts, s, k, b - 1);
+        weight_of_le(ts, t, c, b - 1);
+    } else {
+        weight_l0(ts, s, k, b);
+        weight_l0(ts, t, c, b);
+    }
+}
+
+/// The weights at the indices of two lists weigh at most the first `n` entries of `ts`, none of
+/// which is negative, when the entries are below `n` and no index occurs twice in the two lists
+/// together (each list's indices distinct, and no index in both).
+#[thrust_macros::lemma]
+#[thrust_macros::requires(forall(|x: USize| occ::<I>(x, s, k) + occ::<I>(x, t, c) <= 1))]
+#[thrust_macros::requires(forall(|j: Int| !(0 <= j && j < k) || I::index_logic(s[j]) < n))]
+#[thrust_macros::requires(forall(|j: Int| !(0 <= j && j < c) || I::index_logic(t[j]) < n))]
+#[thrust_macros::requires(forall(|x: Int| !(0 <= x && x < n) || 0 <= (ts)[x]))]
+#[thrust_macros::ensures(weight_at::<I>(ts, s, k) + weight_at::<I>(ts, t, c) <= weight_first(ts, n))]
+pub fn weight_at_le_two<I: Idx + thrust_models::Model>(
+    ts: Ghost<Seq<Int>>,
+    s: Ghost<IndexVec<u32, I>>,
+    k: usize,
+    t: Ghost<IndexVec<u32, I>>,
+    c: usize,
+    n: usize,
+) {
+    weight_l5_two(ts, s, k, t, c, n);
+    weight_all_below(ts, s, k, n);
+    weight_all_below(ts, t, c, n);
+}
+
 /// `weight_at_le` for `k` distinct entries.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(distinct::<I>(s, k))]
