@@ -1166,9 +1166,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // does not read.
         thrust_macros::block_requires!(
             |self: &LayoutCalculator<Cx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind, offsets: IndexVec<FieldIdx, Size>|
-            LayoutCalculator::<Cx>::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind)
+            Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind)
             && offsets.len() == (*fields).len()
-            && LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()
+            && Self::deref_functional::<FieldIdx, VariantIdx, F>()
         );
         let mut layout_of_single_non_zst_field = None;
         let mut abi = BackendRepr::Memory { sized };
