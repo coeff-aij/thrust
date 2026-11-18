@@ -185,6 +185,32 @@ pub(crate) fn weight_seq_sum_nonneg<F: Weighted>(s: Ghost<Seq<<F as thrust_model
     }
 }
 
+/// The weight of the first `m` fields of a list whose entries are those of `l` at the indices of a
+/// selection `vf[f[0]], ...` (all below `n`) is the sum of the entries of `l`'s weights at those
+/// indices, for every list and selection.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::requires(n <= l.len())]
+#[thrust_macros::ensures(forall(|fs: Seq<<F as thrust_models::Model>::Ty>, vf: Seq<<L as thrust_models::Model>::Ty>, f: crate::thrust_models::model::Array<Int, Int>|
+    !(m <= fs.len()
+        && forall(|k: Int| !(0 <= k && k < m)
+            || (fs[k] == l[L::index_logic(vf[f[k]])] && L::index_logic(vf[f[k]]) < n)))
+        || sum_first(weight_seq::<F>(fs, m), m)
+            == crate::case_study::selection_weights::wat_sel::<J, L>(weight_seq::<F>(l, n), vf, f, m)))]
+pub(crate) fn weight_total_of_selection<F: Weighted, J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(
+    l: Ghost<Seq<<F as thrust_models::Model>::Ty>>,
+    n: usize,
+    m: usize,
+) {
+    if m > 0 {
+        weight_total_of_selection::<F, J, L>(l, n, m - 1);
+        weight_seq_len::<F>(m - 1);
+        weight_seq_nth::<F>(n);
+        sum_first_push_prefix_all(m - 1);
+    }
+}
+
 /// A list pushed with one more field keeps the weights of its first `k` fields.
 #[thrust_macros::context]
 #[thrust_macros::lemma]
