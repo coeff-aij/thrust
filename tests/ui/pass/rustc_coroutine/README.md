@@ -59,9 +59,10 @@ fptprove's thrust-benchmarks, c2d427ac6f), so they stay assumed.
 The facts 810 and 959 need are the niche well-formedness `layout_pre` states over the fields, through `fields_ok_of_layout_pre`;
 calling it at the start of `univariant_biased` changes 99 other parts, so each site scopes the call in a block:
 `block_requires!` (`layout_pre`, `dl_of`, and the formula's closure and iterator facts) / the lemma call / `proof_assert!` /
-`block_ensures!` of the site's formula. On 8936a0b2 with fptprove e74f0750b, 300 s and 8 GB a part: at 810 the block adds
-17 parts, 16 `sat` within 2 s and one (`preservation_inv` of the block's `ensures`) with no answer; at 959 it adds 7 parts, 6 `sat`
-within 1 s and one with no answer. Both sites stay assumed.
+`block_ensures!` of the site's formula (fork commit 5f12bc6d, branch `scoped-lemma-sites-attempt`). With fptprove e74f0750b,
+300 s and 8 GB a part: at 810 the block adds 17 parts, 16 `sat` within 2 s and one (`preservation_inv` of the block's `ensures`)
+with no answer; at 959 it adds 7 parts, 6 `sat` within 1 s and one with no answer (the two queries are in fptprove's
+thrust-benchmarks, c91d05fecc). Both sites stay assumed.
 `univariant_biased.rs`'s `assume!`s likewise each have a reachability root, `univariant_biased_reach_<name>.rs`
 (`--cfg thrust_univariant_biased_reach="<name>"`). On f25eb5e0, with fptprove 27431dba0 at 300 s and
 16 GB, solving the parts each twin adds to the pass root's (the goal of its `proof_assert!`), three
