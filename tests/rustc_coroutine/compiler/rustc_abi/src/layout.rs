@@ -233,6 +233,62 @@ pub(crate) fn weight_total_of_selection_upto<F: Weighted, J: Idx + thrust_models
     weight_total_of_selection::<F, J, L>(l, n, k);
 }
 
+/// The weights of the first `k` fields of `s` are not negative when no weight is.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::requires(k <= s.len())]
+#[thrust_macros::requires(forall(|x: <F as thrust_models::Model>::Ty| 0 <= F::weight_of(x)))]
+#[thrust_macros::ensures(forall(|i: Int| !(0 <= i && i < k) || 0 <= weight_seq::<F>(s, k)[i]))]
+pub(crate) fn weight_seq_nonneg<F: Weighted>(s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, k: usize) {
+    weight_seq_nth::<F>(k);
+}
+
+/// The weight of the fields a selection of the entries of class `e` of `vf` holds, with the weight
+/// of a list of distinct entries of `local_layouts` of another class, is at most the weight of all
+/// of `local_layouts`: the two share no local, as the class sets the list and the selection come
+/// from are disjoint (the selection is `counts::selection_of`; the list is the promoted locals).
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::requires(nv == vf.len())]
+#[thrust_macros::requires(n == local_layouts.len())]
+#[thrust_macros::requires(forall(|x: <F as thrust_models::Model>::Ty| 0 <= F::weight_of(x)))]
+#[thrust_macros::requires(crate::case_study::lemmas::distinct::<L>(p, c))]
+#[thrust_macros::requires(forall(|j: Int| !(0 <= j && j < c)
+    || (L::index_logic(p[j]) < n && !(a[L::index_logic(p[j])] == *e))))]
+#[thrust_macros::requires(forall(|j: Int| !(0 <= j && j < vf.len()) || L::index_logic(vf[j]) < n))]
+#[thrust_macros::requires(forall(|p1: Int, q1: Int|
+    !(0 <= p1 && p1 < vf.len() && 0 <= q1 && q1 < vf.len()
+        && L::index_logic(vf[p1]) == L::index_logic(vf[q1]) && a[L::index_logic(vf[p1])] == *e)
+        || p1 == q1))]
+#[thrust_macros::ensures(forall(|fs: Seq<<F as thrust_models::Model>::Ty>|
+    !crate::case_study::counts::selection_of::<J, L, K, T, F>(&fs, *vf, *a, *e, local_layouts)
+        || sum_first(weight_seq::<F>(fs, fs.len()), fs.len())
+            + crate::case_study::weights::weight_at::<L>(weight_seq::<F>(*local_layouts, n), p, c)
+            <= sum_first(weight_seq::<F>(*local_layouts, n), n)))]
+#[thrust::reveal(crate::case_study::counts::selection_of, crate::case_study::counts::selects)]
+pub(crate) fn selection_weight_bound<'a, F: Weighted, J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    local_layouts: &crate::rustc_index::IndexSlice<L, F>,
+    vf: &crate::rustc_index::IndexVec<J, L>,
+    a: &crate::rustc_index::IndexVec<K, T>,
+    e: &T,
+    p: Ghost<crate::rustc_index::IndexVec<u32, L>>,
+    c: usize,
+    n: usize,
+    nv: usize,
+) {
+    let l = thrust_macros::ghost!(|local_layouts: &crate::rustc_index::IndexSlice<L, F>| -> Seq<<F as thrust_models::Model>::Ty> { *local_layouts });
+    let ts = thrust_macros::ghost!(|local_layouts: &crate::rustc_index::IndexSlice<L, F>, n: usize| -> Seq<Int> { weight_seq::<F>(*local_layouts, n) });
+    thrust_macros::proof!(weight_seq_nonneg::<F>(l, n));
+    thrust_macros::proof!(crate::case_study::lemmas::l4_all(p, c));
+    thrust_macros::proof!(crate::case_study::counts::map_bound(vf, a, e, nv));
+    thrust_macros::proof!(crate::case_study::selection_weights::acc_cnt_le::<J, L, K, T>(nv));
+    thrust_macros::proof!(crate::case_study::selection_weights::sel_ok_intro::<J, L, K, T>());
+    thrust_macros::proof!(weight_total_of_selection_upto::<F, J, L>(l, n, nv));
+    thrust_macros::proof!(crate::case_study::selection_weights::sel_list_le_upto::<J, L>(ts, p, c, n, nv));
+    thrust_macros::proof!(crate::case_study::selection_weights::sel_list_disjoint_upto::<J, L, K, T>(c, nv));
+    thrust_macros::proof!(weight_first_is_sum_first(n));
+}
+
 /// A list pushed with one more field keeps the weights of its first `k` fields.
 #[thrust_macros::context]
 #[thrust_macros::lemma]

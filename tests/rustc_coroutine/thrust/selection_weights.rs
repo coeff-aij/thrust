@@ -10,7 +10,7 @@ use crate::thrust_models;
 use thrust_models::model::{Array, Int, Seq};
 use thrust_models::{exists, forall};
 
-use crate::case_study::counts::acc_cnt;
+use crate::case_study::counts::{acc_cnt, selects};
 use crate::case_study::lemmas::occ;
 use crate::case_study::weights::{weight_all_below, weight_below, weight_first, weight_at, weight_l0, weight_l3, weight_of_le};
 use thrust_models::Ghost;
@@ -384,4 +384,19 @@ pub fn sel_list_disjoint_upto<J: Idx + thrust_models::Model, L: Idx + thrust_mod
         sel_list_disjoint_upto::<J, L, K, T>(c, k - 1);
     }
     sel_list_disjoint::<J, L, K, T>(k, c);
+}
+
+/// `sel_ok` from `selects` (`counts`) of the entries of class `e` of `vf`, and the property that
+/// `vf` holds no local of that class twice.
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>,
+        a: Seq<<T as thrust_models::Model>::Ty>, e: <T as thrust_models::Model>::Ty, m: Int, mu: USize|
+    !(m == mu && selects::<J, L, K, T>(vf, a, e, f, m, vf.len())
+        && forall(|p: Int, q: Int|
+            !(0 <= p && p < vf.len() && 0 <= q && q < vf.len()
+                && L::index_logic(vf[p]) == L::index_logic(vf[q]) && a[L::index_logic(vf[p])] == e)
+                || p == q))
+        || sel_ok::<J, L, K, T>(vf, f, a, e, mu)))]
+#[thrust::reveal(selects, sel_ok)]
+pub fn sel_ok_intro<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>() {
 }
