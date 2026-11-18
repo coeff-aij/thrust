@@ -292,6 +292,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if is_injected_std {
             self.skip_analysis.insert(local_def_id);
         }
+        // A lemma of std.rs, and the contract that carries its statement, is a library proof:
+        // checked where std.rs is compiled on its own, taken on contract elsewhere.
+        let is_lemma = [local_def_id.to_def_id(), analyzer.owner_fn_id]
+            .into_iter()
+            .any(|def_id| {
+                self.tcx
+                    .get_attrs_by_path(def_id, &analyze::annot::lemma_path())
+                    .next()
+                    .is_some()
+            });
+        if is_injected_std && is_lemma {
+            self.skip_analysis.extend(analyzer.owner_fn_id.as_local());
+        }
 
         // A derived method has the contract of its trait method, which its derive implies. A
         // generic one is a generic def with that contract, so that at an instance where the trait
@@ -445,9 +458,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 local_def_id,
                 owner_fn_id_args,
             );
-        } else if is_injected_std && is_law_impl {
+        } else if is_injected_std && (is_law_impl || is_lemma) {
             // The contract of an injected impl's law instantiates the trait's predicates at the
-            // impl; it is built where a proof step calls the law, not in every crate.
+            // impl, and a lemma of std.rs is a library proof, checked where std.rs is compiled on
+            // its own; it is built where a proof step calls it, not in every crate.
             self.ctx.register_deferred_def_without_analysis(
                 owner_fn_id,
                 local_def_id,
@@ -1064,7 +1078,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let _guard = span.enter();
 
         let proof_branch = self.ctx.def_ids().proof_branch();
-        analyze::lemma::check_lemmas(self.tcx, proof_branch);
+        let markers = [
+            self.ctx.def_ids().ghost_marker(),
+            self.ctx.def_ids().choose_marker(),
+        ];
+        analyze::lemma::check_lemmas(self.tcx, proof_branch, markers);
         self.check_model_impls();
         self.check_invariant_impls();
         self.check_sealed_impls();

@@ -102,55 +102,267 @@ pub fn lift(
     body: &syn::Expr,
     context: Option<&EnclosingContext>,
 ) -> syn::Result<LiftedFormulaFn> {
-    lift_inner(name, params, body, context, false)
+    lift_inner(name, params, body, context, None)
 }
 
-/// [`lift`] for the formula of a statement (`proof_assert!`, `assume!`), where a parameter
-/// written `x: _` names a closure local `x`, whose type cannot be written: the item takes a type
-/// parameter for it (as a `Fn` bound would make one, so the parameter is the closure's model)
-/// and the reference instantiates it with a placeholder, which the analyzer replaces with the
-/// local's type.
+/// [`lift`] for the formula of a statement (`proof_assert!`, `assume!`), whose parameter types may
+/// leave a closure's type, which cannot be written, to the local the parameter names: a `_`
+/// anywhere in a written type (`|f: _|`, `|it: &mut Filter<I, _>|`), or a type parameter of
+/// `local_types`, declared before the closure (`<P: Fn(&T) -> bool> |it: &mut Filter<I, P>|`),
+/// which the formula can name and whose `Fn` bound lets it use what requires one. Each becomes a
+/// type parameter of the item (as a `Fn` bound would make one, so the parameter is the closure's
+/// model) and the reference instantiates it with a placeholder that meets its bound, which the
+/// analyzer replaces with the closure's type, matching the written type against the local's.
 pub fn lift_statement(
     name: &syn::Ident,
     params: &[FnArg],
     body: &syn::Expr,
     context: Option<&EnclosingContext>,
+    local_types: &syn::Generics,
 ) -> syn::Result<LiftedFormulaFn> {
-    lift_inner(name, params, body, context, true)
+    lift_inner(name, params, body, context, Some(local_types))
 }
 
-/// The prefix of the name of the type parameter a closure local named `|f: _|` gets; the
-/// analyzer reads the local's name from the rest (`resolve_closure_local_args`).
+/// A statement's closure, with the type parameters it leaves to locals declared before it.
+pub struct ClosureWithLocalTypes {
+    pub local_types: syn::Generics,
+    pub closure: syn::ExprClosure,
+}
+
+impl Parse for ClosureWithLocalTypes {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let local_types = if input.peek(syn::Token![<]) {
+            input.parse()?
+        } else {
+            syn::Generics::default()
+        };
+        let closure = input.parse()?;
+        Ok(Self {
+            local_types,
+            closure,
+        })
+    }
+}
+
+/// The prefix of the name of a type parameter left to a local; the analyzer recognizes them by
+/// it (`resolve_closure_local_args`). The `n`-th `_` gets the prefix and `n`, a declared `P` the
+/// prefix and `P`, which cannot start with a digit.
 const ELIDED_CLOSURE_LOCAL_PREFIX: &str = "__ThrustClosureOf_";
 
-/// [`lift`] and [`lift_statement`]; `elide_closure_locals` is set by the latter.
+/// A type parameter left to a local: its name in the item, its bounds, and the placeholder the
+/// reference instantiates it with.
+struct ClosureLocalType {
+    ident: syn::Ident,
+    bounds: Vec<syn::TypeParamBound>,
+    placeholder: syn::Type,
+}
+
+/// The placeholder for a type parameter left to a local with `bounds`: a function pointer meets
+/// an `Fn` bound, and the type `LocalType` stands where there is none.
+fn closure_local_placeholder(
+    ident: &syn::Ident,
+    bounds: &[syn::TypeParamBound],
+) -> syn::Result<syn::Type> {
+    let [bound] = bounds else {
+        if bounds.is_empty() {
+            return Ok(syn::parse_quote!(crate::thrust_models::model::LocalType));
+        }
+        return Err(syn::Error::new_spanned(
+            ident,
+            "a type parameter left to a local takes at most one bound, `Fn`, `FnMut` or `FnOnce`",
+        ));
+    };
+    let syn::TypeParamBound::Trait(bound) = bound else {
+        return Err(syn::Error::new_spanned(
+            bound,
+            "expected an `Fn`, `FnMut` or `FnOnce` bound",
+        ));
+    };
+    let segment = bound.path.segments.last().expect("a path has a segment");
+    let syn::PathArguments::Parenthesized(args) = &segment.arguments else {
+        return Err(syn::Error::new_spanned(
+            bound,
+            "expected an `Fn`, `FnMut` or `FnOnce` bound",
+        ));
+    };
+    if !["Fn", "FnMut", "FnOnce"].iter().any(|f| segment.ident == f) {
+        return Err(syn::Error::new_spanned(
+            bound,
+            "expected an `Fn`, `FnMut` or `FnOnce` bound",
+        ));
+    }
+    let lifetimes = &bound.lifetimes;
+    let inputs = &args.inputs;
+    let output = &args.output;
+    Ok(syn::parse_quote!(#lifetimes fn(#inputs) #output))
+}
+
+/// Renames the type parameters a statement declares to their names in the item.
+struct LocalTypeRenamer<'a> {
+    renames: &'a [(syn::Ident, syn::Ident)],
+}
+
+impl VisitMut for LocalTypeRenamer<'_> {
+    fn visit_path_mut(&mut self, path: &mut syn::Path) {
+        if path.leading_colon.is_none() {
+            if let Some(first) = path.segments.first_mut() {
+                if let Some((_, to)) = self.renames.iter().find(|(from, _)| first.ident == *from) {
+                    first.ident = to.clone();
+                }
+            }
+        }
+        syn::visit_mut::visit_path_mut(self, path);
+    }
+}
+
+/// `tokens` with each identifier `from` that starts a path renamed to `to`, as
+/// [`LocalTypeRenamer`] renames: one after `::` or `.` is another item's segment or a field.
+fn rename_ident(tokens: TokenStream2, from: &syn::Ident, to: &syn::Ident) -> TokenStream2 {
+    let mut renamed = Vec::new();
+    let mut after_separator = false;
+    let mut after_joint_colon = false;
+    for tt in tokens {
+        let (separator, joint_colon) = match &tt {
+            proc_macro2::TokenTree::Punct(p) if p.as_char() == '.' => (true, false),
+            proc_macro2::TokenTree::Punct(p) if p.as_char() == ':' => (
+                after_joint_colon,
+                p.spacing() == proc_macro2::Spacing::Joint,
+            ),
+            _ => (false, false),
+        };
+        let tt = match tt {
+            proc_macro2::TokenTree::Ident(ident) if ident == *from && !after_separator => {
+                proc_macro2::TokenTree::Ident(to.clone())
+            }
+            proc_macro2::TokenTree::Group(group) => {
+                let mut inner = proc_macro2::Group::new(
+                    group.delimiter(),
+                    rename_ident(group.stream(), from, to),
+                );
+                inner.set_span(group.span());
+                proc_macro2::TokenTree::Group(inner)
+            }
+            tt => tt,
+        };
+        after_separator = separator;
+        after_joint_colon = joint_colon;
+        renamed.push(tt);
+    }
+    renamed.into_iter().collect()
+}
+
+/// Replaces each `_` of a type with a fresh type parameter left to a local.
+struct InferredTypeCollector<'a> {
+    holes: &'a mut Vec<ClosureLocalType>,
+}
+
+impl VisitMut for InferredTypeCollector<'_> {
+    fn visit_type_mut(&mut self, ty: &mut syn::Type) {
+        if !matches!(ty, syn::Type::Infer(_)) {
+            syn::visit_mut::visit_type_mut(self, ty);
+            return;
+        }
+        let ident = format_ident!("{}{}", ELIDED_CLOSURE_LOCAL_PREFIX, self.holes.len());
+        *ty = syn::parse_quote!(#ident);
+        self.holes.push(ClosureLocalType {
+            ident,
+            bounds: Vec::new(),
+            placeholder: syn::parse_quote!(crate::thrust_models::model::LocalType),
+        });
+    }
+}
+
+/// The type parameters `params` and `body` leave to locals, with `local_types` renamed to their
+/// names in the item and each `_` of a parameter type replaced.
+fn closure_local_types(
+    params: &mut [FnArg],
+    body: &mut syn::Expr,
+    local_types: &syn::Generics,
+    context: Option<&EnclosingContext>,
+) -> syn::Result<Vec<ClosureLocalType>> {
+    if let Some(where_clause) = &local_types.where_clause {
+        return Err(syn::Error::new_spanned(
+            where_clause,
+            "write the bound of a type parameter left to a local in place",
+        ));
+    }
+    let mut holes = Vec::new();
+    let mut renames = Vec::new();
+    for param in &local_types.params {
+        let syn::GenericParam::Type(tp) = param else {
+            return Err(syn::Error::new_spanned(
+                param,
+                "only type parameters can be left to a local",
+            ));
+        };
+        let shadows_context = context
+            .into_iter()
+            .flat_map(EnclosingContext::generic_params)
+            .any(|param| matches!(param, GenericParam::Type(outer) if outer.ident == tp.ident));
+        if shadows_context {
+            return Err(syn::Error::new_spanned(
+                &tp.ident,
+                "a type parameter of the enclosing function has this name; give the closure's type another",
+            ));
+        }
+        let ident = format_ident!("{}{}", ELIDED_CLOSURE_LOCAL_PREFIX, tp.ident);
+        let bounds: Vec<syn::TypeParamBound> = tp.bounds.iter().cloned().collect();
+        let placeholder = closure_local_placeholder(&tp.ident, &bounds)?;
+        renames.push((tp.ident.clone(), ident.clone()));
+        holes.push(ClosureLocalType {
+            ident,
+            bounds,
+            placeholder,
+        });
+    }
+    let mut renamer = LocalTypeRenamer { renames: &renames };
+    for hole in &mut holes {
+        for bound in &mut hole.bounds {
+            renamer.visit_type_param_bound_mut(bound);
+        }
+    }
+    for param in params.iter_mut() {
+        renamer.visit_fn_arg_mut(param);
+    }
+    // The body is wrapped in `formula!(..)`, whose tokens a syntax visitor does not reach.
+    let mut tokens = body.to_token_stream();
+    for (from, to) in &renames {
+        tokens = rename_ident(tokens, from, to);
+    }
+    *body = syn::parse2(tokens)?;
+
+    for param in params.iter_mut() {
+        let FnArg::Typed(pt) = param else { continue };
+        let before = holes.len();
+        InferredTypeCollector { holes: &mut holes }.visit_type_mut(&mut pt.ty);
+        let mentions_hole = before < holes.len()
+            || holes.iter().any(|hole| {
+                crate::tokens_contain_ident(&pt.ty.to_token_stream(), hole.ident.to_string())
+            });
+        if mentions_hole && !matches!(&*pt.pat, syn::Pat::Ident(_)) {
+            return Err(syn::Error::new_spanned(
+                &pt.pat,
+                "a parameter whose type is left to its local must be a plain variable name",
+            ));
+        }
+    }
+    Ok(holes)
+}
+
+/// [`lift`] and [`lift_statement`]; `local_types` is given by the latter.
 fn lift_inner(
     name: &syn::Ident,
     params: &[FnArg],
     body: &syn::Expr,
     context: Option<&EnclosingContext>,
-    elide_closure_locals: bool,
+    local_types: Option<&syn::Generics>,
 ) -> syn::Result<LiftedFormulaFn> {
     let mut params = params.to_vec();
     let mut body = body.clone();
-    let mut closure_locals: Vec<syn::Ident> = Vec::new();
-    if elide_closure_locals {
-        for param in &mut params {
-            let FnArg::Typed(pt) = param else { continue };
-            if !matches!(*pt.ty, syn::Type::Infer(_)) {
-                continue;
-            }
-            let syn::Pat::Ident(pat) = &*pt.pat else {
-                return Err(syn::Error::new_spanned(
-                    &pt.pat,
-                    "a parameter written `_` must be a plain variable name",
-                ));
-            };
-            let ty = format_ident!("{}{}", ELIDED_CLOSURE_LOCAL_PREFIX, pat.ident);
-            pt.ty = syn::parse_quote!(#ty);
-            closure_locals.push(ty);
-        }
-    }
+    let closure_locals = match local_types {
+        Some(local_types) => closure_local_types(&mut params, &mut body, local_types, context)?,
+        None => Vec::new(),
+    };
 
     let mut def_params: Vec<TokenStream2> = Vec::new();
     let mut turbofish_args: Vec<TokenStream2> = Vec::new();
@@ -166,9 +378,9 @@ fn lift_inner(
         }
     }
 
-    for ty in &closure_locals {
-        def_params.push(ty.to_token_stream());
-        turbofish_args.push(quote!(crate::thrust_models::model::LocalType));
+    for hole in &closure_locals {
+        def_params.push(hole.ident.to_token_stream());
+        turbofish_args.push(hole.placeholder.to_token_stream());
     }
 
     let mut def_wheres: Vec<WherePredicate> = context
@@ -182,9 +394,14 @@ fn lift_inner(
         Some(context) => context.type_lowering(),
         None => FormulaFnTypeLowering::new(&dummy_sig),
     };
-    type_lowering.add_closure_type_params(closure_locals.iter().cloned());
+    type_lowering.add_closure_type_params(closure_locals.iter().map(|hole| hole.ident.clone()));
 
     def_wheres.extend(type_lowering.model_where_predicates());
+    for hole in closure_locals.iter().filter(|hole| !hole.bounds.is_empty()) {
+        let ident = &hole.ident;
+        let bounds = &hole.bounds;
+        def_wheres.push(syn::parse_quote!(#ident: #(#bounds)+*));
+    }
 
     // A formula may refer to the receiver value `self`; the lifted formula function is free, so
     // rewrite `self` to a `__thrust_self` parameter. The analyzer binds it back to the receiver.
