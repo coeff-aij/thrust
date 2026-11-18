@@ -789,8 +789,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 // Rewrite (rewrites.md R8): `Map::new` of the niche's `available`, 0 without one,
                 // for `filter_map` of the niche and `map` of `available`: the two maxima agree,
                 // as `available` is never negative.
-                // Assumed (fallback, with fptprove): delete once the solver answers it. `Map::new`'s `requires`.
-                // Proved in place, all 4 parts of this site get no answer at 300 s with fptprove e74f0750b.
+                // `Map::new`'s `requires`, from the niche well-formedness `layout_pre` states over the fields:
+                // the lemma call is scoped in a block so that the rest of the body does not read its facts.
                 let field_iter = fields_excluding_tail.iter();
                 let niche_available = thrust_macros::closure!(
                     captures(dl: &&&TargetDataLayout),
@@ -807,7 +807,27 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         ))
                     },
                 );
-                thrust_macros::assume!(<P: FnMut(&F) -> u128> |field_iter: core::slice::Iter<'_, F>, niche_available: P|
+                thrust_macros::block_requires!(<P: FnMut(&F) -> u128>
+                    |self: &LayoutCalculator<Cx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind, dl: &TargetDataLayout,
+                     field_iter: core::slice::Iter<'_, F>, niche_available: P|
+                    Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind)
+                        && Cx::dl_of(*self, *dl)
+                        && <core::slice::Iter<'_, F> as crate::IteratorSpec>::inv(field_iter)
+                        && forall(|e: <&F as thrust_models::Model>::Ty, i: <core::slice::Iter<'_, F> as thrust_models::Model>::Ty|
+                            !<core::slice::Iter<'_, F> as crate::IteratorSpec>::produces(field_iter, Seq::singleton(e), i)
+                                || exists(|j: USize| 0 <= j && j < (*fields).len() && e == (&(*fields)[j])))
+                        && forall(|e: <&F as thrust_models::Model>::Ty|
+                            !forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                                !(thrust_macros::post!(<F as core::ops::Deref>::deref(e), d) && (**d).largest_niche == Some(n))
+                                    || Niche::wf_in(n, *dl))
+                                || thrust_macros::pre!(niche_available(e))));
+                Self::fields_ok_of_layout_pre::<FieldIdx, VariantIdx, F>(self, fields, kind, dl);
+                thrust_macros::proof_assert!(<P: FnMut(&F) -> u128> |field_iter: core::slice::Iter<'_, F>, niche_available: P|
+                    <core::slice::Iter<'_, F> as crate::IteratorSpec>::inv(field_iter)
+                        && Map::<core::slice::Iter<'_, F>, P>::reinitialize()
+                        && Map::<core::slice::Iter<'_, F>, P>::preservation_inv(field_iter, niche_available)
+                        && Map::<core::slice::Iter<'_, F>, P>::next_precondition(field_iter, niche_available));
+                thrust_macros::block_ensures!(<P: FnMut(&F) -> u128> |field_iter: core::slice::Iter<'_, F>, niche_available: P|
                     <core::slice::Iter<'_, F> as crate::IteratorSpec>::inv(field_iter)
                         && Map::<core::slice::Iter<'_, F>, P>::reinitialize()
                         && Map::<core::slice::Iter<'_, F>, P>::preservation_inv(field_iter, niche_available)
@@ -858,9 +878,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
                 match kind {
                     StructKind::AlwaysSized | StructKind::MaybeUnsized => {
-                        // Assumed (fallback, with fptprove): delete once the solver answers it. `sort_by_key`'s `requires`.
-                        // Proved in place, the 1 part of this site gets no answer at 300 s with fptprove
-                        // e74f0750b.
+                        // `sort_by_key`'s `requires`, from the niche well-formedness `layout_pre` states over the fields,
+                        // through the lemma scoped in a block.
                         let sort_key = thrust_macros::closure!(
                             captures(fields: &&IndexSlice<FieldIdx, F>, dl: &&&TargetDataLayout),
                             requires(LayoutCalculator::<Cx>::deref_functional::<FieldIdx, VariantIdx, F>()),
@@ -956,7 +975,35 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                 )
                             },
                         );
-                        thrust_macros::assume!(|optimizing: &mut [FieldIdx], sort_key: _|
+                        thrust_macros::block_requires!(
+                            |self: &LayoutCalculator<Cx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind, dl: &TargetDataLayout,
+                             optimizing: &mut [FieldIdx], sort_key: _|
+                            Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind)
+                                && Cx::dl_of(*self, *dl)
+                                && Self::deref_functional::<FieldIdx, VariantIdx, F>()
+                                && forall(|i: Int| !(0 <= i && i < (*optimizing).len())
+                                    || forall(|j: USize| !<FieldIdx as Idx>::index_is((*optimizing)[i], j) || j < (*fields).len()))
+                                && forall(|c: thrust_models::model::Closure<_>, x: <FieldIdx as thrust_models::Model>::Ty|
+                                    !(thrust_macros::hist_inv!(sort_key, c)
+                                        && forall(|i: USize| !<FieldIdx as Idx>::index_is(x, i) || i < (*fields).len())
+                                        && forall(|i: USize, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                                            !(<FieldIdx as Idx>::index_is(x, i)
+                                                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d)
+                                                && (**d).largest_niche == Some(n))
+                                                || Niche::wf_in(n, *dl))
+                                        && forall(|i: USize, d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche, s: Size|
+                                            !(<FieldIdx as Idx>::index_is(x, i)
+                                                && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d)
+                                                && (**d).largest_niche == Some(n)
+                                                && Primitive::size_in(n.value, *dl, s))
+                                                || n.offset.raw + s.raw <= (**d).size.raw))
+                                        || thrust_macros::pre!(c(x))));
+                        Self::fields_ok_of_layout_pre::<FieldIdx, VariantIdx, F>(self, fields, kind, dl);
+                        thrust_macros::proof_assert!(|optimizing: &mut [FieldIdx], sort_key: _|
+                            forall(|c: thrust_models::model::Closure<_>, i: Int|
+                                (thrust_macros::hist_inv!(sort_key, c) && 0 <= i && i < (*optimizing).len())
+                                    ==> thrust_macros::pre!(c(&(*optimizing)[i]))));
+                        thrust_macros::block_ensures!(|optimizing: &mut [FieldIdx], sort_key: _|
                             forall(|c: thrust_models::model::Closure<_>, i: Int|
                                 (thrust_macros::hist_inv!(sort_key, c) && 0 <= i && i < (*optimizing).len())
                                     ==> thrust_macros::pre!(c(&(*optimizing)[i]))));
