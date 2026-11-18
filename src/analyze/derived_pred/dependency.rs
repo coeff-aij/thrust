@@ -147,10 +147,8 @@ pub fn dependent_items(tcx: TyCtxt<'_>, seeds: &HashSet<DefId>) -> HashSet<DefId
 /// Whether `def` is a `#[thrust_macros::predicate]` with a raw SMT-LIB2 body: a string literal
 /// statement, which the closure cannot read.
 pub fn is_raw_predicate(tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
-    let is_predicate = tcx
-        .get_attrs_by_path(def.to_def_id(), &analyze::annot::predicate_path())
-        .next()
-        .is_some();
+    let is_predicate =
+        analyze::annot::has_thrust_attr(tcx, def.to_def_id(), &analyze::annot::predicate_path());
     let Some(body) = tcx.hir_maybe_body_owned_by(def).filter(|_| is_predicate) else {
         return false;
     };

@@ -19,12 +19,11 @@ pub(super) enum SpecBound {
 
 pub(super) fn is_model_eq_clause(tcx: TyCtxt<'_>, clause: mir_ty::Clause<'_>) -> bool {
     clause.as_trait_clause().is_some_and(|pred| {
-        tcx.get_attrs_by_path(
+        analyze::annot::has_thrust_attr(
+            tcx,
             pred.skip_binder().trait_ref.def_id,
             &analyze::annot::model_eq_path(),
         )
-        .next()
-        .is_some()
     })
 }
 
@@ -92,10 +91,9 @@ pub(super) fn modelless_part<'tcx>(
             | mir_ty::TyKind::RawPtr(..)
             | mir_ty::TyKind::FnPtr(..)
             | mir_ty::TyKind::Dynamic(..) => true,
-            mir_ty::TyKind::Adt(adt, _) => tcx
-                .get_attrs_by_path(adt.did(), &analyze::annot::no_model_path())
-                .next()
-                .is_some(),
+            mir_ty::TyKind::Adt(adt, _) => {
+                analyze::annot::has_thrust_attr(tcx, adt.did(), &analyze::annot::no_model_path())
+            }
             _ => false,
         })
 }
@@ -177,7 +175,5 @@ fn has_model_impl(tcx: TyCtxt<'_>, model_trait: DefId, adt: DefId) -> bool {
 }
 
 fn is_ghost(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
-    tcx.get_attrs_by_path(def_id, &analyze::annot::ghost_model_path())
-        .next()
-        .is_some()
+    analyze::annot::has_thrust_attr(tcx, def_id, &analyze::annot::ghost_model_path())
 }

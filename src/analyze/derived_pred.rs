@@ -123,9 +123,7 @@ pub fn per_instance_law_impls(
             .map(|adt| adt.did())
     };
     let derived = tcx.hir_crate_items(()).definitions().filter(|def| {
-        tcx.get_attrs_by_path(def.to_def_id(), &analyze::annot::derived_path())
-            .next()
-            .is_some()
+        analyze::annot::has_thrust_attr(tcx, def.to_def_id(), &analyze::annot::derived_path())
     });
     let contracts = Contracts::new(tcx);
     let mut out = HashSet::new();
@@ -280,15 +278,11 @@ impl<'tcx> Contracts<'tcx> {
 }
 
 fn is_extern_spec(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
-    tcx.get_attrs_by_path(def_id, &analyze::annot::extern_spec_fn_path())
-        .next()
-        .is_some()
+    analyze::annot::has_thrust_attr(tcx, def_id, &analyze::annot::extern_spec_fn_path())
 }
 
 fn is_formula_fn(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
-    tcx.get_attrs_by_path(def_id, &analyze::annot::formula_fn_path())
-        .next()
-        .is_some()
+    analyze::annot::has_thrust_attr(tcx, def_id, &analyze::annot::formula_fn_path())
 }
 
 /// The items that mention a derived predicate of `derived`, or a predicate whose definition may
@@ -375,10 +369,7 @@ pub fn check<'tcx>(
         let is_fn = matches!(tcx.def_kind(def), DefKind::Fn | DefKind::AssocFn);
         // A trait's law is checked per impl, below.
         let trait_law = tcx.trait_of_assoc(def_id).is_some()
-            && tcx
-                .get_attrs_by_path(def_id, &analyze::annot::law_path())
-                .next()
-                .is_some();
+            && analyze::annot::has_thrust_attr(tcx, def_id, &analyze::annot::law_path());
         let skipped = is_extern_spec(tcx, def_id)
             || is_formula_fn(tcx, def_id)
             || analyze::is_injected_std(tcx, def)

@@ -41,12 +41,11 @@ fn stmt_str_literal(stmt: &rustc_hir::Stmt) -> Option<String> {
 }
 
 fn is_annotated_as_extern_spec_fn_impl(tcx: &TyCtxt, local_def_id: &LocalDefId) -> bool {
-    tcx.get_attrs_by_path(
+    analyze::annot::has_thrust_attr(
+        *tcx,
         local_def_id.to_def_id(),
         &analyze::annot::extern_spec_fn_path(),
     )
-    .next()
-    .is_some()
 }
 
 /// Extract the target DefId and the generic arguments the spec's own tail call reached it
@@ -234,23 +233,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn is_annotated_as_trusted(&self) -> bool {
-        self.tcx
-            .get_attrs_by_path(
-                self.local_def_id.to_def_id(),
-                &analyze::annot::trusted_path(),
-            )
-            .next()
-            .is_some()
+        analyze::annot::has_thrust_attr(
+            self.tcx,
+            self.local_def_id.to_def_id(),
+            &analyze::annot::trusted_path(),
+        )
     }
 
     pub fn is_annotated_as_callable(&self) -> bool {
-        self.tcx
-            .get_attrs_by_path(
-                self.local_def_id.to_def_id(),
-                &analyze::annot::callable_path(),
-            )
-            .next()
-            .is_some()
+        analyze::annot::has_thrust_attr(
+            self.tcx,
+            self.local_def_id.to_def_id(),
+            &analyze::annot::callable_path(),
+        )
     }
 
     /// Whether the def is the `drop` method of a `Drop` impl. Rust runs it wherever a value of the
@@ -286,13 +281,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn is_annotated_as_predicate(&self) -> bool {
-        self.tcx
-            .get_attrs_by_path(
-                self.local_def_id.to_def_id(),
-                &analyze::annot::predicate_path(),
-            )
-            .next()
-            .is_some()
+        analyze::annot::has_thrust_attr(
+            self.tcx,
+            self.local_def_id.to_def_id(),
+            &analyze::annot::predicate_path(),
+        )
     }
 
     pub fn is_annotated_as_ignored(&self) -> bool {
@@ -344,13 +337,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     pub fn is_annotated_as_formula_fn(&self) -> bool {
-        self.tcx
-            .get_attrs_by_path(
-                self.local_def_id.to_def_id(),
-                &analyze::annot::formula_fn_path(),
-            )
-            .next()
-            .is_some()
+        analyze::annot::has_thrust_attr(
+            self.tcx,
+            self.local_def_id.to_def_id(),
+            &analyze::annot::formula_fn_path(),
+        )
     }
 
     pub fn is_fully_annotated(&self) -> bool {
@@ -1010,12 +1001,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     fn has_attr(&self, path: &[rustc_span::Symbol]) -> bool {
-        self.attributed_defs().into_iter().any(|def| {
-            self.tcx
-                .get_attrs_by_path(def.to_def_id(), path)
-                .next()
-                .is_some()
-        })
+        self.attributed_defs()
+            .into_iter()
+            .any(|def| analyze::annot::has_thrust_attr(self.tcx, def.to_def_id(), path))
     }
 
     /// Conjoins to an `FnMut` closure's postcondition that the call keeps the closure's state

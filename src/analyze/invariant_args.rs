@@ -153,11 +153,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         def_id
             .as_local()
             .is_some_and(|local| !analyze::is_injected_std(self.tcx, local))
-            && self
-                .tcx
-                .get_attrs_by_path(def_id, &analyze::annot::trusted_path())
-                .next()
-                .is_some()
+            && analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::trusted_path())
     }
 
     /// Whether `def_id` is the `clone` of a derived `Clone`, which keeps the invariant: its
