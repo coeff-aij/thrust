@@ -301,6 +301,18 @@ pub trait HasDataLayout {
 
     #[thrust_macros::ensures(Self::dl_of(*self, *result))]
     fn data_layout(&self) -> &TargetDataLayout;
+
+    // A context names one data layout, the one `data_layout` returns. Creusot or Verus would
+    // give the layout as a logic (spec) function of the context, a function by construction;
+    // `dl_of` is a predicate for the typing reason above, so this law states it, as `Idx`'s
+    // `index_is_unique` does for `index_is`. A contract that states a fact of every layout the
+    // context names (`univariant_biased_post`) proves it from the one `data_layout` returns.
+    // The layouts are bound by the `forall`, not taken as parameters, so that the law also covers
+    // values whose integers the parameters' ranges would exclude.
+    #[thrust_macros::law]
+    #[thrust_macros::ensures(forall(|d1: TargetDataLayout, d2: TargetDataLayout|
+        !(Self::dl_of(*cx, d1) && Self::dl_of(*cx, d2)) || d1 == d2))]
+    fn dl_of_unique(cx: &Self) {}
 }
 
 #[thrust_macros::context]
@@ -386,7 +398,11 @@ impl Size {
         Size { raw: bytes }
     }
 
+    // A contract of its own, so that the inferred contract of this getter does not join the goals
+    // of its callers into one class.
     #[inline]
+    #[thrust_macros::requires(true)]
+    #[thrust_macros::ensures(result == self.raw)]
     pub fn bytes(self) -> u64 {
         self.raw
     }
