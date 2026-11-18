@@ -401,7 +401,6 @@ impl Size {
     // A contract of its own, so that the inferred contract of this getter does not join the goals
     // of its callers into one class.
     #[inline]
-    #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result == self.raw)]
     pub fn bytes(self) -> u64 {
         self.raw

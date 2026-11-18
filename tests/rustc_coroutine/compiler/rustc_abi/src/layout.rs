@@ -1,5 +1,6 @@
-// `thrust_place_field_fail`, `thrust_place_fields_fail` and `thrust_permutation_sum_fail` are set
-// only by the fail twins of the place_field, place_fields and permutation_sum roots.
+// `thrust_place_field_fail`, `thrust_place_fields_fail`, `thrust_permutation_sum_fail` and
+// `thrust_univariant_biased_place_reach` are set only by the fail twins of the place_field,
+// place_fields, permutation_sum and univariant_biased_place reachability roots.
 #![allow(unexpected_cfgs)]
 use crate::thrust_models;
 use std::cmp;
@@ -494,11 +495,14 @@ fn placement_ends_within<I: Idx, F: Weighted>(
                     && pow2(q) <= start.raw + pow2(q0) + weight_total::<I, F>(fields) + pow2(qr)))))
 }
 
+// The lemmas below (`placement_ends_within_of` to `univariant_biased_post_of_err`) are the steps of
+// `univariant_biased_place`'s proof. Each is a lemma so that its goal does not read the code before
+// the call.
+
 /// `placement_ends_within` from the steps after the start: the placed fields end at `end` with
 /// the alignment `end_align`, at most the fields' weight after the start (`place_fields`' bound at
 /// the fields' weights), the `repr` alignment raises the alignment to `align` by at most its
-/// bytes, and the size is the end rounded up to `align`. A lemma, so that its goal does not read
-/// the code before the call.
+/// bytes, and the size is the end rounded up to `align`.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(forall(|q: USize, q0: USize| !(q == end_align.pow2 && q0 == start_align.pow2)
     || end.raw + pow2(q) <= start.raw + pow2(q0) + weight_total::<I, F>(fields)))]
@@ -523,7 +527,7 @@ fn placement_ends_within_of<I: Idx, F: Weighted>(
 
 /// `univariant_biased_place`'s layout is below `weighs`' sum: its size and its alignment's bytes
 /// are below the start, the fields' weight and the `repr` alignment's bytes, and the start is below
-/// the rest of the sum. A lemma, so that its goal does not read the code before the call.
+/// the rest of the sum.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(placement_starts_within(kind, *dl, start, start_align))]
 #[thrust_macros::requires(placement_ends_within::<FieldIdx, F>(fields, repr, start, start_align, size, align))]
@@ -550,8 +554,7 @@ fn placement_below_weighs<
 }
 
 /// `arbitrary_of` of the fields `univariant_biased_finish` builds from one offset per field and a
-/// memory order that is a permutation of the fields (`order_ok`). A lemma, so that its goal does not
-/// read the code before the call.
+/// memory order that is a permutation of the fields (`order_ok`).
 #[thrust_macros::lemma]
 #[thrust_macros::requires(exists(|o2: IndexVec<FieldIdx, Size>, m2: IndexVec<u32, FieldIdx>|
     *fs == FieldsShape::Arbitrary { offsets: o2, in_memory_order: m2 } && o == o2 && m == m2))]
@@ -575,8 +578,7 @@ fn arbitrary_of_placed<C: HasDataLayout, FieldIdx: Idx + thrust_models::Model>(
 fn dl_of_is<C: HasDataLayout>(calc: &LayoutCalculator<C>, dl: &TargetDataLayout) {}
 
 /// `univariant_biased_post`'s bounds on a layout, stated of every data layout the context names,
-/// from those of `dl`, the only one it names (`dl_of_is`). A lemma, so that its goal does not read
-/// the code before the call.
+/// from those of `dl`, the only one it names (`dl_of_is`).
 #[thrust_macros::lemma]
 #[thrust_macros::requires(forall(|d: TargetDataLayout| !C::dl_of(*calc, d) || d == *dl))]
 #[thrust_macros::requires(forall(|s: USize, q: USize|
@@ -611,8 +613,7 @@ fn layout_within_every_dl<
 }
 
 /// Where the fields fit in any order, a size below `weighs`' sum at the layout `dl` the context
-/// names is below the object size bound of `dl`. A lemma, so that its goal does not read the code
-/// before the call.
+/// names is below the object size bound of `dl`.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(C::dl_of(*calc, *dl))]
 #[thrust_macros::requires(forall(|s: USize, q: USize|
@@ -641,7 +642,7 @@ fn size_below_bound_if_fits<
 ) {
 }
 
-/// `univariant_biased_post` of an `Ok` layout from its conjuncts. A lemma, so that the goal of
+/// `univariant_biased_post` of an `Ok` layout from its conjuncts, so that the goal of
 /// `univariant_biased_place`'s return reads the predicate as one atom.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(FieldsShape::<FieldIdx>::arbitrary_of((*l).fields, (*fields).len()))]
@@ -1662,6 +1663,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             // The error is bound to a name for the lemma (a reference to the constant would be a
             // promoted value whose contents the lemma's `requires` cannot read).
             let e = LayoutCalculatorError::SizeOverflow;
+            // The twin univariant_biased_place_reach_overflow.rs asserts `false` here: refuted
+            // only if the size check's error branch is reachable under the premises before it.
+            #[cfg(thrust_univariant_biased_place_reach = "overflow")]
+            thrust_macros::proof_assert!(|| false);
             thrust_macros::proof!(univariant_biased_post_of_err::<Cx, FieldIdx, VariantIdx, F>(
                 self, fields, repr, kind, &niche_bias, &e));
             return Err(e);
@@ -1670,8 +1675,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         let offsets_g = thrust_macros::ghost!(|offsets: IndexVec<FieldIdx, Size>| -> IndexVec<FieldIdx, Size> { offsets });
         let order_g = thrust_macros::ghost!(|in_memory_order: IndexVec<u32, FieldIdx>| -> IndexVec<u32, FieldIdx> { in_memory_order });
         // Rewrite (rewrites.md R24): the layout from the placed fields in
-        // `univariant_biased_finish`, whose `ensures` give the fields the postcondition reads; the
-        // layout is bound to a name for the lemmas after it.
+        // `univariant_biased_finish`, whose `ensures` give the fields the postcondition reads. The
+        // layout is also bound to a name, for the lemmas after it (a proof aid, not in rustc's code).
         let layout = self.univariant_biased_finish::<FieldIdx, VariantIdx, F>(
             fields, repr, kind, offsets, in_memory_order, largest_niche, align, size, max_repr_align,
             unadjusted_abi_align, unsized_field.is_none(), field_seed,
@@ -1681,6 +1686,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         thrust_macros::proof!(layout_within_every_dl::<Cx, FieldIdx, VariantIdx, F>(self, fields, repr, kind, dl, &layout));
         thrust_macros::proof!(univariant_biased_post_of_ok::<Cx, FieldIdx, VariantIdx, F>(
             self, fields, repr, kind, &niche_bias, &layout));
+        // The twin univariant_biased_place_reach_ok.rs asserts `false` here: refuted only if
+        // the `Ok` return is reachable under the premises before it.
+        #[cfg(thrust_univariant_biased_place_reach = "ok")]
+        thrust_macros::proof_assert!(|| false);
         Ok(layout)
     }
 
