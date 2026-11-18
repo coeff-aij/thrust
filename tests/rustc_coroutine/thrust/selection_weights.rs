@@ -10,7 +10,9 @@ use crate::thrust_models;
 use thrust_models::model::{Array, Int, Seq};
 use thrust_models::forall;
 
-use crate::case_study::weights::weight_first;
+use crate::case_study::lemmas::occ;
+use crate::case_study::weights::{weight_all_below, weight_below, weight_first, weight_at, weight_l0, weight_l3, weight_of_le};
+use thrust_models::Ghost;
 use crate::case_study::USize;
 use crate::rustc_index::{Idx, IndexVec};
 
@@ -144,4 +146,52 @@ pub fn sel_two_le<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(
     l5_sel_two::<J, L>(m, k, n);
     all_below_sel::<J, L>(m, n);
     all_below_sel::<J, L>(k, n);
+}
+
+/// The weighted L5 for a selection and a list: when every index below `b` occurs at most once in
+/// the two together, their entries below `b` weigh at most the first `b` entries of `ts`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(b)]
+#[thrust_macros::requires(forall(|x: Int| !(0 <= x && x < b) || 0 <= ts[x]))]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>|
+    !(forall(|x: USize| x < b ==> occ_sel::<J, L>(x, vf, f, m) + occ::<L>(x, p, c) <= 1))
+        || wbelow_sel::<J, L>(ts, vf, f, m, b) + weight_below::<L>(ts, p, c, b) <= weight_first(ts, b)))]
+pub fn l5_sel_list<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(
+    ts: Ghost<Seq<Int>>,
+    p: Ghost<IndexVec<u32, L>>,
+    c: usize,
+    m: usize,
+    b: usize,
+) {
+    if b > 0 {
+        l5_sel_list::<J, L>(ts, p, c, m, b - 1);
+        l3_sel::<J, L>(m, b - 1);
+        weight_l3(ts, p, c, b - 1);
+        of_sel::<J, L>(m, b - 1);
+        weight_of_le(ts, p, c, b - 1);
+    } else {
+        l0_sel::<J, L>(m, b);
+        weight_l0(ts, p, c, b);
+    }
+}
+
+/// A selection and a list whose indices are below `n` and that together hold no index twice weigh
+/// at most the first `n` entries of `ts`, none of which is negative.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(forall(|j: Int| !(0 <= j && j < c) || L::index_logic(p[j]) < n))]
+#[thrust_macros::requires(forall(|x: Int| !(0 <= x && x < n) || 0 <= ts[x]))]
+#[thrust_macros::ensures(forall(|vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>|
+    !(forall(|x: USize| occ_sel::<J, L>(x, vf, f, m) + occ::<L>(x, p, c) <= 1)
+        && forall(|j: Int| !(0 <= j && j < m) || L::index_logic(vf[f[j]]) < n))
+        || wat_sel::<J, L>(ts, vf, f, m) + weight_at::<L>(ts, p, c) <= weight_first(ts, n)))]
+pub fn sel_list_le<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(
+    ts: Ghost<Seq<Int>>,
+    p: Ghost<IndexVec<u32, L>>,
+    c: usize,
+    m: usize,
+    n: usize,
+) {
+    l5_sel_list::<J, L>(ts, p, c, m, n);
+    all_below_sel::<J, L>(m, n);
+    weight_all_below(ts, p, c, n);
 }
