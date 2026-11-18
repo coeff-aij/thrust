@@ -1350,6 +1350,12 @@ fn variant_fits_of_atoms<
         super::weight_total::<FieldIdx, F>(new)
             - weights::weight_at::<LocalIdx>(super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), *picked, (*picked).len())
     });
+    let ts = thrust_macros::ghost!(|local_layouts: &IndexSlice<LocalIdx, F>| -> Seq<Int> {
+        super::weight_seq::<F>(*local_layouts, (*local_layouts).len())
+    });
+    let l = thrust_macros::ghost!(|local_layouts: &IndexSlice<LocalIdx, F>| -> Seq<<F as thrust_models::Model>::Ty> { *local_layouts });
+    thrust_macros::proof!(super::weight_seq_nonneg::<F>(l, n));
+    thrust_macros::proof!(weights::weight_at_nonneg(ts, picked_g, c, n));
     thrust_macros::proof!(super::selection_weight_bound::<F, FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
         local_layouts, vf, assignments, e, picked_g, c, n, nv));
     thrust_macros::proof!(variant_fits_of_weights(

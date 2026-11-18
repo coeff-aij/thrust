@@ -182,6 +182,19 @@ pub fn weight_at_le_two<I: Idx + thrust_models::Model>(
     weight_all_below(ts, t, c, n);
 }
 
+/// The weights at the indices of the first `k` entries of `s`, all below `n`, are not negative when
+/// none of the first `n` entries of `ts` is.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(forall(|j: Int| !(0 <= j && j < k) || I::index_logic(s[j]) < n))]
+#[thrust_macros::requires(forall(|x: Int| !(0 <= x && x < n) || 0 <= (ts)[x]))]
+#[thrust_macros::ensures(0 <= weight_at::<I>(ts, s, k))]
+pub fn weight_at_nonneg<I: Idx + thrust_models::Model>(ts: Ghost<Seq<Int>>, s: Ghost<IndexVec<u32, I>>, k: usize, n: usize) {
+    if k > 0 {
+        weight_at_nonneg(ts, s, k - 1, n);
+    }
+}
+
 /// `weight_at_le` for `k` distinct entries.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(distinct::<I>(s, k))]
