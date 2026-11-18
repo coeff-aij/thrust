@@ -1260,15 +1260,7 @@ fn variant_weights_ok<
         && forall(|l: usize| 0 <= l && l < (*assignments).len()
             ==> (exists(|li: USize| li == l && DenseBitSet::<LocalIdx>::mem(*ineligible_locals, li))
                 ==> exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| (*assignments)[l] == SavedLocalEligibility::Ineligible(x))))
-        && forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
-            || exists(|b: USize, qa: USize, qi: USize|
-                qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
-                && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
-                    || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
-                    || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
-                && 3 * (super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
-                        + super::weight_total::<LocalIdx, F>(local_layouts) + pow2(qa) + pow2(qi))
-                    + pow2(qa) + pow2(qi) < b))
+        && size_bound_ok::<F, FieldIdx, VariantIdx, LocalIdx, C>(*calc, &entry, tag_layout, local_layouts)
         && (*repr).align == None
         && forall(|dl: TargetDataLayout, s: USize, q: USize|
             !(C::dl_of(*calc, dl)
@@ -1281,7 +1273,7 @@ fn variant_weights_ok<
         *calc, local_layouts, assignments, new, picked, repr, prefix_size, prefix_align)
 )]
 #[thrust_macros::context]
-#[thrust::reveal(variant_weights_ok)]
+#[thrust::reveal(variant_weights_ok, size_bound_ok)]
 fn variant_weights_ok_of<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
@@ -1364,11 +1356,39 @@ fn variant_fits_of_atoms<
         calc, new, local_layouts, assignments, index, vf, prefix_size, prefix_align, repr_g, picked_g, c, ww));
 }
 
-// `univariant`'s `fits_in_any_order` for the prefix of `layout()`: the prefix after the promotion
-// weighs at most the entry fields, the tag and all of `local_layouts` (`promote_locals`' `ensures`),
-// which the size bound of `layout()`'s `requires` keeps below the object size bound together with
-// the aggregate and `i8` alignments. `repr` has no alignment and the kind is `AlwaysSized`, so
-// `weighs`' sum is the weight and those two alignments' bytes.
+// `layout()`'s size bound for the entry fields and the tag: at every data layout the weight of the
+// entry fields, the tag and all of `local_layouts`, with the aggregate and `i8` alignments' bytes, three
+// times and once more is below the object size bound. Opaque: `layout()` states it once, from its
+// `requires`, and the two lemmas that bound the prefix's and the variants' weighs sums read it as
+// one atom.
+#[thrust_macros::predicate]
+#[thrust::opaque]
+fn size_bound_ok<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: LayoutCalculator<C>,
+    entry: &IndexVec<FieldIdx, F>,
+    tag_layout: F,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+) -> bool {
+    forall(|dl: TargetDataLayout| !C::dl_of(calc, dl)
+        || exists(|b: USize, qa: USize, qi: USize|
+            qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+            && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
+            && 3 * (super::weight_total::<FieldIdx, F>(entry) + F::weight_of(tag_layout)
+                    + super::weight_total::<LocalIdx, F>(local_layouts)
+                    + pow2(qa) + pow2(qi))
+                + pow2(qa) + pow2(qi) < b))
+}
+
+// `size_bound_ok` from the bound it states.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(
     forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
@@ -1381,6 +1401,32 @@ fn variant_fits_of_atoms<
                     + super::weight_total::<LocalIdx, F>(local_layouts)
                     + pow2(qa) + pow2(qi))
                 + pow2(qa) + pow2(qi) < b))
+)]
+#[thrust_macros::ensures(size_bound_ok::<F, FieldIdx, VariantIdx, LocalIdx, C>(*calc, &entry, tag_layout, local_layouts))]
+#[thrust::reveal(size_bound_ok)]
+fn size_bound_ok_intro<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    tag_layout: F,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+) {
+}
+
+// `univariant`'s `fits_in_any_order` for the prefix of `layout()`: the prefix after the promotion
+// weighs at most the entry fields, the tag and all of `local_layouts` (`promote_locals`' `ensures`),
+// which the size bound of `layout()`'s `requires` keeps below the object size bound together with
+// the aggregate and `i8` alignments. `repr` has no alignment and the kind is `AlwaysSized`, so
+// `weighs`' sum is the weight and those two alignments' bytes.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    size_bound_ok::<F, FieldIdx, VariantIdx, LocalIdx, C>(*calc, &entry, tag_layout, local_layouts)
         && super::weight_total::<FieldIdx, F>(new)
             <= super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
                 + super::weight_total::<LocalIdx, F>(local_layouts)
@@ -1389,7 +1435,7 @@ fn variant_fits_of_atoms<
 #[thrust_macros::ensures(
     LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, new, repr, StructKind::AlwaysSized)
 )]
-#[thrust::reveal(LayoutCalculator::fits_in_any_order, LayoutCalculator::weighs)]
+#[thrust::reveal(LayoutCalculator::fits_in_any_order, LayoutCalculator::weighs, size_bound_ok)]
 fn prefix_fits_in_any_order<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
@@ -2653,6 +2699,7 @@ pub fn layout<
                             + pow2(qa) + pow2(qi))
                         + pow2(qa) + pow2(qi) < b))
     );
+    thrust_macros::proof!(size_bound_ok_intro::<F, FieldIdx, VariantIdx, LocalIdx, C>(calc, entry, tag_layout, local_layouts));
     thrust_macros::proof!(prefix_fits_in_any_order(calc, entry, &prefix_layouts, tag_layout, local_layouts, &repr));
     // Reachability twin of the proof above (fail root layout_reach_prefix.rs): the path after it is
     // reachable, so no proof here is vacuous.
