@@ -359,7 +359,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .find(|item| {
                 logic_paths
                     .iter()
-                    .any(|path| tcx.get_attrs_by_path(item.def_id, path).next().is_some())
+                    .any(|path| analyze::annot::has_thrust_attr(tcx, item.def_id, path))
             });
         if let Some(item) = logic_item {
             tcx.dcx().fatal(format!(

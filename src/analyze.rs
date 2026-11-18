@@ -101,14 +101,12 @@ pub fn mir_borrowck_skip_formula_fn(
     // TODO: unify impl with local_def::Analyzer
     // if the def is closure defined in formula_fn
     let root_def_id = tcx.typeck_root_def_id(local_def_id.to_def_id());
-    let is_annotated_as_formula_fn = tcx
-        .get_attrs_by_path(local_def_id.to_def_id(), &analyze::annot::formula_fn_path())
-        .next()
-        .is_some()
-        || tcx
-            .get_attrs_by_path(root_def_id, &analyze::annot::formula_fn_path())
-            .next()
-            .is_some();
+    let is_annotated_as_formula_fn =
+        analyze::annot::has_thrust_attr(
+            tcx,
+            local_def_id.to_def_id(),
+            &analyze::annot::formula_fn_path(),
+        ) || analyze::annot::has_thrust_attr(tcx, root_def_id, &analyze::annot::formula_fn_path());
 
     if is_annotated_as_formula_fn {
         tracing::debug!(?local_def_id, "skipping borrow check for formula fn");
@@ -445,9 +443,7 @@ pub fn is_injected_std(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
 
 /// Whether `def_id` is `#[thrust::ignored]`, so that its body is not analyzed.
 pub fn is_ignored(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
-    tcx.get_attrs_by_path(def_id, &annot::ignored_path())
-        .next()
-        .is_some()
+    analyze::annot::has_thrust_attr(tcx, def_id, &annot::ignored_path())
 }
 
 /// Whether `def_id` is a function of the crate, not of the injected `std.rs`, that is ignored:
@@ -937,9 +933,7 @@ impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
 /// `THRUST_SPLIT`, each of its goals is a part of its own (see [`chc::System::goals_apart`]).
 pub fn splits_goals(tcx: mir_ty::TyCtxt<'_>, def: LocalDefId) -> bool {
     let root = tcx.typeck_root_def_id(def.to_def_id());
-    tcx.get_attrs_by_path(root, &annot::split_goals_path())
-        .next()
-        .is_some()
+    analyze::annot::has_thrust_attr(tcx, root, &annot::split_goals_path())
 }
 
 /// `THRUST_SPLIT`: the number of parts of the system solved at a time, when the parts are solved
@@ -1549,11 +1543,8 @@ impl<'tcx> Analyzer<'tcx> {
     /// Whether `def_id` is a trait's `#[thrust_macros::predicate(derived)]`. Stops if the marker
     /// is on anything but a trait item.
     pub fn is_derived_predicate(&self, def_id: DefId) -> bool {
-        let derived = self
-            .tcx
-            .get_attrs_by_path(def_id, &analyze::annot::derived_path())
-            .next()
-            .is_some();
+        let derived =
+            analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::derived_path());
         if derived && self.tcx.trait_of_assoc(def_id).is_none() {
             self.tcx.dcx().span_fatal(
                 self.tcx.def_span(def_id),
@@ -1816,11 +1807,11 @@ impl<'tcx> Analyzer<'tcx> {
         if let Some(written) = self.contract_written.borrow().get(&local_def_id) {
             return *written;
         }
-        let callable = self
-            .tcx
-            .get_attrs_by_path(local_def_id.to_def_id(), &analyze::annot::callable_path())
-            .next()
-            .is_some();
+        let callable = analyze::annot::has_thrust_attr(
+            self.tcx,
+            local_def_id.to_def_id(),
+            &analyze::annot::callable_path(),
+        );
         let has_path = |path: &[Symbol]| self.extract_path_with_attr(local_def_id, path).is_some();
         let refinements = self.extract_refinement_paths(local_def_id);
         let refines = |is_ret: bool| {
@@ -1944,12 +1935,7 @@ impl<'tcx> Analyzer<'tcx> {
         self.predicate_instances
             .borrow_mut()
             .insert(key, pred.clone());
-        if self
-            .tcx
-            .get_attrs_by_path(def_id, &analyze::annot::opaque_path())
-            .next()
-            .is_some()
-        {
+        if analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::opaque_path()) {
             self.opaque_predicates
                 .borrow_mut()
                 .push((pred.clone(), local_def_id));
@@ -2917,13 +2903,6 @@ impl<'tcx> Analyzer<'tcx> {
         }
     }
 
-    fn has_attr(&self, def: LocalDefId, path: &[rustc_span::Symbol]) -> bool {
-        self.tcx
-            .get_attrs_by_path(def.to_def_id(), path)
-            .next()
-            .is_some()
-    }
-
     /// Stops at a `#[thrust::split_goals]` on anything but a function whose body Thrust analyzes
     /// (not a closure, which takes the attribute of the function it is written in, nor a predicate,
     /// logic, trusted or ignored function): rustc does not check `thrust::` attributes, and it would
@@ -2932,7 +2911,11 @@ impl<'tcx> Analyzer<'tcx> {
         let items = self.tcx.hir_crate_items(()).definitions();
         let defs: HashSet<LocalDefId> = items.chain(self.tcx.hir_body_owners()).collect();
         for def in defs {
-            if !self.has_attr(def, &analyze::annot::split_goals_path()) {
+            if !analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::split_goals_path(),
+            ) {
                 continue;
             }
             let analyzed = matches!(
@@ -2945,7 +2928,7 @@ impl<'tcx> Analyzer<'tcx> {
                 analyze::annot::logic_path(),
             ]
             .iter()
-            .any(|path| self.has_attr(def, path));
+            .any(|path| analyze::annot::has_thrust_attr(self.tcx, def.to_def_id(), path));
             if !analyzed {
                 self.tcx.dcx().span_err(
                     self.tcx.def_span(def),
@@ -2964,11 +2947,18 @@ impl<'tcx> Analyzer<'tcx> {
         let defs: Vec<LocalDefId> = self.tcx.hir_crate_items(()).definitions().collect();
         let mut opaque_modules = HashSet::new();
         for &def in &defs {
-            if !self.has_attr(def, &opaque_path) {
+            if !analyze::annot::has_thrust_attr(self.tcx, def.to_def_id(), &opaque_path) {
                 continue;
             }
-            let spec_fn = self.has_attr(def, &analyze::annot::predicate_path())
-                || self.has_attr(def, &analyze::annot::logic_path());
+            let spec_fn = analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::predicate_path(),
+            ) || analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::logic_path(),
+            );
             if !spec_fn || !self.formula_fns.contains_key(&def) {
                 self.tcx.dcx().span_err(
                     self.tcx.def_span(def),
@@ -2989,10 +2979,23 @@ impl<'tcx> Analyzer<'tcx> {
             let analyzed = matches!(
                 self.tcx.def_kind(def),
                 rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
-            ) && !self.has_attr(def, &analyze::annot::trusted_path())
-                && !self.has_attr(def, &analyze::annot::ignored_path())
-                && !self.has_attr(def, &analyze::annot::predicate_path())
-                && !self.has_attr(def, &analyze::annot::logic_path());
+            ) && !analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::trusted_path(),
+            ) && !analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::ignored_path(),
+            ) && !analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::predicate_path(),
+            ) && !analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::logic_path(),
+            );
             if !analyzed {
                 self.tcx.dcx().span_err(
                     self.tcx.def_span(def),
@@ -3056,9 +3059,9 @@ impl<'tcx> Analyzer<'tcx> {
                 .span_err(span, format!("`#[thrust::reveal]`: cannot find `{shown}`"));
             return None;
         };
-        let opaque = target
-            .as_local()
-            .filter(|t| self.has_attr(*t, &analyze::annot::opaque_path()));
+        let opaque = target.as_local().filter(|t| {
+            analyze::annot::has_thrust_attr(self.tcx, t.to_def_id(), &analyze::annot::opaque_path())
+        });
         let Some(target) = opaque else {
             self.tcx.dcx().span_err(
                 span,

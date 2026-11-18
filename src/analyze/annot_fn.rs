@@ -1219,11 +1219,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         if Some(def_id) == self.def_ids.exists() {
             return self.exists_binders_and_body(args);
         }
-        let is_predicate = self
-            .tcx
-            .get_attrs_by_path(def_id, &analyze::annot::predicate_path())
-            .next()
-            .is_some();
+        let is_predicate =
+            analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::predicate_path());
         if !is_predicate {
             self.not_an_exists(formula.span);
         }
@@ -1602,10 +1599,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     fn is_logic(&self, def_id: DefId) -> bool {
-        self.tcx
-            .get_attrs_by_path(def_id, &analyze::annot::logic_path())
-            .next()
-            .is_some()
+        analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::logic_path())
     }
 
     /// The sorts of the parameters and of the result of the function `def_id` at `generic_args`,
@@ -3135,12 +3129,11 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 symbol, sort, arg_terms,
                             ));
                         }
-                        if self
-                            .tcx
-                            .get_attrs_by_path(def_id, &analyze::annot::predicate_path())
-                            .next()
-                            .is_some()
-                        {
+                        if analyze::annot::has_thrust_attr(
+                            self.tcx,
+                            def_id,
+                            &analyze::annot::predicate_path(),
+                        ) {
                             if let Some(formula) =
                                 self.generated_compares_call(def_id, func_expr, args)
                             {
