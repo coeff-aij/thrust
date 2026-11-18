@@ -1,0 +1,5 @@
+{"kind":"report","version":3,"root":"/workspace","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"sat","refutations":"one per query","message":null,"functions":null,"z3_answer":null}
+{"kind":"function","fn":"helper","span":{"file":"both/src/main.rs","line":1,"column":1,"end_line":3,"end_column":2},"body":"checked","reason":null,"parts":null,"verdict":"sat"}
+{"kind":"function","fn":"main","span":{"file":"both/src/main.rs","line":5,"column":1,"end_line":7,"end_column":2},"body":"checked","reason":null,"parts":null,"verdict":"sat"}
+{"kind":"site","fn":"helper","site":"contract","span":{"file":"both/src/main.rs","line":1,"column":1,"end_line":1,"end_column":25},"over":"x: int, result: int","template":"fn helper(x: {int | helper.pre(x)}) -> {int | helper.post(x, result)}","preds":[{"name":"helper.pre","args":["x"]},{"name":"helper.post","args":["x","result"]}],"solution":null,"inferred":"fn helper(x: {int | x = 1}) -> {int | result = 2 ∧ x = 1}"}

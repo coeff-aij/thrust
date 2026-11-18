@@ -1,0 +1,4 @@
+{"kind":"report","version":3,"root":"/workspace","columns":{"base":1,"unit":"char","end":"exclusive"}}
+{"kind":"verdict","verdict":"sat","refutations":"one per part","message":null,"functions":null,"z3_answer":null}
+{"kind":"part","id":1,"clauses":2,"functions":[{"fn":"identity","span":{"file":"both/src/lib.rs","line":1,"column":1,"end_line":3,"end_column":2}}],"verdict":"sat","message":null,"cached":false,"z3_answer":null}
+{"kind":"function","fn":"identity","span":{"file":"both/src/lib.rs","line":1,"column":1,"end_line":3,"end_column":2},"body":"checked","reason":null,"parts":[1],"verdict":"sat"}
