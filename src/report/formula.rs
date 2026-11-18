@@ -68,17 +68,14 @@ one_line!(Formula, Term, chc::Sort);
 
 /// `f` with each atom replaced by `g` of it.
 pub fn map_atoms(f: Formula, g: &impl Fn(Atom) -> Formula) -> Formula {
-    let all = |fs: Vec<Formula>| fs.into_iter().map(|f| map_atoms(f, g)).collect();
     match f {
         Formula::Atom(atom) => g(atom),
-        Formula::Not(f) => Formula::Not(Box::new(map_atoms(*f, g))),
-        Formula::And(fs) => Formula::And(all(fs)),
-        Formula::Or(fs) => Formula::Or(all(fs)),
-        Formula::Implies(a, b) => {
-            Formula::Implies(Box::new(map_atoms(*a, g)), Box::new(map_atoms(*b, g)))
-        }
-        Formula::Exists(vars, f) => Formula::Exists(vars, Box::new(map_atoms(*f, g))),
-        Formula::Forall(vars, f) => Formula::Forall(vars, Box::new(map_atoms(*f, g))),
+        f @ (Formula::Not(_)
+        | Formula::And(_)
+        | Formula::Or(_)
+        | Formula::Implies(..)
+        | Formula::Exists(..)
+        | Formula::Forall(..)) => f.map_subformulas(|f| map_atoms(f, g)),
     }
 }
 
@@ -401,10 +398,9 @@ pub fn tidy<V: Clone + PartialEq>(f: chc::Formula<V>) -> chc::Formula<V> {
             f => f.not(),
         },
         Formula::And(fs) => Formula::And(equalities(all(fs))),
-        Formula::Or(fs) => Formula::Or(all(fs)),
-        Formula::Implies(a, b) => Formula::Implies(Box::new(tidy(*a)), Box::new(tidy(*b))),
-        Formula::Exists(vars, f) => Formula::Exists(vars, Box::new(tidy(*f))),
-        Formula::Forall(vars, f) => Formula::Forall(vars, Box::new(tidy(*f))),
+        f @ (Formula::Or(_) | Formula::Implies(..) | Formula::Exists(..) | Formula::Forall(..)) => {
+            f.map_subformulas(tidy)
+        }
     }
 }
 

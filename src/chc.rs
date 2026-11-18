@@ -322,32 +322,8 @@ impl Sort {
         self.walk_impl(Box::new(f))
     }
 
-    /// This sort with every forall sort `f` gives a value to replaced by it.
-    pub fn subst_forall(&self, f: &impl Fn(ForallSortIdx) -> Option<Sort>) -> Sort {
-        match self {
-            Sort::Null
-            | Sort::Int
-            | Sort::BitVec { .. }
-            | Sort::Bool
-            | Sort::String
-            | Sort::Param(_) => self.clone(),
-            Sort::Forall(idx) => f(*idx).unwrap_or_else(|| self.clone()),
-            Sort::Box(s) => Sort::Box(Box::new(s.subst_forall(f))),
-            Sort::Mut(s) => Sort::Mut(Box::new(s.subst_forall(f))),
-            Sort::Seq(s) => Sort::Seq(Box::new(s.subst_forall(f))),
-            Sort::Tuple(ss) => Sort::Tuple(ss.iter().map(|s| s.subst_forall(f)).collect()),
-            Sort::Array(s1, s2) => {
-                Sort::Array(Box::new(s1.subst_forall(f)), Box::new(s2.subst_forall(f)))
-            }
-            Sort::Datatype(sort) => Sort::Datatype(DatatypeSort {
-                symbol: sort.symbol.clone(),
-                args: sort.args.iter().map(|s| s.subst_forall(f)).collect(),
-            }),
-        }
-    }
-
-    fn walk_impl<'a, 'b>(&'a self, mut f: Box<dyn FnMut(&'a Sort) + 'b>) {
-        f(self);
+    /// The immediate component sorts of this sort, in order.
+    pub fn children(&self) -> Vec<&Sort> {
         match self {
             Sort::Null
             | Sort::Int
@@ -355,22 +331,79 @@ impl Sort {
             | Sort::Bool
             | Sort::String
             | Sort::Param(_)
-            | Sort::Forall(_) => {}
-            Sort::Box(s) | Sort::Mut(s) | Sort::Seq(s) => s.walk(Box::new(&mut f)),
-            Sort::Tuple(ss) => {
-                for s in ss {
-                    s.walk(Box::new(&mut f));
-                }
-            }
+            | Sort::Forall(_) => Vec::new(),
+            Sort::Box(s) | Sort::Mut(s) | Sort::Seq(s) => vec![&**s],
+            Sort::Tuple(ss) => ss.iter().collect(),
+            Sort::Array(s1, s2) => vec![&**s1, &**s2],
+            Sort::Datatype(sort) => sort.args.iter().collect(),
+        }
+    }
+
+    /// The immediate component sorts of this sort, in order, to modify in place.
+    pub fn children_mut(&mut self) -> Vec<&mut Sort> {
+        match self {
+            Sort::Null
+            | Sort::Int
+            | Sort::BitVec { .. }
+            | Sort::Bool
+            | Sort::String
+            | Sort::Param(_)
+            | Sort::Forall(_) => Vec::new(),
+            Sort::Box(s) | Sort::Mut(s) | Sort::Seq(s) => vec![&mut **s],
+            Sort::Tuple(ss) => ss.iter_mut().collect(),
+            Sort::Array(s1, s2) => vec![&mut **s1, &mut **s2],
+            Sort::Datatype(sort) => sort.args_mut().iter_mut().collect(),
+        }
+    }
+
+    /// This sort with `f` applied to each immediate component sort, in order.
+    pub fn map_children(self, mut f: impl FnMut(Sort) -> Sort) -> Sort {
+        match self {
+            Sort::Null
+            | Sort::Int
+            | Sort::BitVec { .. }
+            | Sort::Bool
+            | Sort::String
+            | Sort::Param(_)
+            | Sort::Forall(_) => self,
+            Sort::Box(s) => Sort::Box(Box::new(f(*s))),
+            Sort::Mut(s) => Sort::Mut(Box::new(f(*s))),
+            Sort::Seq(s) => Sort::Seq(Box::new(f(*s))),
+            Sort::Tuple(ss) => Sort::Tuple(ss.into_iter().map(f).collect()),
             Sort::Array(s1, s2) => {
-                s1.walk(Box::new(&mut f));
-                s2.walk(Box::new(&mut f));
+                let s1 = f(*s1);
+                Sort::Array(Box::new(s1), Box::new(f(*s2)))
             }
-            Sort::Datatype(sort) => {
-                for s in &sort.args {
-                    s.walk(Box::new(&mut f));
-                }
-            }
+            Sort::Datatype(DatatypeSort { symbol, args }) => Sort::Datatype(DatatypeSort {
+                symbol,
+                args: args.into_iter().map(f).collect(),
+            }),
+        }
+    }
+
+    /// This sort with every forall sort `f` gives a value to replaced by it.
+    pub fn subst_forall(&self, f: &impl Fn(ForallSortIdx) -> Option<Sort>) -> Sort {
+        match self {
+            Sort::Forall(idx) => f(*idx).unwrap_or_else(|| self.clone()),
+            Sort::Null
+            | Sort::Int
+            | Sort::BitVec { .. }
+            | Sort::Bool
+            | Sort::String
+            | Sort::Param(_)
+            | Sort::Box(_)
+            | Sort::Mut(_)
+            | Sort::Seq(_)
+            | Sort::Tuple(_)
+            | Sort::Array(..)
+            | Sort::Datatype(_) => self.clone().map_children(|s| s.subst_forall(f)),
+        }
+    }
+
+    fn walk_impl<'a, 'b>(&'a self, mut f: Box<dyn FnMut(&'a Sort) + 'b>) {
+        f(self);
+        for s in self.children() {
+            s.walk(Box::new(&mut f));
         }
     }
 
@@ -952,43 +985,13 @@ pub type UserDefinedRenaming = HashMap<UserDefinedPred, UserDefinedPred>;
 impl<V> Term<V> {
     /// Replaces the user-defined functions `renaming` maps, in this term and its subterms.
     pub fn rename_user_defined(&mut self, renaming: &UserDefinedRenaming) {
-        match self {
-            Term::UserDefinedFn(symbol, _, args) => {
-                if let Some(to) = renaming.get(symbol) {
-                    *symbol = to.clone();
-                }
-                args.iter_mut()
-                    .for_each(|t| t.rename_user_defined(renaming));
+        if let Term::UserDefinedFn(symbol, _, _) = self {
+            if let Some(to) = renaming.get(symbol) {
+                *symbol = to.clone();
             }
-            Term::Box(t)
-            | Term::BoxCurrent(t)
-            | Term::MutCurrent(t)
-            | Term::MutFinal(t)
-            | Term::TupleProj(t, _)
-            | Term::DatatypeDiscr(_, t)
-            | Term::DatatypeSelector(.., t)
-            | Term::ArrayLambda(_, _, t)
-            | Term::IntToBitVec { term: t, .. } => t.rename_user_defined(renaming),
-            Term::Mut(t1, t2) => {
-                t1.rename_user_defined(renaming);
-                t2.rename_user_defined(renaming);
-            }
-            Term::App(_, args)
-            | Term::Tuple(args)
-            | Term::DatatypeCtor(_, _, args)
-            | Term::ForallFn(_, args) => {
-                args.iter_mut()
-                    .for_each(|t| t.rename_user_defined(renaming));
-            }
-            Term::Null
-            | Term::ForallDefault(_)
-            | Term::Var(_)
-            | Term::Bool(_)
-            | Term::Int(_)
-            | Term::String(_)
-            | Term::ArrayEmpty(..)
-            | Term::SeqEmpty(_)
-            | Term::UserQuantifiedVar(..) => {}
+        }
+        for t in self.subterms_mut() {
+            t.rename_user_defined(renaming);
         }
     }
 
@@ -1034,52 +1037,10 @@ impl<V> Term<V> {
         }
     }
 
-    // TODO: ?
-    fn subst_var_impl<W>(self, mut f: Box<dyn FnMut(V) -> Term<W> + '_>) -> Term<W> {
-        match self {
-            Term::Null => Term::Null,
-            Term::ForallDefault(idx) => Term::ForallDefault(idx),
-            Term::Var(v) => f(v),
-            Term::Bool(b) => Term::Bool(b),
-            Term::Int(n) => Term::Int(n),
-            Term::String(s) => Term::String(s),
-            Term::Box(t) => Term::Box(Box::new(t.subst_var(f))),
-            Term::Mut(t1, t2) => {
-                Term::Mut(Box::new(t1.subst_var(&mut f)), Box::new(t2.subst_var(f)))
-            }
-            Term::BoxCurrent(t) => Term::BoxCurrent(Box::new(t.subst_var(f))),
-            Term::MutCurrent(t) => Term::MutCurrent(Box::new(t.subst_var(f))),
-            Term::MutFinal(t) => Term::MutFinal(Box::new(t.subst_var(f))),
-            Term::ArrayLambda(v, s, t) => Term::ArrayLambda(v, s, Box::new(t.subst_var(f))),
-            Term::App(fun, args) => {
-                Term::App(fun, args.into_iter().map(|t| t.subst_var(&mut f)).collect())
-            }
-            Term::ArrayEmpty(s1, s2) => Term::ArrayEmpty(s1, s2),
-            Term::SeqEmpty(s) => Term::SeqEmpty(s),
-            Term::Tuple(ts) => Term::Tuple(ts.into_iter().map(|t| t.subst_var(&mut f)).collect()),
-            Term::TupleProj(t, i) => Term::TupleProj(Box::new(t.subst_var(f)), i),
-            Term::DatatypeCtor(sort, c_sym, args) => Term::DatatypeCtor(
-                sort,
-                c_sym,
-                args.into_iter().map(|t| t.subst_var(&mut f)).collect(),
-            ),
-            Term::DatatypeDiscr(d_sym, t) => Term::DatatypeDiscr(d_sym, Box::new(t.subst_var(f))),
-            Term::DatatypeSelector(sel, t) => Term::DatatypeSelector(sel, Box::new(t.subst_var(f))),
-
-            Term::UserDefinedFn(symbol, sort, args) => Term::UserDefinedFn(
-                symbol,
-                sort,
-                args.into_iter().map(|t| t.subst_var(&mut f)).collect(),
-            ),
-            Term::ForallFn(pred, args) => Term::ForallFn(
-                pred,
-                args.into_iter().map(|t| t.subst_var(&mut f)).collect(),
-            ),
-            Term::IntToBitVec { width, term } => Term::IntToBitVec {
-                width,
-                term: Box::new(term.subst_var(f)),
-            },
-            Term::UserQuantifiedVar(sort, var) => Term::UserQuantifiedVar(sort, var),
+    fn subst_var_impl<W>(self, f: &mut dyn FnMut(V) -> Term<W>) -> Term<W> {
+        match self.map_subterms_or_var(|t| t.subst_var_impl(&mut *f)) {
+            Ok(t) => t,
+            Err(v) => f(v),
         }
     }
 
@@ -1087,7 +1048,8 @@ impl<V> Term<V> {
     where
         F: FnMut(V) -> Term<W>,
     {
-        self.subst_var_impl::<W>(Box::new(f))
+        let mut f = f;
+        self.subst_var_impl::<W>(&mut f)
     }
 
     pub fn map_var<F, W>(self, mut f: F) -> Term<W>
@@ -1146,30 +1108,31 @@ impl<V> Term<V> {
             | Term::Bool(_)
             | Term::Int(_)
             | Term::String(_)
-            | Term::ArrayEmpty { .. }
-            | Term::UserQuantifiedVar { .. } => Box::new(std::iter::empty()),
-            Term::Box(t) => t.fv_impl(),
-            Term::Mut(t1, t2) => Box::new(t1.fv_impl().chain(t2.fv_impl())),
-            Term::BoxCurrent(t) => t.fv_impl(),
-            Term::MutCurrent(t) => t.fv_impl(),
-            Term::MutFinal(t) => t.fv_impl(),
-            Term::ArrayLambda(_, _, t) => t.fv_impl(),
-            Term::App(_, args) => Box::new(args.iter().flat_map(|t| t.fv_impl())),
-            Term::SeqEmpty(_) => Box::new(std::iter::empty()),
-            Term::Tuple(ts) => Box::new(ts.iter().flat_map(|t| t.fv_impl())),
-            Term::TupleProj(t, _) => t.fv_impl(),
-            Term::DatatypeCtor(_, _, args) => Box::new(args.iter().flat_map(|t| t.fv_impl())),
-            Term::DatatypeDiscr(_, t)
-            | Term::DatatypeSelector(.., t)
-            | Term::IntToBitVec { term: t, .. } => t.fv_impl(),
-            Term::UserDefinedFn(_, _, args) | Term::ForallFn(_, args) => {
-                Box::new(args.iter().flat_map(|t| t.fv_impl()))
+            | Term::Box(_)
+            | Term::Mut(..)
+            | Term::BoxCurrent(_)
+            | Term::MutCurrent(_)
+            | Term::MutFinal(_)
+            | Term::App(..)
+            | Term::ArrayEmpty(..)
+            | Term::SeqEmpty(_)
+            | Term::Tuple(_)
+            | Term::TupleProj(..)
+            | Term::DatatypeCtor(..)
+            | Term::DatatypeDiscr(..)
+            | Term::DatatypeSelector(..)
+            | Term::UserDefinedFn(..)
+            | Term::ForallFn(..)
+            | Term::IntToBitVec { .. }
+            | Term::UserQuantifiedVar(..)
+            | Term::ArrayLambda(..) => {
+                Box::new(self.subterms().into_iter().flat_map(|t| t.fv_impl()))
             }
         }
     }
 
     /// The immediate subterms of this term, in order.
-    fn subterms(&self) -> Vec<&Term<V>> {
+    pub fn subterms(&self) -> Vec<&Term<V>> {
         match self {
             Term::Box(t)
             | Term::BoxCurrent(t)
@@ -1196,6 +1159,86 @@ impl<V> Term<V> {
             | Term::SeqEmpty(_)
             | Term::UserQuantifiedVar(_, _) => Vec::new(),
         }
+    }
+
+    /// The immediate subterms of this term, in order, to modify in place.
+    pub fn subterms_mut(&mut self) -> Vec<&mut Term<V>> {
+        match self {
+            Term::Box(t)
+            | Term::BoxCurrent(t)
+            | Term::MutCurrent(t)
+            | Term::MutFinal(t)
+            | Term::TupleProj(t, _)
+            | Term::DatatypeDiscr(_, t)
+            | Term::DatatypeSelector(.., t)
+            | Term::ArrayLambda(_, _, t)
+            | Term::IntToBitVec { term: t, .. } => vec![&mut **t],
+            Term::Mut(t1, t2) => vec![&mut **t1, &mut **t2],
+            Term::App(_, args)
+            | Term::Tuple(args)
+            | Term::DatatypeCtor(_, _, args)
+            | Term::UserDefinedFn(_, _, args)
+            | Term::ForallFn(_, args) => args.iter_mut().collect(),
+            Term::Null
+            | Term::ForallDefault(_)
+            | Term::Var(_)
+            | Term::Bool(_)
+            | Term::Int(_)
+            | Term::String(_)
+            | Term::ArrayEmpty(_, _)
+            | Term::SeqEmpty(_)
+            | Term::UserQuantifiedVar(_, _) => Vec::new(),
+        }
+    }
+
+    /// This term with `f` applied to each immediate subterm, in order. A variable has no
+    /// subterms and its type changes with `W`, so it is returned as `Err` for the caller to
+    /// convert.
+    pub fn map_subterms_or_var<W>(
+        self,
+        mut f: impl FnMut(Term<V>) -> Term<W>,
+    ) -> Result<Term<W>, V> {
+        Ok(match self {
+            Term::Var(v) => return Err(v),
+            Term::Null => Term::Null,
+            Term::ForallDefault(idx) => Term::ForallDefault(idx),
+            Term::Bool(b) => Term::Bool(b),
+            Term::Int(n) => Term::Int(n),
+            Term::String(s) => Term::String(s),
+            Term::ArrayEmpty(s1, s2) => Term::ArrayEmpty(s1, s2),
+            Term::SeqEmpty(s) => Term::SeqEmpty(s),
+            Term::UserQuantifiedVar(sort, var) => Term::UserQuantifiedVar(sort, var),
+            Term::Box(t) => Term::Box(Box::new(f(*t))),
+            Term::Mut(t1, t2) => {
+                let t1 = f(*t1);
+                Term::Mut(Box::new(t1), Box::new(f(*t2)))
+            }
+            Term::BoxCurrent(t) => Term::BoxCurrent(Box::new(f(*t))),
+            Term::MutCurrent(t) => Term::MutCurrent(Box::new(f(*t))),
+            Term::MutFinal(t) => Term::MutFinal(Box::new(f(*t))),
+            Term::ArrayLambda(v, s, t) => Term::ArrayLambda(v, s, Box::new(f(*t))),
+            Term::TupleProj(t, i) => Term::TupleProj(Box::new(f(*t)), i),
+            Term::DatatypeDiscr(sym, t) => Term::DatatypeDiscr(sym, Box::new(f(*t))),
+            Term::DatatypeSelector(sel, t) => Term::DatatypeSelector(sel, Box::new(f(*t))),
+            Term::IntToBitVec { width, term } => Term::IntToBitVec {
+                width,
+                term: Box::new(f(*term)),
+            },
+            Term::App(fun, args) => Term::App(fun, args.into_iter().map(f).collect()),
+            Term::Tuple(ts) => Term::Tuple(ts.into_iter().map(f).collect()),
+            Term::DatatypeCtor(sort, sym, args) => {
+                Term::DatatypeCtor(sort, sym, args.into_iter().map(f).collect())
+            }
+            Term::UserDefinedFn(sym, sort, args) => {
+                Term::UserDefinedFn(sym, sort, args.into_iter().map(f).collect())
+            }
+            Term::ForallFn(pred, args) => Term::ForallFn(pred, args.into_iter().map(f).collect()),
+        })
+    }
+
+    /// This term with `f` applied to each immediate subterm, in order.
+    pub fn map_subterms(self, f: impl FnMut(Term<V>) -> Term<V>) -> Term<V> {
+        self.map_subterms_or_var(f).unwrap_or_else(Term::Var)
     }
 
     /// This term and all its subterms, each before its own subterms.
@@ -2421,19 +2464,61 @@ where
 impl<V> Formula<V> {
     /// Replaces the user-defined predicates and functions `renaming` maps.
     pub fn rename_user_defined(&mut self, renaming: &UserDefinedRenaming) {
-        match self {
-            Formula::Atom(atom) => atom.rename_user_defined(renaming),
-            Formula::Not(f) | Formula::Exists(_, f) | Formula::Forall(_, f) => {
-                f.rename_user_defined(renaming)
-            }
-            Formula::And(fs) | Formula::Or(fs) => {
-                fs.iter_mut().for_each(|f| f.rename_user_defined(renaming))
-            }
-            Formula::Implies(lhs, rhs) => {
-                lhs.rename_user_defined(renaming);
-                rhs.rename_user_defined(renaming);
-            }
+        if let Formula::Atom(atom) = self {
+            atom.rename_user_defined(renaming);
         }
+        for f in self.subformulas_mut() {
+            f.rename_user_defined(renaming);
+        }
+    }
+
+    /// The immediate subformulas of this formula, in order. An atom has none, though its guard
+    /// is a formula.
+    pub fn subformulas(&self) -> Vec<&Formula<V>> {
+        match self {
+            Formula::Atom(_) => Vec::new(),
+            Formula::Not(f) | Formula::Exists(_, f) | Formula::Forall(_, f) => vec![&**f],
+            Formula::And(fs) | Formula::Or(fs) => fs.iter().collect(),
+            Formula::Implies(lhs, rhs) => vec![&**lhs, &**rhs],
+        }
+    }
+
+    /// The immediate subformulas of this formula, in order, to modify in place.
+    pub fn subformulas_mut(&mut self) -> Vec<&mut Formula<V>> {
+        match self {
+            Formula::Atom(_) => Vec::new(),
+            Formula::Not(f) | Formula::Exists(_, f) | Formula::Forall(_, f) => vec![&mut **f],
+            Formula::And(fs) | Formula::Or(fs) => fs.iter_mut().collect(),
+            Formula::Implies(lhs, rhs) => vec![&mut **lhs, &mut **rhs],
+        }
+    }
+
+    /// This formula with `f` applied to each immediate subformula, in order; an atom is
+    /// returned as it is.
+    pub fn map_subformulas(self, f: impl FnMut(Formula<V>) -> Formula<V>) -> Formula<V> {
+        self.map_subformulas_or_atom(f)
+            .unwrap_or_else(|atom| Formula::Atom(*atom))
+    }
+
+    /// This formula with `f` applied to each immediate subformula, in order. An atom has no
+    /// subformulas and its type changes with `W`, so it is returned as `Err` for the caller to
+    /// convert.
+    pub fn map_subformulas_or_atom<W>(
+        self,
+        mut f: impl FnMut(Formula<V>) -> Formula<W>,
+    ) -> Result<Formula<W>, Box<Atom<V>>> {
+        Ok(match self {
+            Formula::Atom(atom) => return Err(Box::new(atom)),
+            Formula::Not(fo) => Formula::Not(Box::new(f(*fo))),
+            Formula::And(fs) => Formula::And(fs.into_iter().map(f).collect()),
+            Formula::Or(fs) => Formula::Or(fs.into_iter().map(f).collect()),
+            Formula::Implies(lhs, rhs) => {
+                let lhs = f(*lhs);
+                Formula::Implies(Box::new(lhs), Box::new(f(*rhs)))
+            }
+            Formula::Exists(vars, fo) => Formula::Exists(vars, Box::new(f(*fo))),
+            Formula::Forall(vars, fo) => Formula::Forall(vars, Box::new(f(*fo))),
+        })
     }
 
     fn pretty_atom<'a, 'b, D>(
@@ -2590,40 +2675,22 @@ impl<V> Formula<V> {
     where
         F: FnMut(V) -> Term<W>,
     {
-        // TODO: remove this
-        let mut f: Box<dyn FnMut(V) -> Term<W>> = Box::new(f);
-        match self {
-            Formula::Atom(atom) => Formula::Atom(atom.subst_var(f)),
-            Formula::Not(fo) => Formula::Not(Box::new(fo.subst_var(f))),
-            Formula::And(fs) => {
-                Formula::And(fs.into_iter().map(|fo| fo.subst_var(&mut f)).collect())
-            }
-            Formula::Or(fs) => Formula::Or(fs.into_iter().map(|fo| fo.subst_var(&mut f)).collect()),
-            Formula::Implies(lhs, rhs) => {
-                Formula::Implies(Box::new(lhs.subst_var(&mut f)), Box::new(rhs.subst_var(f)))
-            }
-            Formula::Exists(vars, fo) => Formula::Exists(vars, Box::new(fo.subst_var(f))),
-            Formula::Forall(vars, fo) => Formula::Forall(vars, Box::new(fo.subst_var(f))),
+        let mut f = f;
+        self.subst_var_impl(&mut f)
+    }
+
+    fn subst_var_impl<W>(self, f: &mut dyn FnMut(V) -> Term<W>) -> Formula<W> {
+        match self.map_subformulas_or_atom(|fo| fo.subst_var_impl(&mut *f)) {
+            Ok(fo) => fo,
+            Err(atom) => Formula::Atom((*atom).subst_var(f)),
         }
     }
 
-    pub fn map_var<F, W>(self, f: F) -> Formula<W>
+    pub fn map_var<F, W>(self, mut f: F) -> Formula<W>
     where
         F: FnMut(V) -> W,
     {
-        // TODO: remove this
-        let mut f: Box<dyn FnMut(V) -> W> = Box::new(f);
-        match self {
-            Formula::Atom(atom) => Formula::Atom(atom.map_var(f)),
-            Formula::Not(fo) => Formula::Not(Box::new(fo.map_var(&mut f))),
-            Formula::And(fs) => Formula::And(fs.into_iter().map(|fo| fo.map_var(&mut f)).collect()),
-            Formula::Or(fs) => Formula::Or(fs.into_iter().map(|fo| fo.map_var(&mut f)).collect()),
-            Formula::Implies(lhs, rhs) => {
-                Formula::Implies(Box::new(lhs.map_var(&mut f)), Box::new(rhs.map_var(f)))
-            }
-            Formula::Exists(vars, fo) => Formula::Exists(vars, Box::new(fo.map_var(f))),
-            Formula::Forall(vars, fo) => Formula::Forall(vars, Box::new(fo.map_var(f))),
-        }
+        self.subst_var(|v| Term::Var(f(v)))
     }
 
     pub fn fv(&self) -> impl Iterator<Item = &V> {
@@ -2633,12 +2700,12 @@ impl<V> Formula<V> {
     fn fv_impl(&self) -> Box<dyn Iterator<Item = &V> + '_> {
         match self {
             Formula::Atom(atom) => Box::new(atom.fv()),
-            Formula::Not(fo) => Box::new(fo.fv()),
-            Formula::And(fs) => Box::new(fs.iter().flat_map(Formula::fv)),
-            Formula::Or(fs) => Box::new(fs.iter().flat_map(Formula::fv)),
-            Formula::Implies(lhs, rhs) => Box::new(lhs.fv().chain(rhs.fv())),
-            Formula::Exists(_, fo) => Box::new(fo.fv()),
-            Formula::Forall(_, fo) => Box::new(fo.fv()),
+            Formula::Not(_)
+            | Formula::And(_)
+            | Formula::Or(_)
+            | Formula::Implies(..)
+            | Formula::Exists(..)
+            | Formula::Forall(..) => Box::new(self.subformulas().into_iter().flat_map(Formula::fv)),
         }
     }
 
@@ -2649,12 +2716,14 @@ impl<V> Formula<V> {
     fn iter_atoms_impl(&self) -> Box<dyn Iterator<Item = &Atom<V>> + '_> {
         match self {
             Formula::Atom(atom) => Box::new(std::iter::once(atom)),
-            Formula::Not(fo) => Box::new(fo.iter_atoms()),
-            Formula::And(fs) => Box::new(fs.iter().flat_map(Formula::iter_atoms)),
-            Formula::Or(fs) => Box::new(fs.iter().flat_map(Formula::iter_atoms)),
-            Formula::Implies(lhs, rhs) => Box::new(lhs.iter_atoms().chain(rhs.iter_atoms())),
-            Formula::Exists(_, fo) => Box::new(fo.iter_atoms()),
-            Formula::Forall(_, fo) => Box::new(fo.iter_atoms()),
+            Formula::Not(_)
+            | Formula::And(_)
+            | Formula::Or(_)
+            | Formula::Implies(..)
+            | Formula::Exists(..)
+            | Formula::Forall(..) => {
+                Box::new(self.subformulas().into_iter().flat_map(Formula::iter_atoms))
+            }
         }
     }
 
@@ -4558,52 +4627,35 @@ fn collect_forall_defaults(term: &Term<TermVarIdx>, used: &mut HashSet<ForallSor
         Term::ForallDefault(idx) => {
             used.insert(*idx);
         }
-        Term::Box(t) | Term::BoxCurrent(t) | Term::MutCurrent(t) | Term::MutFinal(t) => {
-            collect_forall_defaults(t, used)
-        }
-        Term::ArrayLambda(_, s, t) => {
-            collect_forall_defaults(&Term::default_for(s), used);
-            collect_forall_defaults(t, used)
-        }
-        Term::Mut(t1, t2) => {
-            collect_forall_defaults(t1, used);
-            collect_forall_defaults(t2, used);
-        }
-        Term::App(_, args) => {
-            for t in args {
-                collect_forall_defaults(t, used);
-            }
-        }
-        Term::Tuple(ts) => {
-            for t in ts {
-                collect_forall_defaults(t, used);
-            }
-        }
-        Term::TupleProj(t, _) => collect_forall_defaults(t, used),
+        Term::ArrayLambda(_, s, _) => collect_forall_defaults(&Term::default_for(s), used),
         // An empty array carries no default of its own in the AST: the SMT-LIB2
         // writer synthesises `default_for(elem)` for it at print time, so ask the
         // same function which defaults that will reference.
         Term::ArrayEmpty(_, elem) => collect_forall_defaults(&Term::default_for(elem), used),
-        Term::SeqEmpty(_) => {}
-        Term::DatatypeCtor(_, _, args) => {
-            for t in args {
-                collect_forall_defaults(t, used);
-            }
-        }
-        Term::DatatypeDiscr(_, t)
-        | Term::DatatypeSelector(.., t)
-        | Term::IntToBitVec { term: t, .. } => collect_forall_defaults(t, used),
-        Term::UserDefinedFn(_, _, args) | Term::ForallFn(_, args) => {
-            for t in args {
-                collect_forall_defaults(t, used);
-            }
-        }
         Term::Null
         | Term::Var(_)
         | Term::Bool(_)
         | Term::Int(_)
         | Term::String(_)
-        | Term::UserQuantifiedVar(_, _) => {}
+        | Term::Box(_)
+        | Term::Mut(..)
+        | Term::BoxCurrent(_)
+        | Term::MutCurrent(_)
+        | Term::MutFinal(_)
+        | Term::App(..)
+        | Term::SeqEmpty(_)
+        | Term::Tuple(_)
+        | Term::TupleProj(..)
+        | Term::DatatypeCtor(..)
+        | Term::DatatypeDiscr(..)
+        | Term::DatatypeSelector(..)
+        | Term::UserDefinedFn(..)
+        | Term::ForallFn(..)
+        | Term::IntToBitVec { .. }
+        | Term::UserQuantifiedVar(..) => {}
+    }
+    for t in term.subterms() {
+        collect_forall_defaults(t, used);
     }
 }
 
