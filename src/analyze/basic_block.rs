@@ -2600,11 +2600,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         (func_ty, expected_args)
     }
 
-    /// Checks the captures `captures` of a closure value built here against the types its body is
-    /// analyzed with, as a direct call of the closure checks its receiver. A `pre!` or `post!` of
-    /// the closure states the body's contract as a formula of the closure value, which says nothing
-    /// of a function pointer the closure holds: such a value has no term, so without this check
-    /// the body's assumption of what the pointer returns holds of no closure the program builds.
+    /// Checks the function pointers among the captures `captures` of a closure value built here
+    /// against the types its body is analyzed with, as a direct call of the closure checks its
+    /// receiver. A `pre!` or `post!` of the closure states the body's contract as a formula of the
+    /// closure value, which says nothing of a function pointer the closure holds: such a value has
+    /// no term, so without this check the body's assumption of what the pointer returns holds of
+    /// no closure the program builds. The refinements of the captures are left to the calls: they
+    /// are part of the closure's precondition, which a direct call and a `pre!` require, and one
+    /// that no built value meets says that the closure is never called.
     /// Outside its body the closure's pointers are then opaque (`Unrefined::closure` in
     /// `refine::template`).
     fn check_closure_captures(
@@ -2628,7 +2631,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .ty
             .as_function()
             .expect("closure def type is a function")
-            .closure_captures();
+            .closure_captures()
+            .strip_refinement();
+        let expected = rty::RefinedType::unrefined(expected);
         let clauses = self
             .env
             .relate_sub_refined_type(&captures.clone().into(), &expected);
