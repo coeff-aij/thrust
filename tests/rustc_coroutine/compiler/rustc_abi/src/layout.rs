@@ -878,9 +878,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                             |&x: &FieldIdx| {
                                 let f = &fields[x];
                                 let field_size = f.size.bytes();
-                                // The three `map_or` calls' preconditions, stated before each call: the first two are `proof_assert!`s;
-                                // the third is assumed (fallback, with fptprove): delete once the solver answers it. Proved in place, all 2 parts
-                                // of this site get no answer at 300 s with fptprove e74f0750b.
+                                // The three `map_or` calls' preconditions, stated as `proof_assert!`s before each call.
                                 let niche = f.largest_niche;
                                 let size_of_niche = thrust_macros::closure!(
                                     captures(dl: &&&TargetDataLayout),
@@ -929,13 +927,11 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                             !(field_size - value_size - n.offset.bytes())
                                         },
                                         );
-                                        thrust_macros::assume!(|niche: Option<Niche>, end_offset_of_niche: _|
+                                        thrust_macros::proof_assert!(|niche: Option<Niche>, end_offset_of_niche: _|
                                             niche == None || exists(|i: <Niche as thrust_models::Model>::Ty| niche == Some(i) && thrust_macros::pre!(end_offset_of_niche(i))));
                                         niche.map_or(0, end_offset_of_niche)
                                     }
                                 };
-                                #[cfg(thrust_univariant_biased_reach = "map_or")]
-                                thrust_macros::proof_assert!(|x: FieldIdx| false);
 
                                 // The `proof_assert!` below states `alignment_group_key`'s
                                 // `requires` at this call over the capture `dl`, named `key_dl`:
@@ -1178,12 +1174,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         let optimize_abi = !repr.inhibit_newtype_abi_optimization();
 
         if sized && size.bytes() > 0 {
-            // Assumed (fallback, with fptprove): delete once the solver answers it. `iter_enumerated`'s
-            // requires, `layout_pre`'s `can_new` at the number of fields; checked from `layout_pre` by a
-            // lemma it makes the key closures' part (`Size::bytes`, `deref`, `is_zst`) unanswered.
-            thrust_macros::assume!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
-            #[cfg(thrust_univariant_biased_reach = "iter_enumerated")]
-            thrust_macros::proof_assert!(|kind: StructKind| false);
+            // `iter_enumerated`'s requires, `layout_pre`'s `can_new` at the number of fields.
+            thrust_macros::proof_assert!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
             // Rewrite (rewrites.md R8): `Filter::new(it, p)` for `it.filter(p)`. The preconditions
             // of `Filter::new` and of each `next` are `proof_assert!`s before the calls; the closure
             // is bound to a name for the formula to take its type.
@@ -1244,9 +1236,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     (BackendRepr::Scalar(a), BackendRepr::Scalar(b)) => {
                         // A step of `scalar_pair`'s `requires`, before the order of the pair is
                         // chosen.
-                        // Assumed (fallback, with fptprove, the step's own goal): restore
-                        // `proof_assert!` once the solver answers it.
-                        thrust_macros::assume!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
+                        thrust_macros::proof_assert!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
                             forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
                         // The indexes `offsets[i]` and `offsets[j]`'s requires. They hold: `i` and `j` are
                         // positions of `iter_enumerated(fields)`, and `offsets` has as many entries as
@@ -1292,9 +1282,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         // which binds the two indices to `k0` and `k1` so that they can be stated.
                         // They hold: `i` and `j` are positions of `iter_enumerated(fields)`, `offsets` has as
                         // many entries as `fields` (the `requires`), and `FieldIdx::new(0)` is in range.
-                        // The bound of `offsets[i]` is assumed (fallback, with fptprove: delete once the
-                        // solver answers it); the others are checked.
-                        thrust_macros::assume!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
+                        thrust_macros::proof_assert!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
                         thrust_macros::proof_assert!(|j: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < offsets.len());
                         thrust_macros::proof_assert!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <FieldIdx as Idx>::can_new(z)));
                         let k0 = FieldIdx::new(0);
@@ -1333,12 +1321,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
 
         let seed = field_seed.wrapping_add(repr.field_shuffle_seed);
 
-        // Assumed (fallback, with fptprove): delete once the solver answers it. The goal is
-        // `layout_pre`'s `can_new` at 0, cut off at 300 s with 4 CPUs when checked here (a
-        // lemma from `layout_pre` does not change that). `VariantIdx::new(0)`'s requires.
-        thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)));
-        #[cfg(thrust_univariant_biased_reach = "variant_index")]
-        thrust_macros::proof_assert!(|kind: StructKind| false);
+        // `VariantIdx::new(0)`'s requires, `layout_pre`'s `can_new` at 0.
+        thrust_macros::proof_assert!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)));
         LayoutData {
             variants: Variants::Single {
                 index: VariantIdx::new(0),
