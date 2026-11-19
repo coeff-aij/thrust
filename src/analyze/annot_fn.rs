@@ -2082,8 +2082,89 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             defs: &self.analyzer.enum_defs,
             fresh: &mut fresh,
         };
-        let post = fn_ty.once_postcondition_formula(&param_args, result, final_state, &mut parts);
+        let post = match final_state.clone() {
+            Some((final_, sort)) => {
+                let relation = self.concrete_closure_final_relation(
+                    receiver_ty,
+                    self.to_term(receiver),
+                    chc::Term::UserQuantifiedVar(sort.clone(), final_),
+                );
+                fn_ty.once_postcondition_formula(
+                    &param_args,
+                    result,
+                    Some((final_, sort)),
+                    relation,
+                    &mut parts,
+                )
+            }
+            None => {
+                let post =
+                    fn_ty.once_postcondition_formula(&param_args, result, None, None, &mut parts);
+                match self.explicit_final_state_relation(receiver, receiver_ty) {
+                    Some(relation) => post.and(relation),
+                    None => post,
+                }
+            }
+        };
         FormulaOrTerm::Formula(post)
+    }
+
+    /// The relation `post!(Mut::new(from, to)(..))` at a concrete closure states between its
+    /// states, when the receiver names the final state `to` itself.
+    ///
+    /// Creusot's `postcondition_mut_hist_inv` (`creusot-std/src/std/ops.rs`) gives
+    /// `postcondition_mut(self, args, to, res) ==> hist_inv(self, to)`, and for `Fn` the
+    /// postcondition is that of `postcondition_mut` with `self == to`. Without it a body that
+    /// takes the closure by `&` leaves `to` unconstrained.
+    fn explicit_final_state_relation(
+        &self,
+        receiver: &'tcx rustc_hir::Expr<'tcx>,
+        receiver_ty: mir_ty::Ty<'tcx>,
+    ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
+        match receiver_ty.kind() {
+            mir_ty::TyKind::Adt(adt, _) if Some(adt.did()) == self.def_ids.mut_model() => {}
+            _ => return None,
+        }
+        let pair = self.to_term(receiver);
+        self.concrete_closure_final_relation(
+            receiver_ty,
+            pair.clone().mut_current(),
+            pair.mut_final(),
+        )
+    }
+
+    /// The relation `hist_inv!` stands for between the states `from` and `to` of the concrete
+    /// closure a receiver of type `receiver_ty` calls, defined as at `hist_inv!`
+    /// ([`Analyzer::closure_hist_inv_definition`]); `None` at anything else (a closure type
+    /// parameter has the law as a premise of its clauses, a `FnOnce` closure no relation).
+    fn concrete_closure_final_relation(
+        &self,
+        receiver_ty: mir_ty::Ty<'tcx>,
+        from: chc::Term<rty::FunctionParamIdx>,
+        to: chc::Term<rty::FunctionParamIdx>,
+    ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
+        let (closure_ty, refs) = self.receiver_closure_behind_refs(receiver_ty)?;
+        let mir_ty::TyKind::Closure(_, closure_args) = closure_ty.kind() else {
+            return None;
+        };
+        if refs > 0 {
+            return None;
+        }
+        match closure_args.as_closure().kind() {
+            mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnMut => {}
+            mir_ty::ClosureKind::FnOnce => return None,
+        }
+        let model_ty = match receiver_ty.kind() {
+            mir_ty::TyKind::Adt(adt, args) if Some(adt.did()) == self.def_ids.mut_model() => {
+                args.type_at(0)
+            }
+            _ => receiver_ty,
+        };
+        let upvars_sort = self.type_builder.build(model_ty).to_sort();
+        Some(
+            self.analyzer
+                .closure_hist_inv_definition(closure_ty, &upvars_sort, from, to),
+        )
     }
 
     fn translate_closure_hist_inv(
