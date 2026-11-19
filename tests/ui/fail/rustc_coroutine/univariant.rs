@@ -25,7 +25,7 @@ pub mod rustc_abi;
 #[path = "../../../rustc_coroutine/thrust/mod.rs"]
 pub mod case_study;
 
-use rustc_abi::{HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, StructKind};
+use rustc_abi::{FieldWeight, HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, StructKind};
 use rustc_index::{Idx, IndexSlice};
 
 // The fail twin: the caller of `univariant` does not establish that `F`'s `deref` is a function
@@ -42,7 +42,7 @@ fn drive< //~ ERROR: Unsat
     Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq + thrust_models::Model<Ty = <F as thrust_models::Model>::Ty>> + FieldWeight,
 >(
     calc: &LayoutCalculator<Cx>,
     fields: &IndexSlice<FieldIdx, F>,
