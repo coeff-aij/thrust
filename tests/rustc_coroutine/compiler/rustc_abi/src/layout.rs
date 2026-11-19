@@ -1362,7 +1362,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // Assumed (fallback, with fptprove): delete once the solver answers it. The goal is
         // `layout_pre`'s `can_new` at 0, cut off at 300 s with 4 CPUs when checked here (a
         // lemma from `layout_pre` does not change that). `VariantIdx::new(0)`'s requires.
-        thrust_macros::assume!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)));
+        thrust_macros::proof_assert!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z)));
         #[cfg(thrust_univariant_biased_reach = "variant_index")]
         thrust_macros::proof_assert!(|kind: StructKind| false);
         LayoutData {
