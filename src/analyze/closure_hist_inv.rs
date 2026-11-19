@@ -65,6 +65,27 @@ pub fn by_value_captures<'tcx>(
         .collect()
 }
 
+/// Whether `closure_ty` is the closure at the parameters of the function it is written in, the
+/// arguments its body is checked at once for every instance. A closure of a function without
+/// type or const parameters always is.
+fn closure_at_own_parameters<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    closure_ty: mir_ty::Ty<'tcx>,
+) -> bool {
+    let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
+        return false;
+    };
+    let identity = mir_ty::GenericArgs::identity_for_item(tcx, tcx.typeck_root_def_id(*def_id));
+    let non_region = |arg: &mir_ty::GenericArg<'tcx>| arg.as_region().is_none();
+    let parent_args = args.as_closure().parent_args();
+    parent_args.len() == identity.len()
+        && parent_args
+            .iter()
+            .copied()
+            .filter(non_region)
+            .eq(identity.iter().filter(non_region))
+}
+
 /// `relation` applied to the captures at `positions` of the states `from` and `to`.
 pub fn by_value_related<V: chc::Var>(
     relation: chc::PredVarId,
@@ -271,7 +292,8 @@ pub fn explicit_laws(
     clauses
 }
 
-/// The laws of the relation `pred` of a closure type parameter whose contract is `contract`.
+/// The laws of the relation `pred` of a closure type parameter whose contract is `contract`; at an
+/// `Fn` bound, as in Creusot, the relation is the equality of states.
 pub fn laws(
     system: &mut chc::System,
     pred: &chc::ForallPred,
@@ -300,6 +322,15 @@ pub fn laws(
 
     let receiver = &contract.params[rty::FunctionParamIdx::from_usize(0)].ty;
     let receiver_kind = receiver.as_pointer().map(|ty| ty.kind);
+    if receiver_kind == Some(rty::PointerKind::Ref(rty::RefKind::Immut)) {
+        // An `Fn` call takes its state by `&`, so no call changes it (Creusot's `fn_hist_inv`).
+        let [f, g] = ["hist_inv_f", "hist_inv_g"].map(|n| fresh(system, n));
+        let unchanged = chc::Formula::forall(
+            vec![(f, sort.clone()), (g, sort.clone())],
+            related(var(f), var(g)).implies(var(f).equal_to(var(g)).into()),
+        );
+        laws.push(unchanged);
+    }
     if receiver_kind == Some(rty::PointerKind::Ref(rty::RefKind::Mut)) {
         let mut params: Vec<(chc::UserQuantifiedVarId, chc::Sort)> = contract
             .params
@@ -513,9 +544,13 @@ impl<'tcx> Analyzer<'tcx> {
         for clause in by_value_relation_laws(relation, &sorts) {
             self.system.borrow_mut().push_clause(clause);
         }
-        // Its laws are pushed here and each call's step comes from the closure's body, so a
-        // callee whose contract reaches it needs no analysis at the instance to define it.
-        self.system.borrow_mut().mark_self_defined(relation);
+        // Its laws are pushed here and each call's step comes from the closure's body, which is
+        // checked at its own parameters, so a callee whose contract reaches it there needs no
+        // analysis at the instance to define it. At other arguments it stays an unknown, so that
+        // the closure's body is analyzed at them.
+        if closure_at_own_parameters(self.tcx, closure_ty) {
+            self.system.borrow_mut().mark_self_defined(relation);
+        }
         self.hist_inv_relations
             .by_value_hist_invs
             .borrow_mut()

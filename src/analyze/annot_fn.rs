@@ -2186,6 +2186,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let from = self.to_term(from);
         let to = self.to_term(to);
         let formula = match closure_ty.kind() {
+            mir_ty::TyKind::Closure(_, args)
+                if args.as_closure().kind() == mir_ty::ClosureKind::FnOnce =>
+            {
+                self.tcx.dcx().span_fatal(
+                    from_span,
+                    format!(
+                        "thrust: `hist_inv!` is not supported at `{closure_ty}`: an `FnOnce` \
+                         closure is called once, so it has no history of states"
+                    ),
+                )
+            }
             mir_ty::TyKind::Closure(..) => {
                 let upvars_sort = self.type_builder.build(model_ty).to_sort();
                 self.analyzer
