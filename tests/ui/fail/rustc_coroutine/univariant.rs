@@ -29,7 +29,7 @@ use rustc_abi::{HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, Struct
 use rustc_index::{Idx, IndexSlice};
 
 // The fail twin: the caller of `univariant` does not establish that `F`'s `deref` is a function
-// and the weight graph of `weight_of` (`deref_functional`), which `univariant`'s `requires` demands.
+// and the weight graph (`deref_functional`), which `univariant`'s `requires` demands.
 #[thrust_macros::context]
 #[thrust_macros::requires(
     LayoutCalculator::<Cx>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, kind)

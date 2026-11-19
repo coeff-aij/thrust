@@ -101,27 +101,6 @@ pub fn of_sel<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(m: u
     }
 }
 
-/// The weighted L5 for two selections: when every index below `b` occurs at most once in the two
-/// together, their positions below `b` weigh at most the first `b` entries of `ts`.
-#[thrust_macros::lemma]
-#[thrust_macros::variant(b)]
-#[thrust_macros::ensures(forall(|ts: Seq<Int>, vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>, vg: Seq<<L as thrust_models::Model>::Ty>, g: Array<Int, Int>|
-    !(forall(|x: USize| x < b ==> occ_sel::<J, L>(x, vf, f, m) + occ_sel::<J, L>(x, vg, g, n) <= 1)
-        && forall(|x: Int| !(0 <= x && x < b) || 0 <= ts[x]))
-        || wbelow_sel::<J, L>(ts, vf, f, m, b) + wbelow_sel::<J, L>(ts, vg, g, n, b) <= weight_first(ts, b)))]
-pub fn l5_sel_two<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(m: usize, n: usize, b: usize) {
-    if b > 0 {
-        l5_sel_two::<J, L>(m, n, b - 1);
-        l3_sel::<J, L>(m, b - 1);
-        l3_sel::<J, L>(n, b - 1);
-        of_sel::<J, L>(m, b - 1);
-        of_sel::<J, L>(n, b - 1);
-    } else {
-        l0_sel::<J, L>(m, b);
-        l0_sel::<J, L>(n, b);
-    }
-}
-
 /// Positions all below `n` are all counted below `n`.
 #[thrust_macros::lemma]
 #[thrust_macros::variant(m)]
@@ -132,21 +111,6 @@ pub fn all_below_sel<J: Idx + thrust_models::Model, L: Idx + thrust_models::Mode
     if m > 0 {
         all_below_sel::<J, L>(m - 1, n);
     }
-}
-
-/// Two selections whose indices are below `n` and that together hold no index twice weigh at most
-/// the first `n` entries of `ts`, none of which is negative.
-#[thrust_macros::lemma]
-#[thrust_macros::ensures(forall(|ts: Seq<Int>, vf: Seq<<L as thrust_models::Model>::Ty>, f: Array<Int, Int>, vg: Seq<<L as thrust_models::Model>::Ty>, g: Array<Int, Int>|
-    !(forall(|x: USize| occ_sel::<J, L>(x, vf, f, m) + occ_sel::<J, L>(x, vg, g, k) <= 1)
-        && forall(|j: Int| !(0 <= j && j < m) || L::index_logic(vf[f[j]]) < n)
-        && forall(|j: Int| !(0 <= j && j < k) || L::index_logic(vg[g[j]]) < n)
-        && forall(|x: Int| !(0 <= x && x < n) || 0 <= ts[x]))
-        || wat_sel::<J, L>(ts, vf, f, m) + wat_sel::<J, L>(ts, vg, g, k) <= weight_first(ts, n)))]
-pub fn sel_two_le<J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(m: usize, k: usize, n: usize) {
-    l5_sel_two::<J, L>(m, k, n);
-    all_below_sel::<J, L>(m, n);
-    all_below_sel::<J, L>(k, n);
 }
 
 /// The weighted L5 for a selection and a list: when every index below `b` occurs at most once in

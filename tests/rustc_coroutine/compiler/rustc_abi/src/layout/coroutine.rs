@@ -2175,8 +2175,8 @@ fn prefix_fits_bound<
 /// every field list that holds, in order, the layouts of a selection of the variant's entries
 /// Assigned to it (`counts::selection_of`), with a `repr` without alignment (that of
 /// `ReprOptions::default()`) and the prefix's size and alignment. Opaque, as the other atoms of the
-/// per-variant closure's `requires`: `layout()` assumes it, where rustc's code makes it true, and
-/// `variant_layout` reveals it at its fields.
+/// per-variant closure's `requires`: `layout()` proves it (`variant_weights_ok_of` and
+/// `variant_fits_of_atoms`, in the closure), and `variant_layout` reveals it at its fields.
 #[thrust_macros::predicate]
 #[thrust::opaque]
 fn variant_fits_wf<
@@ -2624,14 +2624,14 @@ fn variant_layout<
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
 // No predicate is revealed: `layout()` establishes `layout_pre` with `layout_pre_of_wf` at both
-// `univariant` calls and only assumes `fits_in_any_order` (the `assume!` at the prefix and that of
-// `variant_fits_wf` for the variants), and passes
+// `univariant` calls and proves `fits_in_any_order` (`prefix_fits_in_any_order` at the prefix and
+// `variant_fits_wf` of each variant in the per-variant closure), and passes
 // `arbitrary_of` from `univariant`'s `ensures` to `split_prefix_fields` and `combine_offsets`,
 // which reveal it, so it reads each as the atom these state.
 #[thrust::split_goals]
 pub fn layout<
     'a,
-    // `Ty: PartialEq`, as `fits_in_any_order` bounds it, for the two `assume!`s that state it.
+    // `Ty: PartialEq`, as `fits_in_any_order` bounds it, for the two proofs that state it.
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
@@ -2686,9 +2686,9 @@ pub fn layout<
     let entry = thrust_macros::ghost!(|prefix_layouts: IndexVec<FieldIdx, F>| -> IndexVec<FieldIdx, F> { prefix_layouts });
     let entry_len = prefix_layouts.len();
     let picked = promote_locals(calc, &mut prefix_layouts, tag_layout, &ineligible_locals, local_layouts);
-    // Rewrite (rewrites.md R13): the `repr` argument is bound to a name, for the `assume!`.
+    // Rewrite (rewrites.md R13): the `repr` argument is bound to a name, for the proofs that read it.
     let repr = ReprOptions::default();
-    // The twin of the proofs that replace the two `assume!`s below (fail root
+    // The twin of the proofs of the prefix's and the variants' `fits_in_any_order` below (fail root
     // layout_proofs_need_premises.rs): a `repr` with an alignment falsifies the premise
     // `(*repr).align == None` of `prefix_fits_in_any_order` and of `variant_weights_ok_of`, so
     // neither call is provable and a context in which the proofs held vacuously would be refuted.
@@ -2730,7 +2730,7 @@ pub fn layout<
     let (prefix_size, prefix_align) = (prefix.size, prefix.align);
     // The prefix's size is bounded as `layout_pre` reads the variants' kind (univariant's
     // `ensures`), and its size plus its alignment's bytes as `prefix_fits` does (univariant's
-    // `ensures` under the `fits_in_any_order` assumed above): the fifth atom of the per-variant
+    // `ensures` under the `fits_in_any_order` proved above): the fifth atom of the per-variant
     // closure's `requires`.
     thrust_macros::proof!(prefix_fits_bound(calc, &prefix_layouts, &repr, StructKind::AlwaysSized, prefix_size, prefix_align));
     thrust_macros::proof!(prefix_wf_of(calc, prefix_size, prefix_align));
@@ -2767,7 +2767,7 @@ pub fn layout<
     let mut size = prefix.size;
     let mut align = prefix.align;
     // The per-variant closure's `requires`, four atoms (R17; the fourth, `variant_fits_wf`, is
-    // assumed above); the third here: the promoted fields'
+    // proved above); the third here: the promoted fields'
     // lengths are the set's count c (`split_prefix_fields` at the tag index P, with P + 1 + c
     // fields), so property 3 below c (`ineligible_below`) gives `ineligible_promoted`; c and the
     // locals Assigned to any variant are at most n (`ones_assigned_disjoint` and `card_ones`).

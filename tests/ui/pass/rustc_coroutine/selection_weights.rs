@@ -3,9 +3,10 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=case_study::selection_weights
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
-// The weight lemmas of thrust/selection_weights.rs: two selections of a variant's entries with no
-// index in common weigh at most the first `n` weights. The code is the module tree under tests/rustc_coroutine/; this file
-// selects the lemmas. `thrust_weights_fail` is set only by the fail twin. Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
+// The weight lemmas of thrust/selection_weights.rs: the weight of a selection of a variant's entries
+// and of a list of distinct promoted locals is at most all the weights. The code is the module tree
+// under tests/rustc_coroutine/; this file selects the lemmas. `thrust_selection_weights_fail` is set
+// only by the fail twin. Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
 #![allow(unexpected_cfgs)]
 #![feature(new_range_api)]
 
