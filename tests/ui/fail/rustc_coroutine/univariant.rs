@@ -29,7 +29,7 @@ use rustc_abi::{HasDataLayout, LayoutCalculator, LayoutData, ReprOptions, Struct
 use rustc_index::{Idx, IndexSlice};
 
 // The fail twin: the caller of `univariant` does not establish that `F`'s `deref` is a function
-// (`deref_functional`), which `univariant`'s `requires` demands.
+// and the weight graph (`deref_functional`), which `univariant`'s `requires` demands.
 #[thrust_macros::context]
 #[thrust_macros::requires(
     LayoutCalculator::<Cx>::layout_pre::<FieldIdx, VariantIdx, F>(*calc, fields, kind)
@@ -42,7 +42,7 @@ fn drive< //~ ERROR: Unsat
     Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + rustc_abi::Weighted + thrust_models::Model<Ty: PartialEq>,
 >(
     calc: &LayoutCalculator<Cx>,
     fields: &IndexSlice<FieldIdx, F>,

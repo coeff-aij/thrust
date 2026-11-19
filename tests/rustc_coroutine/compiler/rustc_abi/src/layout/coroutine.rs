@@ -1,7 +1,7 @@
 // `thrust_eligibility_fail` is set only by the fail twin of the eligibility root (the last loop's block contract).
 #![allow(unexpected_cfgs)]
 use crate::thrust_models;
-use thrust_models::model::BitVec;
+use thrust_models::model::{BitVec, Int, Seq};
 use thrust_models::{exists, forall};
 
 use crate::rustc_abi::layout::{LayoutCalculator, LayoutCalculatorResult, pow2};
@@ -12,7 +12,7 @@ use crate::rustc_abi::{
 use crate::rustc_index::bit_set::{ones, BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated};
 use crate::case_study::USize;
-use crate::case_study::{counts, lemmas};
+use crate::case_study::{counts, lemmas, weights};
 use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all};
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
@@ -1002,6 +1002,456 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
 }
 
 
+// The entries after the tag are layouts of `local_layouts`, as the set's members `picked` index
+// them.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    current.len() == entry.len() + 1 + picked.len()
+        && forall(|j: USize| !(0 <= j && j < picked.len())
+            || (<LocalIdx as Idx>::index_logic(picked[j]) < (*local_layouts).len()
+                && current[entry.len() + 1 + j] == (*local_layouts)[<LocalIdx as Idx>::index_logic(picked[j])]))
+)]
+#[thrust_macros::ensures(forall(|k: USize|
+    !(entry.len() < k && k < current.len())
+        || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && current[k] == (*local_layouts)[i])))]
+fn promoted_entries_exist<'a, F: Copy + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
+    current: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    picked: thrust_models::Ghost<IndexVec<u32, LocalIdx>>,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+) {
+}
+
+// `layouts_wf` of the prefix after the promotion: the entry fields, the tag's layout and layouts
+// of `local_layouts`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &entry)
+        && layout_wf::<F, FieldIdx, VariantIdx, C>(*calc, tag_layout)
+        && layouts_wf::<LocalIdx, F, FieldIdx, VariantIdx, C>(*calc, local_layouts)
+        && current.len() == entry.len() + 1 + picked.len()
+        && forall(|k: USize| !(0 <= k && k < entry.len()) || current[k] == entry[k])
+        && current[entry.len()] == tag_layout
+        && forall(|j: USize| !(0 <= j && j < picked.len())
+            || (<LocalIdx as Idx>::index_logic(picked[j]) < (*local_layouts).len()
+                && current[entry.len() + 1 + j] == (*local_layouts)[<LocalIdx as Idx>::index_logic(picked[j])]))
+)]
+#[thrust_macros::ensures(layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &current))]
+#[thrust::reveal(layouts_wf)]
+fn layouts_wf_of_promoted<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model,
+    VariantIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    current: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    tag_layout: F,
+    picked: thrust_models::Ghost<IndexVec<u32, LocalIdx>>,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+) {
+}
+
+// `weighs` of the prefix's fields without a prefix and a `repr` alignment, at the weight of the
+// fields and the aggregate and `i8` alignments' bytes of every data layout: the sum
+// `variant_fits_of_weights` reads the prefix's size and alignment bounds at.
+#[thrust_macros::lemma]
+#[thrust_macros::requires((repr).align == None)]
+#[thrust_macros::ensures(forall(|dl: TargetDataLayout, qa: USize, qi: USize, s: USize|
+    !(qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+        && s == super::weight_total::<FieldIdx, F>(new) + pow2(qa) + pow2(qi))
+        || LayoutCalculator::<C>::weighs::<FieldIdx, VariantIdx, F>(new, &repr, StructKind::AlwaysSized, dl, s)))]
+#[thrust::reveal(LayoutCalculator::weighs)]
+fn weighs_always_sized_of<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    C: HasDataLayout,
+>(
+    new: &IndexVec<FieldIdx, F>,
+    repr: thrust_models::Ghost<ReprOptions>,
+) {
+}
+
+// `variant_fits_wf` of a variant from the weights: the fields of a selection of the variant's
+// Assigned entries weigh, with the promoted locals, at most all of `local_layouts`
+// (`selection_weight_bound`, as the last `requires`), and the prefix after the promotion weighs `ww`
+// (the entry fields and the tag) and the promoted locals. A variant's weighs sum is the weight of
+// its fields plus the prefix's size and twice its alignment's bytes, each below the prefix's weighs
+// sum (`univariant`'s `ensures`, the second `requires`), so it is below (selected) + 3 S_p + 2^qa +
+// 2^qi where S_p = the prefix's weight + 2^qa + 2^qi, which `layout()`'s size bound (the first
+// `requires`) keeps below the object size bound.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
+        || exists(|b: USize, qa: USize, qi: USize|
+            qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+            && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
+            && 3 * (ww + super::weight_total::<LocalIdx, F>(local_layouts) + pow2(qa) + pow2(qi))
+                + pow2(qa) + pow2(qi) < b))
+)]
+#[thrust_macros::requires(
+    forall(|dl: TargetDataLayout, s: USize, q: USize|
+        C::dl_of(*calc, dl)
+            && LayoutCalculator::<C>::weighs::<FieldIdx, VariantIdx, F>(new, &repr, StructKind::AlwaysSized, dl, s)
+            && q == prefix_align.abi.pow2 ==> (prefix_size.raw < s && pow2(q) <= s))
+)]
+#[thrust_macros::requires(
+    super::weight_total::<FieldIdx, F>(new)
+        == ww + crate::case_study::weights::weight_at::<LocalIdx>(
+            super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), picked, c)
+)]
+#[thrust_macros::requires(
+    0 <= ww
+        && 0 <= crate::case_study::weights::weight_at::<LocalIdx>(
+            super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), picked, c)
+        && (repr).align == None
+)]
+#[thrust_macros::requires(
+    forall(|fs: thrust_models::model::Seq<<F as thrust_models::Model>::Ty>|
+        !counts::selection_of::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>, F>(
+            &fs, *vf, *assignments, SavedLocalEligibility::Assigned(index), local_layouts)
+            || (0 <= super::sum_first(super::weight_seq::<F>(fs, fs.len()), fs.len())
+                && super::sum_first(super::weight_seq::<F>(fs, fs.len()), fs.len())
+                    + crate::case_study::weights::weight_at::<LocalIdx>(
+                        super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), picked, c)
+                    <= super::weight_total::<LocalIdx, F>(local_layouts)))
+)]
+#[thrust_macros::ensures(
+    variant_fits_wf::<F, VariantIdx, FieldIdx, LocalIdx, C>(*calc, local_layouts, assignments, index, vf, prefix_size, prefix_align)
+)]
+#[thrust_macros::context]
+#[thrust::split_goals]
+#[thrust::reveal(variant_fits_wf, LayoutCalculator::fits_in_any_order, LayoutCalculator::weighs)]
+fn variant_fits_of_weights<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    new: &IndexVec<FieldIdx, F>,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    index: VariantIdx,
+    vf: &IndexVec<FieldIdx, LocalIdx>,
+    prefix_size: Size,
+    prefix_align: AbiAlign,
+    repr: thrust_models::Ghost<ReprOptions>,
+    picked: thrust_models::Ghost<IndexVec<u32, LocalIdx>>,
+    c: usize,
+    ww: thrust_models::Ghost<Int>,
+) {
+    weighs_always_sized_of::<F, VariantIdx, FieldIdx, C>(new, repr);
+    // The prefix's size and its alignment's bytes are below its weighs sum, which is its weight and
+    // the aggregate and `i8` alignments' bytes (the second `requires` at that sum).
+    thrust_macros::proof_assert!(
+        |calc: &LayoutCalculator<C>, new: &IndexVec<FieldIdx, F>, prefix_size: Size, prefix_align: AbiAlign|
+            forall(|dl: TargetDataLayout, qa: USize, qi: USize, q: USize|
+                !(C::dl_of(*calc, dl) && qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+                    && q == prefix_align.abi.pow2)
+                    || (prefix_size.raw < super::weight_total::<FieldIdx, F>(new) + pow2(qa) + pow2(qi)
+                        && pow2(q) <= super::weight_total::<FieldIdx, F>(new) + pow2(qa) + pow2(qi)))
+    );
+    // The weighs sum of every selection's variant is below the object size bound.
+    thrust_macros::proof_assert!(
+        |calc: &LayoutCalculator<C>, local_layouts: &IndexSlice<LocalIdx, F>,
+         assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx,
+         vf: &IndexVec<FieldIdx, LocalIdx>, prefix_size: Size, prefix_align: AbiAlign|
+            forall(|fs: thrust_models::model::Seq<<F as thrust_models::Model>::Ty>, dl: TargetDataLayout,
+                    qa: USize, qi: USize, q: USize|
+                !(C::dl_of(*calc, dl) && qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+                    && q == prefix_align.abi.pow2
+                    && counts::selection_of::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>, F>(
+                        &fs, *vf, *assignments, SavedLocalEligibility::Assigned(index), local_layouts))
+                    || exists(|b: USize|
+                        ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
+                            || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
+                            || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
+                        && super::sum_first(super::weight_seq::<F>(fs, fs.len()), fs.len())
+                            + pow2(q) * 2 + prefix_size.raw + pow2(qa) + pow2(qi) < b))
+    );
+}
+
+// What `variant_fits_of_atoms` reads of the prefix after the promotion, for every variant: the weight
+// of the entry fields and the tag (`ww`, the weight of the prefix less that of `picked`) is not
+// negative, `picked` holds distinct locals below n none of which is Assigned to a variant (the
+// promoted locals), `layout()`'s size bound holds for `ww`, and univariant's `ensures` for the prefix
+// (its size and its alignment's bytes below its weighs sum, at every data layout) with a `repr`
+// without alignment. Opaque, as the other atoms of the per-variant closure's `requires`: `layout()`
+// establishes it where it has `promote_locals`' `ensures`, its `requires` and eligibility's
+// `ensures`, and `variant_fits_of_atoms` reveals it.
+#[thrust_macros::predicate]
+#[thrust::opaque]
+fn variant_weights_ok<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: LayoutCalculator<C>,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    new: &IndexVec<FieldIdx, F>,
+    picked: &IndexVec<u32, LocalIdx>,
+    repr: &ReprOptions,
+    prefix_size: Size,
+    prefix_align: AbiAlign,
+) -> bool {
+    0 <= super::weight_total::<FieldIdx, F>(new)
+        - weights::weight_at::<LocalIdx>(super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), *picked, (*picked).len())
+        && lemmas::distinct::<LocalIdx>(*picked, (*picked).len())
+        && forall(|j: USize| !(0 <= j && j < (*picked).len())
+            || (<LocalIdx as Idx>::index_logic((*picked)[j]) < (*local_layouts).len()
+                && forall(|vi: <VariantIdx as thrust_models::Model>::Ty|
+                    !((*assignments)[<LocalIdx as Idx>::index_logic((*picked)[j])] == SavedLocalEligibility::Assigned(vi)))))
+        && forall(|dl: TargetDataLayout| !C::dl_of(calc, dl)
+            || exists(|b: USize, qa: USize, qi: USize|
+                qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+                && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
+                    || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
+                    || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
+                && 3 * (super::weight_total::<FieldIdx, F>(new)
+                        - weights::weight_at::<LocalIdx>(super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), *picked, (*picked).len())
+                        + super::weight_total::<LocalIdx, F>(local_layouts) + pow2(qa) + pow2(qi))
+                    + pow2(qa) + pow2(qi) < b))
+        && (*repr).align == None
+        && forall(|dl: TargetDataLayout, s: USize, q: USize|
+            !(C::dl_of(calc, dl)
+                && LayoutCalculator::<C>::weighs::<FieldIdx, VariantIdx, F>(new, repr, StructKind::AlwaysSized, dl, s)
+                && q == prefix_align.abi.pow2)
+                || (prefix_size.raw < s && pow2(q) <= s))
+}
+
+// `variant_weights_ok`, the atom of the per-variant closure's `requires`, from the facts `layout()`
+// has after the promotion: `promote_locals`' `ensures` (the identity of the prefix's weight and
+// `picked`'s, `picked`'s members), `layout()`'s size bound for the entry fields and the tag, the
+// weights' sign (`deref_functional`), eligibility's property 4 (a member of the ineligible set is
+// `Ineligible`, hence not Assigned to a variant) and univariant's `ensures` for the prefix.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
+        && ne == entry.len()
+        && (*assignments).len() == (*local_layouts).len()
+        && super::weight_total::<FieldIdx, F>(new)
+            == super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
+                + weights::weight_at::<LocalIdx>(super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), *picked, (*picked).len())
+        && lemmas::distinct::<LocalIdx>(*picked, (*picked).len())
+        && forall(|j: USize| !(0 <= j && j < (*picked).len())
+            || (<LocalIdx as Idx>::index_logic((*picked)[j]) < (*local_layouts).len()
+                && exists(|li: USize| li == <LocalIdx as Idx>::index_logic((*picked)[j]) && DenseBitSet::<LocalIdx>::mem(*ineligible_locals, li))))
+        && forall(|l: usize| 0 <= l && l < (*assignments).len()
+            ==> (exists(|li: USize| li == l && DenseBitSet::<LocalIdx>::mem(*ineligible_locals, li))
+                ==> exists(|x: Option<<FieldIdx as thrust_models::Model>::Ty>| (*assignments)[l] == SavedLocalEligibility::Ineligible(x))))
+        && size_bound_ok::<F, FieldIdx, VariantIdx, LocalIdx, C>(*calc, &entry, tag_layout, local_layouts)
+        && (*repr).align == None
+        && forall(|dl: TargetDataLayout, s: USize, q: USize|
+            !(C::dl_of(*calc, dl)
+                && LayoutCalculator::<C>::weighs::<FieldIdx, VariantIdx, F>(new, repr, StructKind::AlwaysSized, dl, s)
+                && q == prefix_align.abi.pow2)
+                || (prefix_size.raw < s && pow2(q) <= s))
+)]
+#[thrust_macros::ensures(
+    variant_weights_ok::<F, VariantIdx, FieldIdx, LocalIdx, C>(
+        *calc, local_layouts, assignments, new, picked, repr, prefix_size, prefix_align)
+)]
+#[thrust_macros::context]
+#[thrust::reveal(variant_weights_ok, size_bound_ok, LayoutCalculator::weight_graph)]
+fn variant_weights_ok_of<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    new: &IndexVec<FieldIdx, F>,
+    tag_layout: F,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    ineligible_locals: &DenseBitSet<LocalIdx>,
+    picked: &IndexVec<u32, LocalIdx>,
+    repr: &ReprOptions,
+    prefix_size: Size,
+    prefix_align: AbiAlign,
+    ne: usize,
+) {
+    let entry_seq = thrust_macros::ghost!(|entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>| -> Seq<<F as thrust_models::Model>::Ty> { entry });
+    thrust_macros::proof!(super::weight_seq_sum_nonneg::<F>(entry_seq, ne));
+}
+
+// `variant_fits_wf` of one variant from the atoms of the per-variant closure's `requires`
+// (`variant_weights_ok`, `variant_env_wf` for the weights' sign, `variant_entries_wf` for the
+// variant's entries): `selection_weight_bound` gives the weight of every selection the variant's
+// fields can be, and `variant_fits_of_weights` the rest. The closure calls it before
+// `variant_layout`, which requires `variant_fits_wf`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    variant_env_wf::<F, VariantIdx, FieldIdx, LocalIdx, C>(*calc, local_layouts, assignments)
+        && variant_entries_wf::<F, VariantIdx, FieldIdx, LocalIdx>(local_layouts, assignments, index, vf)
+        && variant_weights_ok::<F, VariantIdx, FieldIdx, LocalIdx, C>(
+            *calc, local_layouts, assignments, new, picked, repr, prefix_size, prefix_align)
+        && *e == SavedLocalEligibility::Assigned(index)
+        && c == (*picked).len()
+        && n == (*local_layouts).len()
+        && nv == (*vf).len()
+)]
+#[thrust_macros::ensures(
+    variant_fits_wf::<F, VariantIdx, FieldIdx, LocalIdx, C>(*calc, local_layouts, assignments, index, vf, prefix_size, prefix_align)
+)]
+#[thrust_macros::context]
+#[thrust::split_goals]
+#[thrust::reveal(variant_weights_ok, variant_env_wf, variant_entries_wf, LayoutCalculator::weight_graph)]
+fn variant_fits_of_atoms<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    new: &IndexVec<FieldIdx, F>,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    index: VariantIdx,
+    vf: &IndexVec<FieldIdx, LocalIdx>,
+    e: &SavedLocalEligibility<VariantIdx, FieldIdx>,
+    prefix_size: Size,
+    prefix_align: AbiAlign,
+    picked: &IndexVec<u32, LocalIdx>,
+    repr: &ReprOptions,
+    c: usize,
+    n: usize,
+    nv: usize,
+) {
+    let picked_g = thrust_macros::ghost!(|picked: &IndexVec<u32, LocalIdx>| -> IndexVec<u32, LocalIdx> { *picked });
+    let repr_g = thrust_macros::ghost!(|repr: &ReprOptions| -> ReprOptions { *repr });
+    let ww = thrust_macros::ghost!(|new: &IndexVec<FieldIdx, F>, local_layouts: &IndexSlice<LocalIdx, F>, picked: &IndexVec<u32, LocalIdx>| -> Int {
+        super::weight_total::<FieldIdx, F>(new)
+            - weights::weight_at::<LocalIdx>(super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), *picked, (*picked).len())
+    });
+    let ts = thrust_macros::ghost!(|local_layouts: &IndexSlice<LocalIdx, F>| -> Seq<Int> {
+        super::weight_seq::<F>(*local_layouts, (*local_layouts).len())
+    });
+    let l = thrust_macros::ghost!(|local_layouts: &IndexSlice<LocalIdx, F>| -> Seq<<F as thrust_models::Model>::Ty> { *local_layouts });
+    thrust_macros::proof!(super::weight_seq_nonneg::<F>(l, n));
+    thrust_macros::proof!(weights::weight_at_nonneg(ts, picked_g, c, n));
+    thrust_macros::proof!(super::selection_weight_bound::<F, FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
+        local_layouts, vf, assignments, e, picked_g, c, n, nv));
+    thrust_macros::proof!(variant_fits_of_weights(
+        calc, new, local_layouts, assignments, index, vf, prefix_size, prefix_align, repr_g, picked_g, c, ww));
+}
+
+// `layout()`'s size bound for the entry fields and the tag: at every data layout the weight of the
+// entry fields, the tag and all of `local_layouts`, with the aggregate and `i8` alignments' bytes, three
+// times and once more is below the object size bound. Opaque: `layout()` states it once, from its
+// `requires`, and the two lemmas that bound the prefix's and the variants' weighs sums read it as
+// one atom.
+#[thrust_macros::predicate]
+#[thrust::opaque]
+fn size_bound_ok<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: LayoutCalculator<C>,
+    entry: &IndexVec<FieldIdx, F>,
+    tag_layout: F,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+) -> bool {
+    forall(|dl: TargetDataLayout| !C::dl_of(calc, dl)
+        || exists(|b: USize, qa: USize, qi: USize|
+            qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+            && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
+            && 3 * (super::weight_total::<FieldIdx, F>(entry) + F::weight_of(tag_layout)
+                    + super::weight_total::<LocalIdx, F>(local_layouts)
+                    + pow2(qa) + pow2(qi))
+                + pow2(qa) + pow2(qi) < b))
+}
+
+// `size_bound_ok` from the bound it states.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
+        || exists(|b: USize, qa: USize, qi: USize|
+            qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+            && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
+                || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
+            && 3 * (super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
+                    + super::weight_total::<LocalIdx, F>(local_layouts)
+                    + pow2(qa) + pow2(qi))
+                + pow2(qa) + pow2(qi) < b))
+)]
+#[thrust_macros::ensures(size_bound_ok::<F, FieldIdx, VariantIdx, LocalIdx, C>(*calc, &entry, tag_layout, local_layouts))]
+#[thrust::reveal(size_bound_ok)]
+fn size_bound_ok_intro<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    tag_layout: F,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+) {
+}
+
+// `univariant`'s `fits_in_any_order` for the prefix of `layout()`: the prefix after the promotion
+// weighs at most the entry fields, the tag and all of `local_layouts` (`promote_locals`' `ensures`),
+// which the size bound of `layout()`'s `requires` keeps below the object size bound together with
+// the aggregate and `i8` alignments. `repr` has no alignment and the kind is `AlwaysSized`, so
+// `weighs`' sum is the weight and those two alignments' bytes.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(
+    size_bound_ok::<F, FieldIdx, VariantIdx, LocalIdx, C>(*calc, &entry, tag_layout, local_layouts)
+        && super::weight_total::<FieldIdx, F>(new)
+            <= super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
+                + super::weight_total::<LocalIdx, F>(local_layouts)
+        && (*repr).align == None
+)]
+#[thrust_macros::ensures(
+    LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, new, repr, StructKind::AlwaysSized)
+)]
+#[thrust::reveal(LayoutCalculator::fits_in_any_order, LayoutCalculator::weighs, size_bound_ok)]
+fn prefix_fits_in_any_order<
+    'a,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model,
+    LocalIdx: Idx + thrust_models::Model,
+    C: HasDataLayout,
+>(
+    calc: &LayoutCalculator<C>,
+    entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>,
+    new: &IndexVec<FieldIdx, F>,
+    tag_layout: F,
+    local_layouts: &IndexSlice<LocalIdx, F>,
+    repr: &ReprOptions,
+) {
+}
+
 // Rewrite (rewrites.md R15): the steps of `layout()` that append the tag's layout and the promoted
 // locals' layouts to the prefix's fields (`push`, and `extend` by the map of the ineligible set),
 // as a function whose contract states what `layout()` reads of them: P + 1 + c fields, c the set's
@@ -1020,7 +1470,10 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
         && layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &*prefix_layouts)
         && layouts_wf::<LocalIdx, F, FieldIdx, VariantIdx, C>(*calc, local_layouts)
         && layout_wf::<F, FieldIdx, VariantIdx, C>(*calc, tag_layout)
+        && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
 )]
+#[thrust_macros::ensures(super::weight_total::<FieldIdx, F>(&!prefix_layouts)
+    <= super::weight_total::<FieldIdx, F>(&*prefix_layouts) + F::weight_of(tag_layout) + super::weight_total::<LocalIdx, F>(local_layouts))]
 #[thrust_macros::ensures(
     (!prefix_layouts).len() == (*prefix_layouts).len() + 1 + DenseBitSet::<LocalIdx>::card(*ineligible_locals)
         && 0 <= DenseBitSet::<LocalIdx>::card(*ineligible_locals)
@@ -1033,11 +1486,22 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
 )]
 #[thrust_macros::ensures(forall(|k: USize| !(0 <= k && k <= (!prefix_layouts).len()) || <FieldIdx as Idx>::can_new(k)))]
 #[thrust_macros::ensures(layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &!prefix_layouts))]
+#[thrust_macros::ensures(
+    lemmas::distinct::<LocalIdx>(result, result.len())
+        && result.len() == DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+        && forall(|j: USize| !(0 <= j && j < result.len())
+            || (<LocalIdx as Idx>::index_logic(result[j]) < (*local_layouts).len()
+                && DenseBitSet::<LocalIdx>::mem(*ineligible_locals, <LocalIdx as Idx>::index_logic(result[j]))))
+        && super::weight_total::<FieldIdx, F>(&!prefix_layouts)
+            == super::weight_total::<FieldIdx, F>(&*prefix_layouts) + F::weight_of(tag_layout)
+                + weights::weight_at::<LocalIdx>(super::weight_seq::<F>(*local_layouts, (*local_layouts).len()), result, result.len())
+)]
 #[thrust_macros::context]
-#[thrust::reveal(layouts_wf)]
+#[thrust::split_goals]
+#[thrust::reveal(LayoutCalculator::weight_graph)]
 fn promote_locals<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1048,31 +1512,93 @@ fn promote_locals<
     tag_layout: F,
     ineligible_locals: &DenseBitSet<LocalIdx>,
     local_layouts: &IndexSlice<LocalIdx, F>,
-) {
-    // Rewrite (rewrites.md R8): `Map::new(it, f)` for `it.map(f)`, `extend_from` for `extend`.
-    // The closure's contract, as that of the per-variant closure's map closure in `layout()`: a
-    // member of the set is a local below n, and the closure returns its layout. `Map::new`'s
-    // precondition reads the members through `bit_iter_yields_below`.
+) -> IndexVec<u32, LocalIdx> {
+    // Rewrite (rewrites.md R15, with R8's `Map::new` and `extend_from` as a loop): the tag's layout
+    // is pushed, then the layout of each member of the set in the order its iterator yields them.
+    // `picked` keeps those members (it is read only by the proof): they are pairwise distinct and
+    // below n (`produces` of `BitIter`, `bit_iter_yields_below`), so the weights pushed are at most
+    // those of all of `local_layouts`.
     thrust_macros::proof!(bit_iter_yields_below(ineligible_locals));
-    let promoted_layouts = Map::new(
-        ineligible_locals.iter(),
-        thrust_macros::closure!(
-            captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
-            requires(<LocalIdx as Idx>::index_logic(local) < (**local_layouts).len()),
-            // The bound is the `requires`', restated for `Map::yields_entries_of`.
-            ensures(<LocalIdx as Idx>::index_logic(local) < (**local_layouts).len()
-                && result == (**local_layouts)[<LocalIdx as Idx>::index_logic(local)]),
-            |local: LocalIdx| -> F { local_layouts[local] },
-        ),
-    );
-    // The promoted layouts are entries of `local_layouts`.
-    thrust_macros::proof!(Map::yields_entries_of(&promoted_layouts, local_layouts));
-    // `push` and `extend_from` give P + 1 + c fields, c the items `ineligible_locals.iter()` yields
-    // (`Map` keeps the length), which is the set's count `card`: `iter` starts `BitIter`'s `left`
-    // at it, and the iterator completes with nothing left. The fields after the tag are layouts of
-    // `local_layouts` (the closure's `ensures`).
-    prefix_layouts.push(tag_layout);
-    prefix_layouts.extend_from(promoted_layouts);
+    let ts = thrust_macros::ghost!(|local_layouts: &IndexSlice<LocalIdx, F>| -> Seq<Int> {
+        super::weight_seq::<F>(*local_layouts, (*local_layouts).len())
+    });
+    thrust_macros::proof!(super::weight_seq_len::<F>((*local_layouts).len()));
+    thrust_macros::proof!(super::weight_seq_nth::<F>((*local_layouts).len()));
+    thrust_macros::proof!(super::weight_first_is_sum_first((*local_layouts).len()));
+    let layouts_ghost = thrust_macros::ghost!(|local_layouts: &IndexSlice<LocalIdx, F>| -> Seq<<F as thrust_models::Model>::Ty> { *local_layouts });
+    thrust_macros::proof!(super::weight_seq_nonneg::<F>(layouts_ghost, (*local_layouts).len()));
+    let entry_ghost = thrust_macros::ghost!(|prefix_layouts: &mut IndexVec<FieldIdx, F>| -> IndexVec<FieldIdx, F> { *prefix_layouts });
+    let current = prefix_layouts;
+    let current_before = thrust_macros::ghost!(|current: &mut IndexVec<FieldIdx, F>| -> Seq<<F as thrust_models::Model>::Ty> { *current });
+    thrust_macros::proof!(super::weight_total_push::<F>(current_before, tag_layout, current.len()));
+    current.push(tag_layout);
+    let mut picked = IndexVec::<u32, LocalIdx>::new();
+    for local in ineligible_locals.iter() {
+        thrust_macros::invariant!(
+            |iter: BitIter<LocalIdx>,
+             iter_old: thrust_models::Ghost<BitIter<LocalIdx>>,
+             produced: thrust_models::Ghost<thrust_models::model::Seq<<LocalIdx as thrust_models::Model>::Ty>>,
+             prefix_layouts: thrust_models::FnParam<&mut IndexVec<FieldIdx, F>>,
+             current: &mut IndexVec<FieldIdx, F>,
+             picked: IndexVec<u32, LocalIdx>,
+             tag_layout: F,
+             local_layouts: &IndexSlice<LocalIdx, F>,
+             ineligible_locals: &DenseBitSet<LocalIdx>,
+             ts: thrust_models::Ghost<Seq<Int>>,
+             calc: &LayoutCalculator<C>,
+             entry_ghost: thrust_models::Ghost<IndexVec<FieldIdx, F>>| {
+                0 <= DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+                    && entry_ghost == *prefix_layouts.at_entry()
+                    && layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &entry_ghost)
+                    && layouts_wf::<LocalIdx, F, FieldIdx, VariantIdx, C>(*calc, local_layouts)
+                    && layout_wf::<F, FieldIdx, VariantIdx, C>(*calc, tag_layout)
+                    && forall(|x: USize| !(0 <= x && x < (*local_layouts).len()) || 0 <= ts[x])
+                    && DenseBitSet::<LocalIdx>::card(*ineligible_locals) <= (*local_layouts).len()
+                    && forall(|k: USize|
+                        0 <= k && k <= (*prefix_layouts.at_entry()).len() + 1 + (*local_layouts).len() ==> <FieldIdx as Idx>::can_new(k))
+                    && forall(|l: USize| !(iter_old.7[l] != 0) || DenseBitSet::<LocalIdx>::mem(*ineligible_locals, l))
+                    && forall(|j: USize| !(0 <= j && j < produced.len())
+                        || DenseBitSet::<LocalIdx>::mem(*ineligible_locals, <LocalIdx as Idx>::index_logic(picked[j])))
+                    && iter_old.4 == (*ineligible_locals).0
+                    && iter_old.5 == 0
+                    && iter_old.6 == DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+                    && BitIter::<LocalIdx>::tracks_words(iter_old)
+                    && iter.4 == (*ineligible_locals).0
+                    && 0 <= iter.5 && 0 <= iter.6
+                    && iter.5 + iter.6 == DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+                    && BitIter::<LocalIdx>::tracks_words(iter)
+                    && (*ineligible_locals).0 == (*local_layouts).len()
+                    && forall(|k: USize| 0 <= k && k < (*local_layouts).len() ==> <LocalIdx as Idx>::can_new(k))
+                    && (*current).len() == (*prefix_layouts.at_entry()).len() + 1 + produced.len()
+                    && picked.len() == produced.len()
+                    && lemmas::distinct::<LocalIdx>(picked, picked.len())
+                    && forall(|k: USize| !(0 <= k && k < (*prefix_layouts.at_entry()).len())
+                        || (*current)[k] == (*prefix_layouts.at_entry())[k])
+                    && (*current)[(*prefix_layouts.at_entry()).len()] == tag_layout
+                    && forall(|j: USize| !(0 <= j && j < produced.len())
+                        || (picked[j] == produced[j]
+                            && <LocalIdx as Idx>::index_logic(picked[j]) < (*local_layouts).len()
+                            && (*current)[(*prefix_layouts.at_entry()).len() + 1 + j]
+                                == (*local_layouts)[<LocalIdx as Idx>::index_logic(picked[j])]))
+                    && ts == super::weight_seq::<F>(*local_layouts, (*local_layouts).len())
+                    && super::weight_total::<FieldIdx, F>(&*current)
+                        == super::weight_total::<FieldIdx, F>(&*prefix_layouts.at_entry())
+                            + F::weight_of(tag_layout)
+                            + weights::weight_at::<LocalIdx>(ts, picked, picked.len())
+            }
+        );
+        let current_before = thrust_macros::ghost!(|current: &mut IndexVec<FieldIdx, F>| -> Seq<<F as thrust_models::Model>::Ty> { *current });
+        thrust_macros::proof!(super::weight_total_push::<F>(current_before, local_layouts[local], current.len()));
+        current.push(local_layouts[local]);
+        picked.push(local);
+    }
+    let picked_ghost = thrust_macros::ghost!(|picked: IndexVec<u32, LocalIdx>| -> IndexVec<u32, LocalIdx> { picked });
+    thrust_macros::proof!(super::weight_first_is_sum_first((*local_layouts).len()));
+    thrust_macros::proof!(weights::weight_at_le_distinct(picked_ghost, ts, picked.len(), (*local_layouts).len()));
+    let current_ghost = thrust_macros::ghost!(|current: &mut IndexVec<FieldIdx, F>| -> IndexVec<FieldIdx, F> { *current });
+    thrust_macros::proof!(promoted_entries_exist(current_ghost, entry_ghost, picked_ghost, local_layouts));
+    thrust_macros::proof!(layouts_wf_of_promoted::<F, FieldIdx, VariantIdx, LocalIdx, C>(calc, current_ghost, entry_ghost, tag_layout, picked_ghost, local_layouts));
+    picked
 }
 
 // Rewrite (rewrites.md R16): the `match` of `layout()` on the prefix's fields, which splits the
@@ -1211,7 +1737,7 @@ fn split_prefix_fields<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
 #[thrust::opaque]
 fn layout_wf<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     C: HasDataLayout,
@@ -1247,7 +1773,7 @@ fn layout_wf<
 fn layouts_wf<
     'a,
     I: Idx + thrust_models::Model,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     C: HasDataLayout,
@@ -1274,7 +1800,7 @@ fn layouts_wf<
 #[thrust::reveal(layouts_wf)]
 fn layouts_wf_of_entries<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1307,7 +1833,7 @@ fn layouts_wf_of_entries<
 #[thrust::reveal(super::LayoutCalculator::layout_pre, layouts_wf, layout_wf)]
 fn layout_pre_of_wf<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     C: HasDataLayout,
@@ -1360,7 +1886,7 @@ fn layout_pre_of_wf<
 #[thrust::opaque]
 fn variant_env_wf<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1388,7 +1914,7 @@ fn variant_env_wf<
 #[thrust::opaque]
 fn variant_entries_wf<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1467,7 +1993,7 @@ fn variant_promoted_wf<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + t
 #[thrust::reveal(variant_env_wf)]
 fn variant_env_of<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1519,7 +2045,7 @@ fn variant_env_of<
 #[thrust::reveal(variant_entries_wf)]
 fn variant_entries_of<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1631,7 +2157,7 @@ fn prefix_wf_of<C: HasDataLayout>(calc: &LayoutCalculator<C>, prefix_size: Size,
 #[thrust::reveal(super::LayoutCalculator::fits_in_any_order)]
 fn prefix_fits_bound<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     C: HasDataLayout,
@@ -1650,13 +2176,13 @@ fn prefix_fits_bound<
 /// every field list that holds, in order, the layouts of a selection of the variant's entries
 /// Assigned to it (`counts::selection_of`), with a `repr` without alignment (that of
 /// `ReprOptions::default()`) and the prefix's size and alignment. Opaque, as the other atoms of the
-/// per-variant closure's `requires`: `layout()` assumes it, where rustc's code makes it true, and
-/// `variant_layout` reveals it at its fields.
+/// per-variant closure's `requires`: `layout()` proves it (`variant_weights_ok_of` and
+/// `variant_fits_of_atoms`, in the closure), and `variant_layout` reveals it at its fields.
 #[thrust_macros::predicate]
 #[thrust::opaque]
 fn variant_fits_wf<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     LocalIdx: Idx + thrust_models::Model,
@@ -1705,7 +2231,7 @@ fn assigned_here<FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_mo
 #[thrust::reveal(variant_entries_wf, assigned_here)]
 fn assigned_here_of<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model,
     LocalIdx: Idx + thrust_models::Model,
@@ -1734,7 +2260,7 @@ fn assigned_here_of<
 #[thrust::split_goals]
 fn variant_layout<
     'a,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     LocalIdx: Idx + thrust_models::Model,
@@ -1888,7 +2414,7 @@ fn variant_layout<
     // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
     thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
     // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
-    // for the `assume!`. Its precondition, the map's `inv`, is `Map::new`'s `ensures`.
+    // so the proofs read it. Its precondition, the map's `inv`, is `Map::new`'s `ensures`.
     let fields = collect_index_vec(variant_only_tys);
     // The fields are as many as the variant's entries Assigned to it, which `combine_offsets`
     // requires: `map_count_exact` at `collect`'s witness.
@@ -1939,7 +2465,7 @@ fn variant_layout<
     thrust_macros::proof_assert!(|promoted_memory_index: &IndexVec<FieldIdx, u32>, m: usize, local_layouts: &IndexSlice<LocalIdx, F>|
         (*promoted_memory_index).len() + m <= (*local_layouts).len());
 
-    // Rewrite (rewrites.md R13): the arguments are bound to names, for the `assume!`.
+    // Rewrite (rewrites.md R13): the arguments are bound to names, for the proofs that read them.
     let repr = ReprOptions::default();
     let kind = StructKind::Prefixed(prefix_size, prefix_align.abi);
     // `univariant`'s `fits_in_any_order` for the variant: `variant_fits_wf` at the fields, which
@@ -2049,6 +2575,9 @@ fn variant_layout<
 //     locals' weight plus 3 S_p + 2^qa + 2^qi; its Assigned locals appear once each
 //     (eligibility's property 2c) and are not promoted (property 4), so with the promoted ones
 //     they weigh at most `local_layouts`' weight, and the sum is below 3T + 2^qa + 2^qi.
+//   - The tag's layout dereferences: `deref` has a result for the layout `tag_to_layout` returns
+//     (rustc's `Layout` dereferences to its interned `&LayoutData`), so its weight is that of the
+//     layout `deref` returns (`deref_functional`) and the size bound bounds it.
 #[thrust_macros::requires(
     (*variant_fields).len() > 0
         && LayoutCalculator::<C>::deref_functional::<FieldIdx, VariantIdx, F>()
@@ -2075,6 +2604,10 @@ fn variant_layout<
         && forall(|ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty|
             s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
                 && thrust_macros::post!(tag_to_layout(s), r) ==> layout_wf::<F, FieldIdx, VariantIdx, C>(*calc, r))
+        && forall(|ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty|
+            s == Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg }
+                && thrust_macros::post!(tag_to_layout(s), r)
+                ==> exists(|d: &&LayoutData<FieldIdx, VariantIdx>| thrust_macros::post!(<F as core::ops::Deref>::deref(&r), d)))
         && forall(|ti: Integer, tg: WrappingRange| thrust_macros::pre!(tag_to_layout(Scalar::Initialized { value: Primitive::Int(ti, false), valid_range: tg })))
         && forall(|dl: TargetDataLayout, ti: Integer, tg: WrappingRange, s: Scalar, r: <F as thrust_models::Model>::Ty, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>|
             C::dl_of(*calc, dl) && tg.start == 0 && tg.end + 1 == (*variant_fields).len()
@@ -2091,16 +2624,17 @@ fn variant_layout<
 )]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
-// No predicate is revealed: `layout()` establishes `layout_pre` with `layout_pre_of_wf` at both
-// `univariant` calls and only assumes `fits_in_any_order` (the `assume!` at the prefix and that of
-// `variant_fits_wf` for the variants), and passes
+// Only `weight_graph` is revealed (the weight lemmas read it): `layout()` establishes `layout_pre` with `layout_pre_of_wf` at both
+// `univariant` calls and proves `fits_in_any_order` (`prefix_fits_in_any_order` at the prefix and
+// `variant_fits_wf` of each variant in the per-variant closure), and passes
 // `arbitrary_of` from `univariant`'s `ensures` to `split_prefix_fields` and `combine_offsets`,
 // which reveal it, so it reads each as the atom these state.
 #[thrust::split_goals]
+#[thrust::reveal(LayoutCalculator::weight_graph)]
 pub fn layout<
     'a,
-    // `Ty: PartialEq`, as `fits_in_any_order` bounds it, for the two `assume!`s that state it.
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+    // `Ty: PartialEq`, as `fits_in_any_order` bounds it, for the two proofs that state it.
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
     VariantIdx: Idx + thrust_models::Model,
     FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
     LocalIdx: Idx + thrust_models::Model,
@@ -2151,24 +2685,41 @@ pub fn layout<
     // locals' layouts are `promote_locals`. Its `requires` holds by `layout()`'s `requires`
     // (`FieldIdx` reaches P + 1 + n; `layouts_wf` of the entry fields and of `local_layouts`),
     // eligibility's `ensures` (the set is over the n locals) and the step above.
-    promote_locals(calc, &mut prefix_layouts, tag_layout, &ineligible_locals, local_layouts);
-    // Rewrite (rewrites.md R13): the `repr` argument is bound to a name, for the `assume!`.
+    let entry = thrust_macros::ghost!(|prefix_layouts: IndexVec<FieldIdx, F>| -> IndexVec<FieldIdx, F> { prefix_layouts });
+    let entry_len = prefix_layouts.len();
+    let picked = promote_locals(calc, &mut prefix_layouts, tag_layout, &ineligible_locals, local_layouts);
+    // Rewrite (rewrites.md R13): the `repr` argument is bound to a name, for the proofs that read it.
     let repr = ReprOptions::default();
-    // Assumed (not proved): `univariant`'s `fits_in_any_order` for the prefix. rustc's code makes
-    // it true under `layout()`'s size bound: the prefix's fields are the entry `prefix_layouts`,
-    // the tag's layout and the promoted locals, which are distinct locals (the set's members,
-    // each yielded once, increasing), so their weight is at most that of `prefix_layouts`, the tag
-    // and all of `local_layouts`, T in the size bound, and 3T + 2^qa + 2^qi < b gives the prefix's
-    // weighs sum below b. Not proved: `weight` is an existential over a `Seq<Int>` of the fields'
-    // weights (a field's weight is read through `deref`'s postcondition, a relation), and the
-    // solver does not answer such a goal even with its witness named (fork issue #278), nor can a
-    // proof name the witness of the `weight`s `layout()` requires.
-    thrust_macros::assume!(
-        |calc: &LayoutCalculator<C>, prefix_layouts: IndexVec<FieldIdx, F>, repr: ReprOptions|
-            LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, &prefix_layouts, &repr, StructKind::AlwaysSized)
+    // The twin of the proofs of the prefix's and the variants' `fits_in_any_order` below (fail root
+    // layout_proofs_need_premises.rs): a `repr` with an alignment falsifies the premise
+    // `(*repr).align == None` of `prefix_fits_in_any_order` and of `variant_weights_ok_of`, so
+    // neither call is provable and a context in which the proofs held vacuously would be refuted.
+    #[cfg(thrust_layout_proofs_fail)]
+    let repr = ReprOptions { align: Some(Align::ONE), ..repr };
+    // `univariant`'s `fits_in_any_order` for the prefix. rustc's code makes it true under
+    // `layout()`'s size bound: the prefix's fields are the entry `prefix_layouts`, the tag's layout
+    // and the promoted locals, which are distinct locals (the set's members, each yielded once),
+    // so their weight is at most that of `prefix_layouts`, the tag and all of `local_layouts`
+    // (`promote_locals`' `ensures`), T in the size bound, and 3T + 2^qa + 2^qi < b gives the
+    // prefix's weighs sum below b. The tag's weight is that of the layout `deref` returns for it
+    // (`deref_functional`), which `layout()`'s `requires` says exists.
+    thrust_macros::proof_assert!(
+        |calc: &LayoutCalculator<C>, entry: thrust_models::Ghost<IndexVec<FieldIdx, F>>, tag_layout: F, local_layouts: &IndexSlice<LocalIdx, F>|
+            forall(|dl: TargetDataLayout| !C::dl_of(*calc, dl)
+                || exists(|b: USize, qa: USize, qi: USize|
+                    qa == dl.aggregate_align.pow2 && qi == dl.i8_align.pow2
+                    && ((dl.default_address_space_pointer_spec.pointer_size.raw == 2 && b == 32768u64)
+                        || (dl.default_address_space_pointer_spec.pointer_size.raw == 4 && b == 2147483648u64)
+                        || (dl.default_address_space_pointer_spec.pointer_size.raw == 8 && b == 2305843009213693952u64))
+                    && 3 * (super::weight_total::<FieldIdx, F>(&entry) + F::weight_of(tag_layout)
+                            + super::weight_total::<LocalIdx, F>(local_layouts)
+                            + pow2(qa) + pow2(qi))
+                        + pow2(qa) + pow2(qi) < b))
     );
-    // Reachability twin of the `assume!` (fail root layout_reach_prefix.rs): the path after it is
-    // reachable, so the `assume!` makes no proof here vacuous.
+    thrust_macros::proof!(size_bound_ok_intro::<F, FieldIdx, VariantIdx, LocalIdx, C>(calc, entry, tag_layout, local_layouts));
+    thrust_macros::proof!(prefix_fits_in_any_order(calc, entry, &prefix_layouts, tag_layout, local_layouts, &repr));
+    // Reachability twin of the proof above (fail root layout_reach_prefix.rs): the path after it is
+    // reachable, so no proof here is vacuous.
     #[cfg(thrust_layout_reach_prefix)]
     thrust_macros::proof_assert!(|| false);
     thrust_macros::proof!(layout_pre_of_wf(calc, &prefix_layouts, StructKind::AlwaysSized));
@@ -2181,32 +2732,24 @@ pub fn layout<
     let (prefix_size, prefix_align) = (prefix.size, prefix.align);
     // The prefix's size is bounded as `layout_pre` reads the variants' kind (univariant's
     // `ensures`), and its size plus its alignment's bytes as `prefix_fits` does (univariant's
-    // `ensures` under the `fits_in_any_order` assumed above): the fifth atom of the per-variant
+    // `ensures` under the `fits_in_any_order` proved above): the fifth atom of the per-variant
     // closure's `requires`.
     thrust_macros::proof!(prefix_fits_bound(calc, &prefix_layouts, &repr, StructKind::AlwaysSized, prefix_size, prefix_align));
     thrust_macros::proof!(prefix_wf_of(calc, prefix_size, prefix_align));
-    // Assumed (not proved): each variant's fields fit in any order after the prefix
-    // (`variant_fits_wf`, `univariant`'s `fits_in_any_order` for the variant's `univariant` call).
-    // rustc's code makes it true under `layout()`'s size bound (its header comment): a variant's
-    // weighs sum is the weight of its fields plus the prefix's size and twice its alignment, each
-    // below the prefix's weighs sum S_p (univariant's `ensures`), so it is below
-    // (Assigned) + 3 S_p + 2^qa + 2^qi, with (Assigned) the weight of the variant's fields. Those
-    // are the layouts of the locals Assigned to the variant, each once (properties 2b and 2c).
-    // S_p is at most the weight of the entry `prefix_layouts`, the tag and the promoted locals,
-    // and the promoted locals are Ineligible (property 4), so disjoint from the Assigned ones:
-    // (Assigned) + 3 (promoted) <= 3 (weight of `local_layouts`), and the sum is below
-    // 3T + 2^qa + 2^qi < b. Not proved: as at the prefix, the witness of `weight` for a selection
-    // of `local_layouts` (fork issue #278).
-    thrust_macros::assume!(
-        |calc: &LayoutCalculator<C>, local_layouts: &IndexSlice<LocalIdx, F>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
-            variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, prefix_size: Size, prefix_align: AbiAlign|
-            forall(|v: USize, w: <VariantIdx as thrust_models::Model>::Ty|
-                !(0 <= v && v < (*variant_fields).len() && <VariantIdx as Idx>::index_is(w, v))
-                || variant_fits_wf::<F, VariantIdx, FieldIdx, LocalIdx, C>(
-                    *calc, local_layouts, &assignments, w, &(*variant_fields)[v], prefix_size, prefix_align))
-    );
-    // Reachability twin of the `assume!` (fail root layout_reach_variant.rs): the path after it is
-    // reachable, so the `assume!` makes no proof here vacuous.
+    // Each variant's fields fit in any order after the prefix (`variant_fits_wf`,
+    // `univariant`'s `fits_in_any_order` for the variant's `univariant` call): the per-variant
+    // closure proves it for its variant (`variant_fits_of_atoms`) from the atom
+    // `variant_weights_ok`, which `layout()` establishes here once, from `promote_locals`'
+    // `ensures` (the prefix weighs the entry fields, the tag and the promoted locals), the size bound
+    // of its `requires` (as above), eligibility's `ensures` (the promoted locals, members of the
+    // ineligible set, are `Ineligible`, so not Assigned to a variant) and univariant's `ensures`
+    // for the prefix. Every premise is a fact `layout()` already has; the closure's `requires`
+    // states `variant_weights_ok` where it stated `variant_fits_wf`.
+    thrust_macros::proof!(variant_weights_ok_of(
+        calc, entry, &prefix_layouts, tag_layout, local_layouts, &assignments, &ineligible_locals, &picked, &repr,
+        prefix_size, prefix_align, entry_len));
+    // Reachability twin of the proof above (fail root layout_reach_variant.rs): the path after it is
+    // reachable, so no proof here is vacuous.
     #[cfg(thrust_layout_reach_variant)]
     thrust_macros::proof_assert!(|| false);
 
@@ -2226,7 +2769,7 @@ pub fn layout<
     let mut size = prefix.size;
     let mut align = prefix.align;
     // The per-variant closure's `requires`, four atoms (R17; the fourth, `variant_fits_wf`, is
-    // assumed above); the third here: the promoted fields'
+    // proved above); the third here: the promoted fields'
     // lengths are the set's count c (`split_prefix_fields` at the tag index P, with P + 1 + c
     // fields), so property 3 below c (`ineligible_below`) gives `ineligible_promoted`; c and the
     // locals Assigned to any variant are at most n (`ones_assigned_disjoint` and `card_ones`).
@@ -2262,11 +2805,9 @@ pub fn layout<
         forall(|w: <VariantIdx as thrust_models::Model>::Ty|
             variant_promoted_wf::<VariantIdx, FieldIdx, LocalIdx>(&assignments, &promoted_offsets, &promoted_memory_index, w)));
     thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, local_layouts: &IndexSlice<LocalIdx, F>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
-            variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, prefix_size: Size, prefix_align: AbiAlign|
-        forall(|v: USize, w: <VariantIdx as thrust_models::Model>::Ty|
-            !(0 <= v && v < (*variant_fields).len() && <VariantIdx as Idx>::index_is(w, v))
-            || variant_fits_wf::<F, VariantIdx, FieldIdx, LocalIdx, C>(
-                *calc, local_layouts, &assignments, w, &(*variant_fields)[v], prefix_size, prefix_align)));
+            prefix_layouts: IndexVec<FieldIdx, F>, picked: IndexVec<u32, LocalIdx>, repr: ReprOptions, prefix_size: Size, prefix_align: AbiAlign|
+        variant_weights_ok::<F, VariantIdx, FieldIdx, LocalIdx, C>(
+            *calc, local_layouts, &assignments, &prefix_layouts, &picked, &repr, prefix_size, prefix_align));
     thrust_macros::proof_assert!(|calc: &LayoutCalculator<C>, prefix_size: Size, prefix_align: AbiAlign|
         prefix_wf::<C>(*calc, prefix_size, prefix_align));
     // Rewrite (rewrites.md R8): `Map::new(it, f)` for `it.map(f)` and `collect_index_vec_result`
@@ -2290,19 +2831,28 @@ pub fn layout<
             promoted_memory_index: &mut &IndexVec<FieldIdx, u32>,
             prefix_size: &mut &Size,
             prefix_align: &mut &AbiAlign,
+            prefix_layouts: &mut &IndexVec<FieldIdx, F>,
+            picked: &mut &IndexVec<u32, LocalIdx>,
+            repr: &mut &ReprOptions,
         ),
         requires(
             variant_env_wf::<F, VariantIdx, FieldIdx, LocalIdx, C>(**calc, *local_layouts, *assignments)
                 && variant_entries_wf::<F, VariantIdx, FieldIdx, LocalIdx>(*local_layouts, *assignments, index, variant_fields)
                 && variant_promoted_wf::<VariantIdx, FieldIdx, LocalIdx>(
                     *assignments, *promoted_offsets, *promoted_memory_index, index)
-                && variant_fits_wf::<F, VariantIdx, FieldIdx, LocalIdx, C>(
-                    **calc, *local_layouts, *assignments, index, variant_fields, **prefix_size, **prefix_align)
+                && variant_weights_ok::<F, VariantIdx, FieldIdx, LocalIdx, C>(
+                    **calc, *local_layouts, *assignments, *prefix_layouts, *picked, *repr, **prefix_size, **prefix_align)
                 && prefix_wf::<C>(**calc, **prefix_size, **prefix_align)
         ),
         ensures(true),
         |(index, variant_fields): (VariantIdx, &IndexVec<FieldIdx, LocalIdx>)|
             -> Result<VariantLayout<FieldIdx>, crate::rustc_abi::layout::LayoutCalculatorError<F>> {
+            // The variant's fields fit in any order after the prefix, which `variant_layout`
+            // requires: `variant_fits_of_atoms` from the closure's `requires`.
+            thrust_macros::proof!(variant_fits_of_atoms(
+                calc, &prefix_layouts, local_layouts, &assignments, index, variant_fields,
+                &SavedLocalEligibility::Assigned(index), prefix_size, prefix_align, &picked, &repr,
+                picked.len(), local_layouts.len(), variant_fields.len()));
             // Rewrite (rewrites.md R17): the variant's layout is `variant_layout`.
             let variant = variant_layout(
                 calc,
