@@ -2413,7 +2413,7 @@ fn variant_layout<
     // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
     thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
     // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
-    // for the `assume!`. Its precondition, the map's `inv`, is `Map::new`'s `ensures`.
+    // so the proofs read it. Its precondition, the map's `inv`, is `Map::new`'s `ensures`.
     let fields = collect_index_vec(variant_only_tys);
     // The fields are as many as the variant's entries Assigned to it, which `combine_offsets`
     // requires: `map_count_exact` at `collect`'s witness.
@@ -2464,7 +2464,7 @@ fn variant_layout<
     thrust_macros::proof_assert!(|promoted_memory_index: &IndexVec<FieldIdx, u32>, m: usize, local_layouts: &IndexSlice<LocalIdx, F>|
         (*promoted_memory_index).len() + m <= (*local_layouts).len());
 
-    // Rewrite (rewrites.md R13): the arguments are bound to names, for the `assume!`.
+    // Rewrite (rewrites.md R13): the arguments are bound to names, for the proofs that read them.
     let repr = ReprOptions::default();
     let kind = StructKind::Prefixed(prefix_size, prefix_align.abi);
     // `univariant`'s `fits_in_any_order` for the variant: `variant_fits_wf` at the fields, which
