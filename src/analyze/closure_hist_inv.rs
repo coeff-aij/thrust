@@ -65,25 +65,31 @@ pub fn by_value_captures<'tcx>(
         .collect()
 }
 
-/// Whether `closure_ty` is the closure at the parameters of the function it is written in, the
-/// arguments its body is checked at once for every instance. A closure of a function without
-/// type or const parameters always is.
-fn closure_at_own_parameters<'tcx>(
+/// Whether the contract of the closure `closure_ty`, built under `owner_fn_id`, is the one its
+/// body is checked against once for every instance: the closure at the parameters of the function
+/// it is written in, with its upvars' sorts built under that function. A closure of a function
+/// without type or const parameters always is. The function's own parameters, not the same-named
+/// parameters of a caller (whose sorts are the caller's), make it.
+pub fn checked_at_own_parameters<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
     closure_ty: mir_ty::Ty<'tcx>,
+    owner_fn_id: DefId,
 ) -> bool {
     let mir_ty::TyKind::Closure(def_id, args) = closure_ty.kind() else {
         return false;
     };
-    let identity = mir_ty::GenericArgs::identity_for_item(tcx, tcx.typeck_root_def_id(*def_id));
+    let root = tcx.typeck_root_def_id(*def_id);
+    let identity = mir_ty::GenericArgs::identity_for_item(tcx, root);
     let non_region = |arg: &mir_ty::GenericArg<'tcx>| arg.as_region().is_none();
     let parent_args = args.as_closure().parent_args();
-    parent_args.len() == identity.len()
+    let at_identity = parent_args.len() == identity.len()
         && parent_args
             .iter()
             .copied()
             .filter(non_region)
-            .eq(identity.iter().filter(non_region))
+            .eq(identity.iter().filter(non_region));
+    let generic = identity.iter().any(|arg| non_region(&arg));
+    at_identity && (!generic || tcx.typeck_root_def_id(owner_fn_id) == root)
 }
 
 /// `relation` applied to the captures at `positions` of the states `from` and `to`.
@@ -292,12 +298,40 @@ pub fn explicit_laws(
     clauses
 }
 
-/// The laws of the relation `pred` of a closure type parameter whose contract is `contract`; at an
-/// `Fn` bound, as in Creusot, the relation is the equality of states.
+/// Whether the type parameter `param_def_id` is bounded by `Fn` on the item that declares it, so
+/// that it is an `Fn` closure wherever it is in scope. A bound written on one method of an impl
+/// whose parameter it is does not count: the parameter's `hist_inv!` relation is shared by every
+/// method of the impl.
+pub fn fn_bounded_where_declared(tcx: mir_ty::TyCtxt<'_>, param_def_id: DefId) -> bool {
+    let Some(fn_trait) = tcx.lang_items().fn_trait() else {
+        return false;
+    };
+    let declaring = tcx.parent(param_def_id);
+    let Some(index) = tcx
+        .generics_of(declaring)
+        .param_def_id_to_index(tcx, param_def_id)
+    else {
+        return false;
+    };
+    tcx.predicates_of(declaring)
+        .predicates
+        .iter()
+        .filter_map(|(clause, _)| clause.as_trait_clause())
+        .any(|pred| {
+            let pred = pred.skip_binder();
+            pred.def_id() == fn_trait
+                && matches!(pred.self_ty().kind(), mir_ty::TyKind::Param(p) if p.index == index)
+        })
+}
+
+/// The laws of the relation `pred` of a closure type parameter whose contract is `contract`;
+/// when the parameter is an `Fn` closure wherever it is in scope (`fn_bounded`, see
+/// [`fn_bounded_where_declared`]), as in Creusot, the relation is the equality of states.
 pub fn laws(
     system: &mut chc::System,
     pred: &chc::ForallPred,
     contract: &rty::FunctionType,
+    fn_bounded: bool,
     enum_defs: &dyn rty::EnumDefProvider,
 ) -> Vec<chc::Formula<chc::TermVarIdx>> {
     let sort = pred.params()[0].clone();
@@ -320,9 +354,7 @@ pub fn laws(
     );
     let mut laws = vec![refl, trans];
 
-    let receiver = &contract.params[rty::FunctionParamIdx::from_usize(0)].ty;
-    let receiver_kind = receiver.as_pointer().map(|ty| ty.kind);
-    if receiver_kind == Some(rty::PointerKind::Ref(rty::RefKind::Immut)) {
+    if fn_bounded {
         // An `Fn` call takes its state by `&`, so no call changes it (Creusot's `fn_hist_inv`).
         let [f, g] = ["hist_inv_f", "hist_inv_g"].map(|n| fresh(system, n));
         let unchanged = chc::Formula::forall(
@@ -331,6 +363,8 @@ pub fn laws(
         );
         laws.push(unchanged);
     }
+    let receiver = &contract.params[rty::FunctionParamIdx::from_usize(0)].ty;
+    let receiver_kind = receiver.as_pointer().map(|ty| ty.kind);
     if receiver_kind == Some(rty::PointerKind::Ref(rty::RefKind::Mut)) {
         let mut params: Vec<(chc::UserQuantifiedVarId, chc::Sort)> = contract
             .params
@@ -544,18 +578,29 @@ impl<'tcx> Analyzer<'tcx> {
         for clause in by_value_relation_laws(relation, &sorts) {
             self.system.borrow_mut().push_clause(clause);
         }
-        // Its laws are pushed here and each call's step comes from the closure's body, which is
-        // checked at its own parameters, so a callee whose contract reaches it there needs no
-        // analysis at the instance to define it. At other arguments it stays an unknown, so that
-        // the closure's body is analyzed at them.
-        if closure_at_own_parameters(self.tcx, closure_ty) {
-            self.system.borrow_mut().mark_self_defined(relation);
-        }
         self.hist_inv_relations
             .by_value_hist_invs
             .borrow_mut()
             .insert(key, relation);
         relation
+    }
+
+    /// Records that the unknown relating the by-value captures of `closure_ty` with upvars of sort
+    /// `upvars_sort`, if it has one, is defined at that key by the closure's body checked at its
+    /// own parameters ([`checked_at_own_parameters`]): its laws are pushed with it and each call's
+    /// step comes from that body, so a callee whose contract reaches it there needs no analysis at
+    /// the instance to define it. At other keys it stays an unknown, so that the closure's body is
+    /// analyzed at them.
+    pub fn record_by_value_hist_inv_checked(
+        &self,
+        closure_ty: mir_ty::Ty<'tcx>,
+        upvars_sort: &chc::Sort,
+    ) {
+        let key = (closure_ty, upvars_sort.clone());
+        let by_value_hist_invs = self.hist_inv_relations.by_value_hist_invs.borrow();
+        if let Some(relation) = by_value_hist_invs.get(&key) {
+            self.system.borrow_mut().mark_self_defined(*relation);
+        }
     }
 
     /// The relation the `hist_inv` clause of `closure_ty`'s specification writes, between the

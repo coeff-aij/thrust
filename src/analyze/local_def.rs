@@ -1022,6 +1022,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             receiver.clone().mut_current(),
             receiver.mut_final(),
         );
+        if analyze::closure_hist_inv::checked_at_own_parameters(
+            self.tcx,
+            closure_ty,
+            self.owner_fn_id,
+        ) {
+            self.ctx
+                .record_by_value_hist_inv_checked(closure_ty, &upvars_sort);
+        }
         if formula.is_top() {
             return;
         }
