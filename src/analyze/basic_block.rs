@@ -505,8 +505,9 @@ pub fn binding_idents(
 /// of `name`'s, normalized as for `macro_rules!` hygiene, so a variable a `macro_rules!` macro
 /// binds is not named from outside it, and one it binds through a `$x` it is passed is named as
 /// the caller writes it. The binding identifier is found in `idents` ([`binding_idents`]); a
-/// variable no pattern binds is named by no identifier, and neither is one a desugaring binds
-/// (the iterator of a `for` loop), which lowering binds after resolution. That includes a
+/// variable no pattern binds is named by no identifier, and neither is one a desugaring binds,
+/// which lowering binds after resolution: its pattern or its identifier has a desugared span (the
+/// iterator of a `for` loop has the head's span and an identifier with none). That includes a
 /// parameter of an `async fn`, rebound with an `Async`-desugared span, which Thrust does not
 /// support.
 pub fn names_binding(
@@ -517,7 +518,8 @@ pub fn names_binding(
     let Some(binding) = idents.get(&(vdi.source_info.span, vdi.name)) else {
         return false;
     };
-    binding.span.desugaring_kind().is_none()
+    vdi.source_info.span.desugaring_kind().is_none()
+        && binding.span.desugaring_kind().is_none()
         && binding.normalize_to_macro_rules() == name.normalize_to_macro_rules()
 }
 
