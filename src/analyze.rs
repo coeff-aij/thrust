@@ -307,6 +307,12 @@ enum Reach {
 /// (`struct N<T>(Option<Box<N<(T, T)>>>)`) holds unboundedly many.
 const MAX_REACHED_TYS: usize = 1024;
 
+/// The longest chain of nested instances of one `FnMut`-bounded def, each at a strictly deeper
+/// type than the one it was reached from, that is analyzed before the recursion counts as
+/// polymorphic. It is small because each nested instance analyzes the body again, so memory grows
+/// fast; rustc's own recursion limit is far too large for that.
+const MAX_GROWING_FN_MUT_INSTANCES: usize = 3;
+
 /// Whether `visit` finds a type among `ty` and the types it holds ([`held_tys`]), looking into the
 /// parts of a type where it says so.
 fn reaches<'tcx>(
@@ -2510,18 +2516,26 @@ impl<'tcx> Analyzer<'tcx> {
             );
         }
         if analyze_body && fn_mut_bounded {
-            // An `FnMut`-bounded def analyzed at an instance whose body calls it at a type nesting
-            // the current one (`g(&mut f, ..)` in `g`) would be analyzed at ever larger types, as
-            // rustc would instantiate it. A call at a fixed other type (`g(inc, ..)`) terminates
-            // at that instance, whose own recursive call hits the cache.
+            // A chain of nested instances of the same def whose type depth keeps growing stands
+            // for polymorphic recursion, which would instantiate the def at ever larger types. A
+            // call at a fixed other type (`g(inc, ..)`) reaches an instance already in analysis
+            // after a step or two, so its chain stops growing.
             let depth = |args: mir_ty::GenericArgsRef<'tcx>| {
                 args.iter().map(extern_spec::type_depth).max().unwrap_or(0)
             };
-            let recursive = self
-                .fn_mut_instances_in_analysis
-                .borrow()
-                .iter()
-                .any(|(analyzed, args)| *analyzed == def_id && depth(generic_args) > depth(args));
+            let mut growing = 1;
+            let mut shallowest = depth(generic_args);
+            for (analyzed, args) in self.fn_mut_instances_in_analysis.borrow().iter().rev() {
+                if *analyzed != def_id {
+                    continue;
+                }
+                if depth(args) >= shallowest {
+                    break;
+                }
+                growing += 1;
+                shallowest = depth(args);
+            }
+            let recursive = growing > MAX_GROWING_FN_MUT_INSTANCES;
             if recursive {
                 self.tcx.dcx().fatal(format!(
                     "`{}` is analyzed at an instance whose body calls it at other type arguments, \
