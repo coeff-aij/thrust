@@ -789,10 +789,11 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 // Rewrite (rewrites.md R8): `Map::new` of the niche's `available`, 0 without one,
                 // for `filter_map` of the niche and `map` of `available`: the two maxima agree,
                 // as `available` is never negative.
-                // Assumed (fallback, with fptprove): delete once the solver answers it. `Map::new`'s `requires`.
-                // Proved in place, all 4 parts of this site get no answer at 300 s with fptprove e74f0750b.
-                // Scoped as a block contract with the lemma `fields_ok_of_layout_pre`: one part of it gets no answer
-                // (the form is fork commit 5f12bc6d).
+                // `Map::new`'s `requires` is proved here, in a block contract: `block_requires!` states the
+                // facts the proof reads (the layout's precondition, the iterator's membership in `fields`, the
+                // closure's `requires` from `fields_ok`), `fields_ok_of_layout_pre` gives `fields_ok`, and
+                // `Map::preservation_inv_of_stable_closure` gives `preservation_inv` from the closure's `requires`
+                // at the items produced; `block_ensures!` is `Map::new`'s `requires`, the goal of each part.
                 let field_iter = fields_excluding_tail.iter();
                 let niche_available = thrust_macros::closure!(
                     captures(dl: &&&TargetDataLayout),
@@ -809,7 +810,23 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         ))
                     },
                 );
-                thrust_macros::assume!(<P: FnMut(&F) -> u128> |field_iter: core::slice::Iter<'_, F>, niche_available: P|
+                thrust_macros::block_requires!(<P: FnMut(&F) -> u128>
+                    |self: &LayoutCalculator<Cx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind, dl: &TargetDataLayout,
+                     field_iter: core::slice::Iter<'_, F>, niche_available: P|
+                    Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind)
+                        && Cx::dl_of(*self, *dl)
+                        && <core::slice::Iter<'_, F> as crate::IteratorSpec>::inv(field_iter)
+                        && forall(|s: Seq<<&F as thrust_models::Model>::Ty>, e: <&F as thrust_models::Model>::Ty, i: <core::slice::Iter<'_, F> as thrust_models::Model>::Ty|
+                            !<core::slice::Iter<'_, F> as crate::IteratorSpec>::produces(field_iter, s.push(e), i)
+                                || exists(|j: USize| 0 <= j && j < (*fields).len() && e == (&(*fields)[j])))
+                        && forall(|e: <&F as thrust_models::Model>::Ty|
+                            !forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
+                                !(thrust_macros::post!(<F as core::ops::Deref>::deref(e), d) && (**d).largest_niche == Some(n))
+                                    || Niche::wf_in(n, *dl))
+                                || thrust_macros::pre!(niche_available(e))));
+                Self::fields_ok_of_layout_pre::<FieldIdx, VariantIdx, F>(self, fields, kind, dl);
+                thrust_macros::proof!(Map::preservation_inv_of_stable_closure(&field_iter, &niche_available));
+                thrust_macros::block_ensures!(<P: FnMut(&F) -> u128> |field_iter: core::slice::Iter<'_, F>, niche_available: P|
                     <core::slice::Iter<'_, F> as crate::IteratorSpec>::inv(field_iter)
                         && Map::<core::slice::Iter<'_, F>, P>::reinitialize()
                         && Map::<core::slice::Iter<'_, F>, P>::preservation_inv(field_iter, niche_available)
