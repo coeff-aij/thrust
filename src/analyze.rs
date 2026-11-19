@@ -2478,15 +2478,22 @@ impl<'tcx> Analyzer<'tcx> {
             ));
         }
         let per_instance = self.is_checked_per_instance(def_id);
+        let unknown_reachable = self.may_have_pred_var(&expected, generic_args, caller_def_id);
+        // The check of an instance whose contract reaches an unknown is left to the calls that
+        // analyze the body there: the unknown is a closure's contract or an inferred one, which
+        // only the analysis of its creator or of a call defines.
         let analyze_body = may_analyze_body
-            && (!is_generic
-                || def_use == DefUse::Check
-                || self.per_instance_too.contains(&def_id)
-                || (!per_instance
-                    && has_fn_mut_closure(generic_args)
-                    && !self.reuse_fn_mut_generic(&expected, generic_args, caller_def_id))
-                || self.may_have_pred_var(&expected, generic_args, caller_def_id)
-                || narrower_spec);
+            && if def_use == DefUse::Check {
+                !unknown_reachable
+            } else {
+                !is_generic
+                    || self.per_instance_too.contains(&def_id)
+                    || (!per_instance
+                        && has_fn_mut_closure(generic_args)
+                        && !self.reuse_fn_mut_generic(&expected, generic_args, caller_def_id))
+                    || unknown_reachable
+                    || narrower_spec
+            };
         if is_generic && !analyze_body && !per_instance {
             self.reused_generic_instances
                 .borrow_mut()
