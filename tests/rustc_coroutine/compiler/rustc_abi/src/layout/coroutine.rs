@@ -2624,7 +2624,7 @@ fn variant_layout<
 )]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]
-// No predicate is revealed: `layout()` establishes `layout_pre` with `layout_pre_of_wf` at both
+// Only `weight_graph` is revealed (the weight lemmas read it): `layout()` establishes `layout_pre` with `layout_pre_of_wf` at both
 // `univariant` calls and proves `fits_in_any_order` (`prefix_fits_in_any_order` at the prefix and
 // `variant_fits_wf` of each variant in the per-variant closure), and passes
 // `arbitrary_of` from `univariant`'s `ensures` to `split_prefix_fields` and `combine_offsets`,
