@@ -116,9 +116,10 @@ which uses std.rs's `IteratorSpec` and copies of the adapters of `thrust/iter.rs
 A field's weight (its size and twice its alignment's bytes) is `Weighted::weight_of` of the field
 (layout.rs), a total logic function that the trait declares without a body, as Creusot's `View::view`
 and a Verus trait `spec fn` are. `weight` of a field list is the sum of `weight_seq`, so it has no
-existential over a sequence to give a witness for. Its meaning comes from `deref_functional`, which
+existential over a sequence to give a witness for. Its meaning comes from `deref_functional` (`deref_unique` and the opaque `weight_graph`), which
 `layout()`, `univariant` and the field loop require: `weight_of` of a value is the weight of every
-layout `post!` of `deref` allows for it, and is non-negative. No root instantiates `F`, so no root
+layout `post!` of `deref` allows for it, and is non-negative; the proofs that read weights (`layout()`,
+`promote_locals`, `variant_weights_ok_of`, `variant_fits_of_atoms`) reveal `weight_graph`, and the others see it as one symbol. No root instantiates `F`, so no root
 discharges it; a real field type satisfies it (rustc's `Layout`, which dereferences to an interned
 `&LayoutData`, with `weight_of` the weight of that referent). `probes/weight_sum_of_push.rs`
 and its fail twin show the pattern on a small example: the weight of a pushed list follows by unfolding.

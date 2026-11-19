@@ -698,10 +698,27 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                 || **d1 == **d2)
     }
 
+    /// `F::weight_of` is the weight of the layout `F`'s `deref` returns: `weight_of` of a value is its
+    /// layout's size plus twice its alignment's bytes at every layout `post!` allows (a read of a
+    /// field gives such a layout, so the field's weight is that of the layout read), and is
+    /// non-negative. Opaque, so that a proof that reads no weights sees one symbol: the functions
+    /// that read weights reveal it.
+    #[thrust_macros::predicate]
+    #[thrust::opaque]
+    pub(crate) fn weight_graph<
+        'a,
+        FieldIdx: Idx + thrust_models::Model,
+        VariantIdx: Idx,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
+    >() -> bool {
+        forall(|x: <F as thrust_models::Model>::Ty, d: &&LayoutData<FieldIdx, VariantIdx>, q: USize|
+            !(thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d) && q == (**d).align.abi.pow2)
+                || F::weight_of(x) == pow2(q) * 2 + (**d).size.raw)
+            && forall(|x: <F as thrust_models::Model>::Ty| F::weight_of(x) >= 0)
+    }
+
     /// `F`'s `deref` is a function (`deref_unique`) and `F::weight_of` is the weight of the layout
-    /// it returns: `weight_of` of a value is its layout's size plus twice its alignment's bytes at
-    /// every layout `post!` allows (a read of a field gives such a layout, so the field's weight
-    /// is that of the layout read), and is non-negative. It is a requirement on `F` that the
+    /// it returns (`weight_graph`). It is a requirement on `F` that the
     /// verified functions state and no root discharges, as `deref_unique` is. A real field type
     /// satisfies it: rustc's `Layout` dereferences to the interned `&LayoutData`, `weight_of` of
     /// it is the weight of that referent, a function of the field's value as `deref` is, and a
@@ -714,11 +731,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         VariantIdx: Idx,
         F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
     >() -> bool {
-        Self::deref_unique::<FieldIdx, VariantIdx, F>()
-            && forall(|x: <F as thrust_models::Model>::Ty, d: &&LayoutData<FieldIdx, VariantIdx>, q: USize|
-                !(thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d) && q == (**d).align.abi.pow2)
-                    || F::weight_of(x) == pow2(q) * 2 + (**d).size.raw)
-            && forall(|x: <F as thrust_models::Model>::Ty| F::weight_of(x) >= 0)
+        Self::deref_unique::<FieldIdx, VariantIdx, F>() && Self::weight_graph::<FieldIdx, VariantIdx, F>()
     }
 
     /// An invariant of the layouts rustc computes that `place_field` relies on: the size below the

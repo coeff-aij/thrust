@@ -1266,7 +1266,7 @@ fn variant_weights_ok<
         *calc, local_layouts, assignments, new, picked, repr, prefix_size, prefix_align)
 )]
 #[thrust_macros::context]
-#[thrust::reveal(variant_weights_ok, size_bound_ok)]
+#[thrust::reveal(variant_weights_ok, size_bound_ok, LayoutCalculator::weight_graph)]
 fn variant_weights_ok_of<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
@@ -1313,7 +1313,7 @@ fn variant_weights_ok_of<
 )]
 #[thrust_macros::context]
 #[thrust::split_goals]
-#[thrust::reveal(variant_weights_ok, variant_env_wf, variant_entries_wf)]
+#[thrust::reveal(variant_weights_ok, variant_env_wf, variant_entries_wf, LayoutCalculator::weight_graph)]
 fn variant_fits_of_atoms<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + super::Weighted + thrust_models::Model<Ty: PartialEq>,
@@ -1498,6 +1498,7 @@ fn prefix_fits_in_any_order<
 )]
 #[thrust_macros::context]
 #[thrust::split_goals]
+#[thrust::reveal(LayoutCalculator::weight_graph)]
 fn promote_locals<
     'a,
     F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + super::Weighted + thrust_models::Model,
@@ -2629,6 +2630,7 @@ fn variant_layout<
 // `arbitrary_of` from `univariant`'s `ensures` to `split_prefix_fields` and `combine_offsets`,
 // which reveal it, so it reads each as the atom these state.
 #[thrust::split_goals]
+#[thrust::reveal(LayoutCalculator::weight_graph)]
 pub fn layout<
     'a,
     // `Ty: PartialEq`, as `fits_in_any_order` bounds it, for the two proofs that state it.
