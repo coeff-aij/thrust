@@ -2163,7 +2163,7 @@ pub fn layout<
     // weights (a field's weight is read through `deref`'s postcondition, a relation), and the
     // solver does not answer such a goal even with its witness named (fork issue #278), nor can a
     // proof name the witness of the `weight`s `layout()` requires.
-    thrust_macros::assume!(
+    thrust_macros::proof_assert!(
         |calc: &LayoutCalculator<C>, prefix_layouts: IndexVec<FieldIdx, F>, repr: ReprOptions|
             LayoutCalculator::<C>::fits_in_any_order::<FieldIdx, VariantIdx, F>(*calc, &prefix_layouts, &repr, StructKind::AlwaysSized)
     );
