@@ -1181,7 +1181,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             // Assumed (fallback, with fptprove): delete once the solver answers it. `iter_enumerated`'s
             // requires, `layout_pre`'s `can_new` at the number of fields; checked from `layout_pre` by a
             // lemma it makes the key closures' part (`Size::bytes`, `deref`, `is_zst`) unanswered.
-            thrust_macros::assume!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
+            thrust_macros::proof_assert!(|fields: &IndexSlice<FieldIdx, F>| <FieldIdx as Idx>::can_new((*fields).len()));
             #[cfg(thrust_univariant_biased_reach = "iter_enumerated")]
             thrust_macros::proof_assert!(|kind: StructKind| false);
             // Rewrite (rewrites.md R8): `Filter::new(it, p)` for `it.filter(p)`. The preconditions
