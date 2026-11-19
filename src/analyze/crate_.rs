@@ -474,10 +474,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // Inherited laws first: with them after the bodies, the `skip_take` query (the same clauses
         // in another order) is not answered by the solver within 300 s, where it answers in 8 s.
         self.analyze_inherited_laws();
-        // A def with an `FnMut`-bounded type parameter is decided after every other body has
-        // been analyzed, because the call sites that instantiate it are found by analyzing
-        // those bodies.
-        let mut fn_mut_generic_defs = Vec::new();
+        let mut per_instance_defs = Vec::new();
         for local_def_id in self.tcx.mir_keys(()) {
             if self.is_trait_law(*local_def_id) {
                 // A law's default body over `Self` would be checked with the law itself among
@@ -491,48 +488,66 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 );
                 continue;
             }
-            if self.has_fn_mut_bounded_param(*local_def_id) {
-                fn_mut_generic_defs.push(*local_def_id);
+            if self.is_checked_per_instance(*local_def_id) {
+                per_instance_defs.push(*local_def_id);
                 continue;
             }
             self.analyze_placeholder(*local_def_id);
         }
-        // A def is skipped (D34) when a concrete instantiation has analyzed its body and no
-        // instance has used its generic analysis instead: an instance that reuses it through
-        // `Analyzer::reuse_fn_mut_generic` (a `hist_inv!`-specified def), or any instance the
-        // analysis did not analyze at its arguments (`Analyzer::record_fn_mut_generic_reused`,
-        // with the impls of a trait method reached at a type parameter). Analyzing a def may add
-        // one for a def skipped before, which is then analyzed too.
-        let mut pending = fn_mut_generic_defs;
-        while !pending.is_empty() {
-            let mut skipped = Vec::new();
-            for local_def_id in pending {
-                if self.ctx.has_concrete_instance(local_def_id)
-                    && !self.ctx.has_reused_instance(local_def_id)
-                {
-                    // The placeholder analysis would check the body against a closure contract
-                    // that is a free forall predicate, which no clause relates to the concrete
-                    // closures of this crate. An `FnMut` closure's state changes between calls,
-                    // so a body obligation relating the contract at two states (a preservation
-                    // conjunct of an adapter invariant) need not be inductive for an arbitrary
-                    // contract even when it is for every concrete one; creusot-std guards it
-                    // by `hist_inv!` for that reason. Each concrete instantiation has checked the
-                    // body against its own closure contract instead.
-                    skipped.push(local_def_id);
+        self.check_per_instance_defs(&per_instance_defs);
+    }
+
+    /// Whether `local_def_id` is a function verified per instance (D34) rather than over its
+    /// type parameters ([`analyze::Analyzer::is_checked_per_instance`]). A closure is not: it is
+    /// analyzed with the function it is in.
+    fn is_checked_per_instance(&self, local_def_id: LocalDefId) -> bool {
+        self.tcx.def_kind(local_def_id).is_fn_like()
+            && !self.tcx.is_closure_like(local_def_id.to_def_id())
+            && self.ctx.is_checked_per_instance(local_def_id.to_def_id())
+    }
+
+    /// Checks the body of each of `defs`, which are verified per instance (D34), against its
+    /// contract at every instance of it in rustc's mono item set. The set includes the functions
+    /// no code reaches from `main` (`-C link-dead-code`, set in `main.rs`) and the instances a
+    /// generic caller, a trait method's dispatch or a function value reaches.
+    fn check_per_instance_defs(&mut self, defs: &[LocalDefId]) {
+        use rustc_middle::mir::mono::MonoItem;
+
+        if defs.is_empty() {
+            return;
+        }
+        let partitions = self.tcx.collect_and_partition_mono_items(());
+        let mut instances = Vec::new();
+        for unit in partitions.codegen_units {
+            for item in unit.items().keys() {
+                let MonoItem::Fn(instance) = item else {
                     continue;
+                };
+                let mir_ty::InstanceKind::Item(def_id) = instance.def else {
+                    continue;
+                };
+                let is_checked = def_id
+                    .as_local()
+                    .is_some_and(|local_def_id| defs.contains(&local_def_id));
+                if is_checked && !self.skip_analysis.contains(&def_id.expect_local()) {
+                    instances.push((def_id, instance.args));
                 }
-                self.analyze_placeholder(local_def_id);
             }
-            pending = skipped
-                .into_iter()
-                .filter(|local_def_id| {
-                    let reused = self.ctx.has_reused_instance(*local_def_id);
-                    if !reused {
-                        tracing::debug!(?local_def_id, "verified per concrete instantiation");
-                    }
-                    reused
-                })
-                .collect();
+        }
+        // The mono item set is unordered; the clauses of a check follow it.
+        instances.sort_by_cached_key(|(def_id, args)| {
+            (self.tcx.def_path_str(*def_id), format!("{args:?}"))
+        });
+        for (def_id, args) in instances {
+            self.ctx.check_body_at_instance(def_id, args);
+        }
+        for &local_def_id in defs {
+            self.body_checks.record(
+                local_def_id,
+                analyze::BodyCheck::NotAnalyzed(
+                    "generic, checked at each of its instances, and none exists",
+                ),
+            );
         }
     }
 
@@ -913,14 +928,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .local_def_analyzer(local_def_id)
             .generic_args(generic_args)
             .run(&expected);
-    }
-
-    /// Whether a type parameter in scope of `local_def_id` (its own or an enclosing item's) is
-    /// bounded by `FnMut`. `Fn` and `FnOnce` bounds do not count: their closure state does not
-    /// change between calls, and such defs keep their generic verification.
-    fn has_fn_mut_bounded_param(&self, local_def_id: LocalDefId) -> bool {
-        self.tcx.def_kind(local_def_id).is_fn_like()
-            && !analyze::fn_mut_bounded_params(self.tcx, local_def_id.to_def_id()).is_empty()
     }
 
     /// Indices of the type parameters bound by a trait other than `Sized`, including bounds

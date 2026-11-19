@@ -52,6 +52,11 @@ impl Callbacks for CompilerCalls {
             config.crate_cfg.push("thrust_int_range".to_owned());
         }
 
+        // The instances of a generic function that is checked per instance are those in rustc's
+        // mono item set, which includes a function no code reaches from `main` only when dead
+        // code is linked.
+        config.opts.cg.link_dead_code = Some(true);
+
         // The MIR optimizations preserve the meaning of a program without undefined behaviour
         // and only reshape its MIR. `debug_assertions`, the default of the overflow and UB
         // checks, is settled from the command line before this callback runs.

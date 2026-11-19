@@ -212,6 +212,9 @@ enum DefUse {
     Call,
     /// A call that runs the def's own body, a trait method's default body included.
     Run,
+    /// The check of the def's body at an instance of rustc's mono item set
+    /// ([`Analyzer::check_body_at_instance`]).
+    Check,
 }
 
 impl DefUse {
@@ -219,7 +222,7 @@ impl DefUse {
         match self {
             DefUse::Contract => false,
             DefUse::Call => tcx.trait_of_assoc(def_id).is_none(),
-            DefUse::Run => true,
+            DefUse::Run | DefUse::Check => true,
         }
     }
 }
@@ -304,12 +307,6 @@ enum Reach {
 /// takes as the cautious answer. A polymorphically recursive type
 /// (`struct N<T>(Option<Box<N<(T, T)>>>)`) holds unboundedly many.
 const MAX_REACHED_TYS: usize = 1024;
-
-/// The longest chain of nested instances of one `FnMut`-bounded def, each at a strictly deeper
-/// type than the one it was reached from, that is analyzed before the recursion counts as
-/// polymorphic. It is small because each nested instance analyzes the body again, so memory grows
-/// fast; rustc's own recursion limit is far too large for that.
-const MAX_GROWING_FN_MUT_INSTANCES: usize = 3;
 
 /// Whether `visit` finds a type among `ty` and the types it holds ([`held_tys`]), looking into the
 /// parts of a type where it says so.
@@ -684,9 +681,6 @@ pub struct Analyzer<'tcx> {
     /// Uses of a trait predicate through a type parameter whose laws
     /// [`Analyzer::emit_pending_laws`] has yet to state.
     pending_laws: Rc<RefCell<Vec<pred_inst::PendingLaw<'tcx>>>>,
-    /// Defs whose body has been analyzed at fully concrete type arguments, as the callee of
-    /// a call site; see [`Analyzer::has_concrete_instance`].
-    concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
     /// The generic defs whose bodies were analyzed at concrete arguments, and those arguments.
     analyzed_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
     /// See [`HistInvRelations`].
@@ -698,8 +692,6 @@ pub struct Analyzer<'tcx> {
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
-    /// The instances of `FnMut`-bounded defs whose bodies are being analyzed, innermost last.
-    fn_mut_instances_in_analysis: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
     /// See [`Analyzer::contract_written`].
     contract_written: RefCell<HashMap<LocalDefId, bool>>,
     /// The generic defs of a crate with an `Invariant` impl that are verified once over their
@@ -1039,13 +1031,11 @@ impl<'tcx> Analyzer<'tcx> {
             pending_pred_instances,
             trait_laws,
             pending_laws,
-            concrete_instances: Default::default(),
             analyzed_instances: Default::default(),
             hist_inv_relations: Default::default(),
             fn_mut_reuse: Default::default(),
             spec_assumptions: Default::default(),
             reused_generic_instances: Default::default(),
-            fn_mut_instances_in_analysis: Default::default(),
             contract_written: Default::default(),
             per_instance_too: Default::default(),
             called_fn_tys: Default::default(),
@@ -2359,6 +2349,16 @@ impl<'tcx> Analyzer<'tcx> {
         self.def_ty_at(def_id, generic_args, caller_def_id, DefUse::Contract)
     }
 
+    /// Checks the body of the generic def `def_id` against its contract at `generic_args`, an
+    /// instance of rustc's mono item set.
+    pub fn check_body_at_instance(
+        &mut self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) {
+        self.def_ty_at(def_id, generic_args, def_id, DefUse::Check);
+    }
+
     fn def_ty_at(
         &mut self,
         def_id: DefId,
@@ -2430,21 +2430,26 @@ impl<'tcx> Analyzer<'tcx> {
         if def_use.runs_body(self.tcx, def_id) && body_unanalyzed {
             self.stop_promised_invariant(def_id, local_def_id, generic_args, caller_def_id);
         }
-        if let Some(rty) = instantiated_ty_cache.borrow().get(&key) {
+        // A call that finds the contract already built uses it; the check of a body at an
+        // instance goes on to analyze the body against it.
+        let cached = instantiated_ty_cache.borrow().get(&key).cloned();
+        if let Some(rty) = cached.as_ref().filter(|_| def_use != DefUse::Check) {
             return Some(rty.clone());
         }
-
-        let expected = {
-            let mut analyzer = self.local_def_analyzer(local_def_id);
-            analyzer
-                .owner_fn_id(caller_def_id)
-                .generic_args(generic_args);
-            analyzer.expected_ty()
-        };
-        instantiated_ty_cache
-            .borrow_mut()
-            .insert(key, expected.clone());
-        tracing::info!(?def_id, rty = %expected.display(), ?generic_args, "deferred def");
+        let expected = cached.unwrap_or_else(|| {
+            let expected = {
+                let mut analyzer = self.local_def_analyzer(local_def_id);
+                analyzer
+                    .owner_fn_id(caller_def_id)
+                    .generic_args(generic_args);
+                analyzer.expected_ty()
+            };
+            instantiated_ty_cache
+                .borrow_mut()
+                .insert(key, expected.clone());
+            tracing::info!(?def_id, rty = %expected.display(), ?generic_args, "deferred def");
+            expected
+        });
 
         // A generic def's body has been checked once over forall sorts against this contract.
         // Analyzing it again at the instance is needed to define the unknowns minted in
@@ -2454,12 +2459,10 @@ impl<'tcx> Analyzer<'tcx> {
         // arguments, whose by-value receiver the instantiated `pre!` reads at a final state equal
         // to the current one; and when the contract at the instance is a trait method's spec that
         // does not cover the def's own type parameters, which the generic check did not use
-        // (`Iterator::collect`'s at `B = Vec<T>`). An `FnMut`-bounded def whose contract does not
-        // relate the closure's states by `hist_inv!` is analyzed at every instance, whatever its
-        // type arguments (a function item, an `Fn` closure, a type parameter of the caller): its
-        // generic analysis is emitted only while no concrete instance has analyzed its body
-        // (D34), so an instance that used its contract as instantiated would rely on an analysis
-        // that may never be emitted. Otherwise the contract is used as instantiated.
+        // (`Iterator::collect`'s at `B = Vec<T>`). A def verified per instance (D34) is not
+        // checked over its type parameters: its body is checked at the instances of rustc's mono
+        // item set (`Analyzer::check_body_at_instance`), and a call uses its contract. Otherwise
+        // the contract is used as instantiated.
         let fn_mut_bounded = !fn_mut_bounded_params(self.tcx, def_id).is_empty();
         let narrower_spec = may_analyze
             && is_generic
@@ -2475,23 +2478,20 @@ impl<'tcx> Analyzer<'tcx> {
                 self.tcx.def_path_str_with_args(def_id, generic_args),
             ));
         }
+        let per_instance = self.is_checked_per_instance(def_id);
         let analyze_body = may_analyze_body
             && (!is_generic
+                || def_use == DefUse::Check
                 || self.per_instance_too.contains(&def_id)
-                || ((has_fn_mut_closure(generic_args) || fn_mut_bounded)
+                || (!per_instance
+                    && (has_fn_mut_closure(generic_args) || fn_mut_bounded)
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
                 || self.may_have_pred_var(&expected, generic_args, caller_def_id)
                 || narrower_spec);
-        if is_generic && !analyze_body {
+        if is_generic && !analyze_body && !per_instance {
             self.reused_generic_instances
                 .borrow_mut()
                 .push((def_id, generic_args, caller_def_id));
-            // An instance of an `FnMut`-bounded def that is not analyzed here stands on the def's
-            // analysis over its type parameters, so that analysis is emitted whatever concrete
-            // instances analyze its body (D34).
-            if fn_mut_bounded {
-                self.record_fn_mut_generic_reused(def_id);
-            }
         }
         if is_generic && deferred_ty_mode.is_some() {
             tracing::info!(
@@ -2501,41 +2501,7 @@ impl<'tcx> Analyzer<'tcx> {
                 "generic def at an instance"
             );
         }
-        if analyze_body && fn_mut_bounded {
-            // A chain of nested instances of the same def whose type depth keeps growing stands
-            // for polymorphic recursion, which would instantiate the def at ever larger types. A
-            // call at a fixed other type (`g(inc, ..)`) reaches an instance already in analysis
-            // after a step or two, so its chain stops growing.
-            let depth = |args: mir_ty::GenericArgsRef<'tcx>| {
-                args.iter().map(extern_spec::type_depth).max().unwrap_or(0)
-            };
-            let mut growing = 1;
-            let mut shallowest = depth(generic_args);
-            for (analyzed, args) in self.fn_mut_instances_in_analysis.borrow().iter().rev() {
-                if *analyzed != def_id {
-                    continue;
-                }
-                if depth(args) >= shallowest {
-                    break;
-                }
-                growing += 1;
-                shallowest = depth(args);
-            }
-            let recursive = growing > MAX_GROWING_FN_MUT_INSTANCES;
-            if recursive {
-                self.tcx.dcx().fatal(format!(
-                    "`{}` is analyzed at an instance whose body calls it at other type arguments, \
-                     as a polymorphically recursive function does, which is not supported",
-                    self.tcx.def_path_str(def_id),
-                ));
-            }
-        }
         if analyze_body {
-            if fn_mut_bounded {
-                self.fn_mut_instances_in_analysis
-                    .borrow_mut()
-                    .push((def_id, generic_args));
-            }
             // The arguments the body is instantiated at: the spec's own body at the bound
             // arguments, a target's body at the call's.
             let body_args = if local_def_id.to_def_id() == def_id {
@@ -2566,31 +2532,14 @@ impl<'tcx> Analyzer<'tcx> {
             };
             let body_local_def_id = body_analyzer.local_def_id();
             body_analyzer.run(&expected);
-            if fn_mut_bounded {
-                self.fn_mut_instances_in_analysis.borrow_mut().pop();
-            }
             use mir_ty::TypeVisitableExt as _;
             if !body_args.has_param() {
-                self.concrete_instances
-                    .borrow_mut()
-                    .insert(body_local_def_id);
                 self.analyzed_instances
                     .borrow_mut()
                     .push((body_local_def_id.to_def_id(), body_args));
             }
         }
         Some(expected)
-    }
-
-    /// Whether the body of `local_def_id` has been analyzed at type arguments that mention no
-    /// type parameter, i.e. once per concrete instantiation reached from a call site.
-    ///
-    /// Every call at concrete type arguments re-analyzes the callee's body for those arguments
-    /// (see [`Analyzer::def_ty_with_args`]), so such an instance checks the body against the
-    /// contract instantiated at the call site, including the concrete closure contract of an
-    /// `FnMut`-bounded type parameter.
-    pub fn has_concrete_instance(&self, local_def_id: LocalDefId) -> bool {
-        self.concrete_instances.borrow().contains(&local_def_id)
     }
 
     /// Whether a refinement in `rty`, a contract at `generic_args` made from `caller_def_id`,
