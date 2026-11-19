@@ -1269,7 +1269,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     Err(err) => panic!("failed to evaluate constant {unevaluated:?}: {err:?}"),
                 }
             }
-            mir::Const::Ty(ty, _) => {
+            mir::Const::Ty(ty, ty_const) => {
+                // A const parameter (`N` of `fn f<const N: usize>`) is any value of its type, as
+                // the body is checked for every instance; at an instance it is a value below.
+                if let mir_ty::ConstKind::Param(_) = ty_const.kind() {
+                    return self.unknown_value_ty(*ty);
+                }
                 let scalar_int = const_
                     .try_to_scalar_int()
                     .expect("type-level const must be a primitive scalar");
@@ -2313,9 +2318,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// Stops at a call of a local function at arguments no definition of it covers: its only
-    /// definition is an extern spec that fixes a type argument or bounds an associated type, and
-    /// the call is at other arguments, or at a type parameter of the caller, where the spec's
-    /// instances cannot be told apart from the others.
+    /// definition is an extern spec that fixes a type or const argument or bounds an associated
+    /// type, and the call is at other arguments, or at a type or const parameter of the caller,
+    /// where the spec's instances cannot be told apart from the others.
     fn fatal_uncovered_instance(
         &self,
         def_id: DefId,
@@ -2324,8 +2329,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     ) -> ! {
         self.tcx.dcx().fatal(format!(
             "`{}`, called in `{}`, has no specification at these arguments: an extern spec that \
-             fixes a type argument or bounds an associated type covers only those instances, and \
-             a call at a type parameter is not one of them",
+             fixes a type or const argument or bounds an associated type covers only those \
+             instances, and a call at a type or const parameter is not one of them",
             self.tcx.def_path_str_with_args(def_id, args),
             self.tcx.def_path_str(caller_def_id),
         ))
