@@ -251,6 +251,20 @@ impl FunctionType {
         self.params.get(last_index)
     }
 
+    /// The type of the captures of a closure of this type: its receiver, behind the reference an
+    /// `Fn` or `FnMut` closure takes it by. The receiver is the first parameter, so its type
+    /// names no other.
+    pub fn closure_captures(&self) -> RefinedType<Closed> {
+        let receiver = &self.params[FunctionParamIdx::from_usize(0)];
+        let captures = match receiver.ty.as_pointer() {
+            Some(pointer) => &pointer.elem,
+            None => receiver,
+        };
+        captures
+            .clone()
+            .map_var(|_| unreachable!("the receiver's type names no parameter"))
+    }
+
     /// Because function types are always closed in Thrust, we can convert this into
     /// [`Type<Closed>`].
     pub fn into_closed_ty(self) -> Type<Closed> {
@@ -466,8 +480,9 @@ impl PartVars<'_> {
 /// elements of an array are stated so too.
 ///
 /// A function type inside `ty` (a function pointer) is not stated: a value of a function type
-/// has no term to state its template's contract of, which only a direct call's subtyping relates
-/// to the function the value is.
+/// has no term to state its template's contract of. A direct call's subtyping relates it to the
+/// function the value is, and so does the check of a closure's captures where it is built
+/// (`check_closure_captures` in `analyze::basic_block`).
 fn inner_refinements_formula<W>(
     ty: &Type<FunctionParamIdx>,
     value: chc::Term<W>,
