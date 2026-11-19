@@ -894,12 +894,11 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                     let Some(ty) = owner.args.get(index as usize).and_then(|a| a.as_type()) else {
                         continue;
                     };
-                    covered.closures.extend(ty.walk().filter_map(|arg| {
-                        match arg.as_type().map(|ty| *ty.kind()) {
-                            Some(mir_ty::TyKind::Closure(def_id, _)) => Some(def_id),
-                            _ => None,
-                        }
-                    }));
+                    // Only the closure the parameter is instantiated with: one in its captures
+                    // or generic arguments is not the value the call counts.
+                    if let mir_ty::TyKind::Closure(def_id, _) = *peel_refs(ty).kind() {
+                        covered.closures.push(def_id);
+                    }
                 }
             }
         }
