@@ -42,9 +42,9 @@ refutation shows that the assumption leaves the path after it reachable. The fal
 assumptions (below) share one, `layout_reach_fallback.rs`, with a `proof_assert!(false)` after the
 last assumption in `layout()`. `layout_reach_pair.rs` follows the `proof_assert!` that replaced the
 pair's `assume!`; with fptprove e74f0750b at 300 s its target is `unsat`, so the closure's
-`requires`, which proves the pair, leaves the path after it reachable. At 54459771, with fptprove ce3cea65b at 300 s, with and without cvc5 1.4.1, the target parts of `layout_reach_prefix.rs`
-(`unknown`), `layout_reach_variant.rs` (timeout) and `layout_reach_fallback.rs` get no answer:
-the latter's target in `layout()` times out. So the goals after those assumptions are not
+`requires`, which proves the pair, leaves the path after it reachable. `layout_reach_prefix.rs` and
+`layout_reach_variant.rs` put the `proof_assert!(false)` after the proofs that replaced the prefix's and the
+variants' `assume!`s (`prefix_fits_in_any_order` and `variant_weights_ok_of`); with fptprove 16064279f at 300 s, 2 CPUs, 6 GB, their target parts (761 of 1160 and 785 of 1150) get no answer; `layout_reach_fallback.rs`'s target in `layout()` is not rerun (no answer at 54459771 with fptprove ce3cea65b). So the goals after those proofs are not
 shown to hold non-vacuously.
 Sixteen of `univariant_biased.rs`'s goals are `proof_assert!`s that were `assume!`s or a wrapper's
 assumption: the index bounds `offsets[i]` and `offsets[j]` of the pair step (layout.rs 1257, 1258),
