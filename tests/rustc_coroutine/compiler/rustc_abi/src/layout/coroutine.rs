@@ -2197,7 +2197,7 @@ pub fn layout<
     // (Assigned) + 3 (promoted) <= 3 (weight of `local_layouts`), and the sum is below
     // 3T + 2^qa + 2^qi < b. Not proved: as at the prefix, the witness of `weight` for a selection
     // of `local_layouts` (fork issue #278).
-    thrust_macros::assume!(
+    thrust_macros::proof_assert!(
         |calc: &LayoutCalculator<C>, local_layouts: &IndexSlice<LocalIdx, F>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
             variant_fields: &IndexSlice<VariantIdx, IndexVec<FieldIdx, LocalIdx>>, prefix_size: Size, prefix_align: AbiAlign|
             forall(|v: USize, w: <VariantIdx as thrust_models::Model>::Ty|
