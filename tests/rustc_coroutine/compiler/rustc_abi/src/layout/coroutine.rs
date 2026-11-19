@@ -1,4 +1,4 @@
-// `thrust_eligibility_fail` is set only by the fail twin of the eligibility root (`set_assignment`).
+// `thrust_eligibility_fail` is set only by the fail twin of the eligibility root (the last loop's block contract).
 #![allow(unexpected_cfgs)]
 use crate::thrust_models;
 use thrust_models::model::{BitVec, Int, Seq};

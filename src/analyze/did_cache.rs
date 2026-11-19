@@ -20,74 +20,99 @@ pub enum InvariantMarker {
     ForLoopHistory,
 }
 
+/// The definitions of the `#[thrust::def::..]` items of std.rs (the model, sequence, logic and marker
+/// library), each found once by its attribute: `$name` is the accessor, `$path` the attribute's
+/// path from [`crate::analyze::annot`].
+macro_rules! annotated_defs {
+    ($($(#[$doc:meta])* $name:ident => $path:ident;)*) => {
+        #[derive(Debug, Clone, Default)]
+        struct AnnotatedDefIds {
+            $($name: OnceCell<Option<DefId>>,)*
+        }
+
+        impl DefIdCache<'_> {
+            $(
+                $(#[$doc])*
+                pub fn $name(&self) -> Option<DefId> {
+                    *self.def_ids.annotated.$name.get_or_init(|| {
+                        self.annotated_def(&crate::analyze::annot::$path())
+                    })
+                }
+            )*
+        }
+    };
+}
+
+annotated_defs! {
+    model_ty => model_ty_path;
+    int_model => int_model_path;
+    uint_model => uint_model_path;
+    int_n_model => int_n_model_path;
+    uint_n_model => uint_n_model_path;
+    bit_vec_model => bit_vec_model_path;
+    bit_vec_from_int => bit_vec_from_int_path;
+    bit_vec_to_int => bit_vec_to_int_path;
+    mut_model => mut_model_path;
+    box_model => box_model_path;
+    array_model => array_model_path;
+    closure_model => closure_model_path;
+    dyn_model => dyn_model_path;
+    ghost_model => ghost_model_path;
+    /// The `IteratorSpec` trait of std.rs.
+    iterator_spec => iterator_spec_path;
+    /// The `PartialOrdSpec` trait of std.rs.
+    partial_ord_spec => partial_ord_spec_path;
+    /// The `Invariant` trait of std.rs: a type's invariant.
+    type_invariant => type_invariant_path;
+    mut_model_new => mut_model_new_path;
+    box_model_new => box_model_new_path;
+    array_model_from_fn => array_model_from_fn_path;
+    array_model_store => array_model_store_path;
+    seq_model => seq_model_path;
+    seq_empty => seq_empty_path;
+    seq_singleton => seq_singleton_path;
+    int_to_int_n => int_to_int_n_path;
+    proof_branch => proof_branch_path;
+    int_lit => int_lit_path;
+    int_n_to_int => int_n_to_int_path;
+    uint_to_uint_n => uint_to_uint_n_path;
+    uint_n_to_uint => uint_n_to_uint_path;
+    seq_len => seq_len_path;
+    seq_push => seq_push_path;
+    seq_store => seq_store_path;
+    seq_subsequence => seq_subsequence_path;
+    seq_concat => seq_concat_path;
+    exists => exists_path;
+    forall => forall_path;
+    implies => implies_path;
+    log_eq_args => log_eq_args_path;
+    invariant_marker => invariant_marker_path;
+    partial_invariant_marker => partial_invariant_marker_path;
+    for_loop_history_marker => for_loop_history_marker_path;
+    /// The formula `for_loop_history_marker` conjoins.
+    for_loop_history => for_loop_history_path;
+    ghost_marker => ghost_marker_path;
+    choose_marker => choose_marker_path;
+    witness => witness_path;
+    assert_marker => assert_marker_path;
+    assume_marker => assume_marker_path;
+    block_requires_marker => block_requires_marker_path;
+    block_ensures_marker => block_ensures_marker_path;
+    fn_param_wrapper => fn_param_wrapper_path;
+    fn_param_at_entry => fn_param_at_entry_path;
+    closure_precondition => closure_precondition_path;
+    closure_postcondition => closure_postcondition_path;
+    closure_hist_inv => closure_hist_inv_path;
+}
+
 #[derive(Debug, Clone, Default)]
 struct DefIds {
+    annotated: AnnotatedDefIds,
     unique: OnceCell<Option<DefId>>,
     nonnull: OnceCell<Option<DefId>>,
     slice_iter: OnceCell<Option<DefId>>,
     slice_iter_mut: OnceCell<Option<DefId>>,
     vec_into_iter: OnceCell<Option<DefId>>,
-
-    model_ty: OnceCell<Option<DefId>>,
-    int_model: OnceCell<Option<DefId>>,
-    uint_model: OnceCell<Option<DefId>>,
-    uint_n_model: OnceCell<Option<DefId>>,
-    int_n_model: OnceCell<Option<DefId>>,
-    bit_vec_model: OnceCell<Option<DefId>>,
-    mut_model: OnceCell<Option<DefId>>,
-    box_model: OnceCell<Option<DefId>>,
-    array_model: OnceCell<Option<DefId>>,
-    closure_model: OnceCell<Option<DefId>>,
-    ghost_model: OnceCell<Option<DefId>>,
-    dyn_model: OnceCell<Option<DefId>>,
-    partial_ord_spec: OnceCell<Option<DefId>>,
-    iterator_spec: OnceCell<Option<DefId>>,
-    type_invariant: OnceCell<Option<DefId>>,
-
-    mut_model_new: OnceCell<Option<DefId>>,
-    box_model_new: OnceCell<Option<DefId>>,
-    array_model_store: OnceCell<Option<DefId>>,
-    array_model_from_fn: OnceCell<Option<DefId>>,
-    bit_vec_from_int: OnceCell<Option<DefId>>,
-    bit_vec_to_int: OnceCell<Option<DefId>>,
-
-    seq_model: OnceCell<Option<DefId>>,
-    seq_empty: OnceCell<Option<DefId>>,
-    seq_singleton: OnceCell<Option<DefId>>,
-    seq_len: OnceCell<Option<DefId>>,
-    uint_to_uint_n: OnceCell<Option<DefId>>,
-    int_to_int_n: OnceCell<Option<DefId>>,
-    int_n_to_int: OnceCell<Option<DefId>>,
-    int_lit: OnceCell<Option<DefId>>,
-    proof_branch: OnceCell<Option<DefId>>,
-    uint_n_to_uint: OnceCell<Option<DefId>>,
-    seq_push: OnceCell<Option<DefId>>,
-    seq_store: OnceCell<Option<DefId>>,
-    seq_subsequence: OnceCell<Option<DefId>>,
-    seq_concat: OnceCell<Option<DefId>>,
-
-    exists: OnceCell<Option<DefId>>,
-    forall: OnceCell<Option<DefId>>,
-    implies: OnceCell<Option<DefId>>,
-    log_eq_args: OnceCell<Option<DefId>>,
-    invariant_marker: OnceCell<Option<DefId>>,
-    partial_invariant_marker: OnceCell<Option<DefId>>,
-    for_loop_history_marker: OnceCell<Option<DefId>>,
-    for_loop_history: OnceCell<Option<DefId>>,
-    ghost_marker: OnceCell<Option<DefId>>,
-    choose_marker: OnceCell<Option<DefId>>,
-    witness: OnceCell<Option<DefId>>,
-    assert_marker: OnceCell<Option<DefId>>,
-    assume_marker: OnceCell<Option<DefId>>,
-    block_requires_marker: OnceCell<Option<DefId>>,
-    block_ensures_marker: OnceCell<Option<DefId>>,
-
-    fn_param_wrapper: OnceCell<Option<DefId>>,
-    fn_param_at_entry: OnceCell<Option<DefId>>,
-
-    closure_precondition: OnceCell<Option<DefId>>,
-    closure_postcondition: OnceCell<Option<DefId>>,
-    closure_hist_inv: OnceCell<Option<DefId>>,
 }
 
 /// Retrieves and caches well-known [`DefId`]s.
@@ -193,7 +218,7 @@ impl<'tcx> DefIdCache<'tcx> {
     fn annotated_def(&self, path: &[Symbol]) -> Option<DefId> {
         for item_id in self.tcx.hir_free_items() {
             let def_id = item_id.owner_id.to_def_id();
-            if self.tcx.get_attrs_by_path(def_id, path).next().is_some() {
+            if crate::analyze::annot::has_thrust_attr(self.tcx, def_id, path) {
                 return Some(def_id);
             }
 
@@ -201,7 +226,7 @@ impl<'tcx> DefIdCache<'tcx> {
             if let rustc_hir::ItemKind::Trait(_, _, _, _, _, _, trait_item_refs) = item.kind {
                 for trait_item_ref in trait_item_refs {
                     let def_id = trait_item_ref.owner_id.to_def_id();
-                    if self.tcx.get_attrs_by_path(def_id, path).next().is_some() {
+                    if crate::analyze::annot::has_thrust_attr(self.tcx, def_id, path) {
                         return Some(def_id);
                     }
                 }
@@ -209,316 +234,13 @@ impl<'tcx> DefIdCache<'tcx> {
             if let rustc_hir::ItemKind::Impl(impl_) = item.kind {
                 for impl_item_ref in impl_.items {
                     let def_id = impl_item_ref.owner_id.to_def_id();
-                    if self.tcx.get_attrs_by_path(def_id, path).next().is_some() {
+                    if crate::analyze::annot::has_thrust_attr(self.tcx, def_id, path) {
                         return Some(def_id);
                     }
                 }
             }
         }
         None
-    }
-
-    pub fn model_ty(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .model_ty
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::model_ty_path()))
-    }
-
-    pub fn int_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .int_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::int_model_path()))
-    }
-
-    pub fn uint_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .uint_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::uint_model_path()))
-    }
-
-    pub fn int_n_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .int_n_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::int_n_model_path()))
-    }
-
-    pub fn uint_n_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .uint_n_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::uint_n_model_path()))
-    }
-
-    pub fn bit_vec_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .bit_vec_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::bit_vec_model_path()))
-    }
-
-    pub fn bit_vec_from_int(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .bit_vec_from_int
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::bit_vec_from_int_path()))
-    }
-
-    pub fn bit_vec_to_int(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .bit_vec_to_int
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::bit_vec_to_int_path()))
-    }
-
-    pub fn mut_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .mut_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::mut_model_path()))
-    }
-
-    pub fn box_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .box_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::box_model_path()))
-    }
-
-    pub fn array_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .array_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::array_model_path()))
-    }
-
-    pub fn closure_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .closure_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::closure_model_path()))
-    }
-
-    pub fn dyn_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .dyn_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::dyn_model_path()))
-    }
-
-    pub fn ghost_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .ghost_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::ghost_model_path()))
-    }
-
-    /// The `IteratorSpec` trait of std.rs.
-    pub fn iterator_spec(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .iterator_spec
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::iterator_spec_path()))
-    }
-
-    /// The `PartialOrdSpec` trait of std.rs.
-    pub fn partial_ord_spec(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .partial_ord_spec
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::partial_ord_spec_path()))
-    }
-
-    /// The `Invariant` trait of std.rs: a type's invariant.
-    pub fn type_invariant(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .type_invariant
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::type_invariant_path()))
-    }
-
-    pub fn mut_model_new(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .mut_model_new
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::mut_model_new_path()))
-    }
-
-    pub fn box_model_new(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .box_model_new
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::box_model_new_path()))
-    }
-
-    pub fn array_model_from_fn(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .array_model_from_fn
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::array_model_from_fn_path()))
-    }
-
-    pub fn array_model_store(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .array_model_store
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::array_model_store_path()))
-    }
-
-    pub fn seq_model(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .seq_model
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::seq_model_path()))
-    }
-
-    pub fn seq_empty(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .seq_empty
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::seq_empty_path()))
-    }
-
-    pub fn seq_singleton(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .seq_singleton
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::seq_singleton_path()))
-    }
-
-    pub fn int_to_int_n(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .int_to_int_n
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::int_to_int_n_path()))
-    }
-
-    pub fn proof_branch(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .proof_branch
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::proof_branch_path()))
-    }
-
-    pub fn int_lit(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .int_lit
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::int_lit_path()))
-    }
-
-    pub fn int_n_to_int(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .int_n_to_int
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::int_n_to_int_path()))
-    }
-
-    pub fn uint_to_uint_n(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .uint_to_uint_n
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::uint_to_uint_n_path()))
-    }
-
-    pub fn uint_n_to_uint(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .uint_n_to_uint
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::uint_n_to_uint_path()))
-    }
-
-    pub fn seq_len(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .seq_len
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::seq_len_path()))
-    }
-
-    pub fn seq_push(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .seq_push
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::seq_push_path()))
-    }
-
-    pub fn seq_store(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .seq_store
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::seq_store_path()))
-    }
-
-    pub fn seq_subsequence(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .seq_subsequence
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::seq_subsequence_path()))
-    }
-
-    pub fn seq_concat(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .seq_concat
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::seq_concat_path()))
-    }
-
-    pub fn exists(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .exists
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::exists_path()))
-    }
-
-    pub fn forall(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .forall
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::forall_path()))
-    }
-
-    pub fn implies(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .implies
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::implies_path()))
-    }
-
-    pub fn log_eq_args(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .log_eq_args
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::log_eq_args_path()))
-    }
-
-    pub fn invariant_marker(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .invariant_marker
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::invariant_marker_path()))
-    }
-
-    pub fn partial_invariant_marker(&self) -> Option<DefId> {
-        *self.def_ids.partial_invariant_marker.get_or_init(|| {
-            self.annotated_def(&crate::analyze::annot::partial_invariant_marker_path())
-        })
-    }
-
-    pub fn for_loop_history_marker(&self) -> Option<DefId> {
-        *self.def_ids.for_loop_history_marker.get_or_init(|| {
-            self.annotated_def(&crate::analyze::annot::for_loop_history_marker_path())
-        })
-    }
-
-    /// The formula `for_loop_history_marker` conjoins.
-    pub fn for_loop_history(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .for_loop_history
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::for_loop_history_path()))
     }
 
     /// The loop-invariant marker `def_id` is, if it is one.
@@ -532,87 +254,5 @@ impl<'tcx> DefIdCache<'tcx> {
         } else {
             None
         }
-    }
-
-    pub fn ghost_marker(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .ghost_marker
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::ghost_marker_path()))
-    }
-
-    pub fn choose_marker(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .choose_marker
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::choose_marker_path()))
-    }
-
-    pub fn witness(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .witness
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::witness_path()))
-    }
-
-    pub fn assert_marker(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .assert_marker
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::assert_marker_path()))
-    }
-
-    pub fn assume_marker(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .assume_marker
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::assume_marker_path()))
-    }
-
-    pub fn block_requires_marker(&self) -> Option<DefId> {
-        *self.def_ids.block_requires_marker.get_or_init(|| {
-            self.annotated_def(&crate::analyze::annot::block_requires_marker_path())
-        })
-    }
-
-    pub fn block_ensures_marker(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .block_ensures_marker
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::block_ensures_marker_path()))
-    }
-
-    pub fn fn_param_wrapper(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .fn_param_wrapper
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::fn_param_wrapper_path()))
-    }
-
-    pub fn fn_param_at_entry(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .fn_param_at_entry
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::fn_param_at_entry_path()))
-    }
-
-    pub fn closure_precondition(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .closure_precondition
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::closure_precondition_path()))
-    }
-
-    pub fn closure_postcondition(&self) -> Option<DefId> {
-        *self.def_ids.closure_postcondition.get_or_init(|| {
-            self.annotated_def(&crate::analyze::annot::closure_postcondition_path())
-        })
-    }
-
-    pub fn closure_hist_inv(&self) -> Option<DefId> {
-        *self
-            .def_ids
-            .closure_hist_inv
-            .get_or_init(|| self.annotated_def(&crate::analyze::annot::closure_hist_inv_path()))
     }
 }

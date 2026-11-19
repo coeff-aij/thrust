@@ -105,9 +105,9 @@ pub fn lift(
     lift_inner(name, params, body, context, None)
 }
 
-/// [`lift`] for the formula of a statement (`proof_assert!`, `assume!`), whose parameter types may
-/// leave a closure's type, which cannot be written, to the local the parameter names: a `_`
-/// anywhere in a written type (`|f: _|`, `|it: &mut Filter<I, _>|`), or a type parameter of
+/// [`lift`] for the formula of a statement (`proof_assert!`, `assume!`, `block_requires!`,
+/// `block_ensures!`), whose parameter types may leave a closure's type, which cannot be written,
+/// to the local the parameter names: a `_` anywhere in a written type (`|f: _|`, `|it: &mut Filter<I, _>|`), or a type parameter of
 /// `local_types`, declared before the closure (`<P: Fn(&T) -> bool> |it: &mut Filter<I, P>|`),
 /// which the formula can name and whose `Fn` bound lets it use what requires one. Each becomes a
 /// type parameter of the item (as a `Fn` bound would make one, so the parameter is the closure's

@@ -72,10 +72,14 @@ impl Marker {
         }
     }
 
-    /// Whether the form is a statement (`proof_assert!`, `assume!`), whose closure may name a
-    /// closure local as `|f: _|`.
+    /// Whether the form is a statement (`proof_assert!`, `assume!`, `block_requires!`,
+    /// `block_ensures!`), whose closure may leave a closure local's type to the local (`|f: _|`,
+    /// `<P: Fn(i64) -> i64> |w: Wrap<P>|`).
     fn is_statement(self) -> bool {
-        matches!(self, Marker::Assert | Marker::Assume)
+        match self {
+            Marker::Assert | Marker::Assume | Marker::BlockRequires | Marker::BlockEnsures => true,
+            Marker::Full | Marker::Partial => false,
+        }
     }
 
     /// The context-carrying counterpart `#[thrust_macros::context]` rewrites the form into.
@@ -195,7 +199,8 @@ fn expand_invariant(
     if !marker.is_statement() && !local_types.params.is_empty() {
         return Err(syn::Error::new_spanned(
             local_types,
-            "only `proof_assert!` and `assume!` leave a type to a local",
+            "a loop invariant cannot leave a type to a local; only `proof_assert!`, `assume!`, \
+             `block_requires!` and `block_ensures!` can",
         ));
     }
     let mut params: Vec<FnArg> = Vec::new();

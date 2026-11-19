@@ -112,20 +112,16 @@ struct ProofCalls<'tcx> {
 type Calls<'tcx> = HashMap<LocalDefId, ProofCalls<'tcx>>;
 
 impl<'tcx> Checker<'tcx> {
-    fn has_attr(&self, def_id: DefId, path: &[rustc_span::Symbol]) -> bool {
-        self.tcx.get_attrs_by_path(def_id, path).next().is_some()
-    }
-
     fn is_lemma(&self, def_id: DefId) -> bool {
-        self.has_attr(def_id, &analyze::annot::lemma_path())
+        analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::lemma_path())
     }
 
     fn is_lemma_rec(&self, def_id: DefId) -> bool {
-        self.has_attr(def_id, &analyze::annot::lemma_rec_path())
+        analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::lemma_rec_path())
     }
 
     fn is_law(&self, def_id: DefId) -> bool {
-        self.has_attr(def_id, &analyze::annot::law_path())
+        analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::law_path())
     }
 
     /// Whether `def_id` is a trait law with a default body or an impl's definition of one.
@@ -325,7 +321,10 @@ impl<'tcx> Checker<'tcx> {
         let model_operation = (injected_std && analyze::is_ignored(self.tcx, def_id))
             || Some(def_id) == self.proof_branch;
         let marker = self.markers.contains(&Some(def_id));
-        spec.iter().any(|path| self.has_attr(def_id, path)) || marker || model_operation
+        spec.iter()
+            .any(|path| analyze::annot::has_thrust_attr(self.tcx, def_id, path))
+            || marker
+            || model_operation
     }
 
     /// The lemmas and the laws `lemma` calls, after checking that it calls nothing else that

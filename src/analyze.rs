@@ -101,14 +101,12 @@ pub fn mir_borrowck_skip_formula_fn(
     // TODO: unify impl with local_def::Analyzer
     // if the def is closure defined in formula_fn
     let root_def_id = tcx.typeck_root_def_id(local_def_id.to_def_id());
-    let is_annotated_as_formula_fn = tcx
-        .get_attrs_by_path(local_def_id.to_def_id(), &analyze::annot::formula_fn_path())
-        .next()
-        .is_some()
-        || tcx
-            .get_attrs_by_path(root_def_id, &analyze::annot::formula_fn_path())
-            .next()
-            .is_some();
+    let is_annotated_as_formula_fn =
+        analyze::annot::has_thrust_attr(
+            tcx,
+            local_def_id.to_def_id(),
+            &analyze::annot::formula_fn_path(),
+        ) || analyze::annot::has_thrust_attr(tcx, root_def_id, &analyze::annot::formula_fn_path());
 
     if is_annotated_as_formula_fn {
         tracing::debug!(?local_def_id, "skipping borrow check for formula fn");
@@ -307,6 +305,12 @@ enum Reach {
 /// (`struct N<T>(Option<Box<N<(T, T)>>>)`) holds unboundedly many.
 const MAX_REACHED_TYS: usize = 1024;
 
+/// The longest chain of nested instances of one `FnMut`-bounded def, each at a strictly deeper
+/// type than the one it was reached from, that is analyzed before the recursion counts as
+/// polymorphic. It is small because each nested instance analyzes the body again, so memory grows
+/// fast; rustc's own recursion limit is far too large for that.
+const MAX_GROWING_FN_MUT_INSTANCES: usize = 3;
+
 /// Whether `visit` finds a type among `ty` and the types it holds ([`held_tys`]), looking into the
 /// parts of a type where it says so.
 fn reaches<'tcx>(
@@ -445,9 +449,7 @@ pub fn is_injected_std(tcx: mir_ty::TyCtxt<'_>, def_id: LocalDefId) -> bool {
 
 /// Whether `def_id` is `#[thrust::ignored]`, so that its body is not analyzed.
 pub fn is_ignored(tcx: mir_ty::TyCtxt<'_>, def_id: DefId) -> bool {
-    tcx.get_attrs_by_path(def_id, &annot::ignored_path())
-        .next()
-        .is_some()
+    analyze::annot::has_thrust_attr(tcx, def_id, &annot::ignored_path())
 }
 
 /// Whether `def_id` is a function of the crate, not of the injected `std.rs`, that is ignored:
@@ -696,6 +698,8 @@ pub struct Analyzer<'tcx> {
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
+    /// The instances of `FnMut`-bounded defs whose bodies are being analyzed, innermost last.
+    fn_mut_instances_in_analysis: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
     /// See [`Analyzer::contract_written`].
     contract_written: RefCell<HashMap<LocalDefId, bool>>,
     /// The generic defs of a crate with an `Invariant` impl that are verified once over their
@@ -937,9 +941,7 @@ impl<'tcx> crate::refine::TemplateRegistry for Analyzer<'tcx> {
 /// `THRUST_SPLIT`, each of its goals is a part of its own (see [`chc::System::goals_apart`]).
 pub fn splits_goals(tcx: mir_ty::TyCtxt<'_>, def: LocalDefId) -> bool {
     let root = tcx.typeck_root_def_id(def.to_def_id());
-    tcx.get_attrs_by_path(root, &annot::split_goals_path())
-        .next()
-        .is_some()
+    analyze::annot::has_thrust_attr(tcx, root, &annot::split_goals_path())
 }
 
 /// `THRUST_SPLIT`: the number of parts of the system solved at a time, when the parts are solved
@@ -1043,6 +1045,7 @@ impl<'tcx> Analyzer<'tcx> {
             fn_mut_reuse: Default::default(),
             spec_assumptions: Default::default(),
             reused_generic_instances: Default::default(),
+            fn_mut_instances_in_analysis: Default::default(),
             contract_written: Default::default(),
             per_instance_too: Default::default(),
             called_fn_tys: Default::default(),
@@ -1549,11 +1552,8 @@ impl<'tcx> Analyzer<'tcx> {
     /// Whether `def_id` is a trait's `#[thrust_macros::predicate(derived)]`. Stops if the marker
     /// is on anything but a trait item.
     pub fn is_derived_predicate(&self, def_id: DefId) -> bool {
-        let derived = self
-            .tcx
-            .get_attrs_by_path(def_id, &analyze::annot::derived_path())
-            .next()
-            .is_some();
+        let derived =
+            analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::derived_path());
         if derived && self.tcx.trait_of_assoc(def_id).is_none() {
             self.tcx.dcx().span_fatal(
                 self.tcx.def_span(def_id),
@@ -1816,11 +1816,11 @@ impl<'tcx> Analyzer<'tcx> {
         if let Some(written) = self.contract_written.borrow().get(&local_def_id) {
             return *written;
         }
-        let callable = self
-            .tcx
-            .get_attrs_by_path(local_def_id.to_def_id(), &analyze::annot::callable_path())
-            .next()
-            .is_some();
+        let callable = analyze::annot::has_thrust_attr(
+            self.tcx,
+            local_def_id.to_def_id(),
+            &analyze::annot::callable_path(),
+        );
         let has_path = |path: &[Symbol]| self.extract_path_with_attr(local_def_id, path).is_some();
         let refinements = self.extract_refinement_paths(local_def_id);
         let refines = |is_ret: bool| {
@@ -1944,12 +1944,7 @@ impl<'tcx> Analyzer<'tcx> {
         self.predicate_instances
             .borrow_mut()
             .insert(key, pred.clone());
-        if self
-            .tcx
-            .get_attrs_by_path(def_id, &analyze::annot::opaque_path())
-            .next()
-            .is_some()
-        {
+        if analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::opaque_path()) {
             self.opaque_predicates
                 .borrow_mut()
                 .push((pred.clone(), local_def_id));
@@ -2459,7 +2454,13 @@ impl<'tcx> Analyzer<'tcx> {
         // arguments, whose by-value receiver the instantiated `pre!` reads at a final state equal
         // to the current one; and when the contract at the instance is a trait method's spec that
         // does not cover the def's own type parameters, which the generic check did not use
-        // (`Iterator::collect`'s at `B = Vec<T>`). Otherwise the contract is used as instantiated.
+        // (`Iterator::collect`'s at `B = Vec<T>`). An `FnMut`-bounded def whose contract does not
+        // relate the closure's states by `hist_inv!` is analyzed at every instance, whatever its
+        // type arguments (a function item, an `Fn` closure, a type parameter of the caller): its
+        // generic analysis is emitted only while no concrete instance has analyzed its body
+        // (D34), so an instance that used its contract as instantiated would rely on an analysis
+        // that may never be emitted. Otherwise the contract is used as instantiated.
+        let fn_mut_bounded = !fn_mut_bounded_params(self.tcx, def_id).is_empty();
         let narrower_spec = may_analyze
             && is_generic
             && self.takes_narrower_trait_spec(def_id, generic_args, caller_def_id);
@@ -2477,7 +2478,7 @@ impl<'tcx> Analyzer<'tcx> {
         let analyze_body = may_analyze_body
             && (!is_generic
                 || self.per_instance_too.contains(&def_id)
-                || (has_fn_mut_closure(generic_args)
+                || ((has_fn_mut_closure(generic_args) || fn_mut_bounded)
                     && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
                 || self.may_have_pred_var(&expected, generic_args, caller_def_id)
                 || narrower_spec);
@@ -2485,6 +2486,12 @@ impl<'tcx> Analyzer<'tcx> {
             self.reused_generic_instances
                 .borrow_mut()
                 .push((def_id, generic_args, caller_def_id));
+            // An instance of an `FnMut`-bounded def that is not analyzed here stands on the def's
+            // analysis over its type parameters, so that analysis is emitted whatever concrete
+            // instances analyze its body (D34).
+            if fn_mut_bounded {
+                self.record_fn_mut_generic_reused(def_id);
+            }
         }
         if is_generic && deferred_ty_mode.is_some() {
             tracing::info!(
@@ -2494,7 +2501,41 @@ impl<'tcx> Analyzer<'tcx> {
                 "generic def at an instance"
             );
         }
+        if analyze_body && fn_mut_bounded {
+            // A chain of nested instances of the same def whose type depth keeps growing stands
+            // for polymorphic recursion, which would instantiate the def at ever larger types. A
+            // call at a fixed other type (`g(inc, ..)`) reaches an instance already in analysis
+            // after a step or two, so its chain stops growing.
+            let depth = |args: mir_ty::GenericArgsRef<'tcx>| {
+                args.iter().map(extern_spec::type_depth).max().unwrap_or(0)
+            };
+            let mut growing = 1;
+            let mut shallowest = depth(generic_args);
+            for (analyzed, args) in self.fn_mut_instances_in_analysis.borrow().iter().rev() {
+                if *analyzed != def_id {
+                    continue;
+                }
+                if depth(args) >= shallowest {
+                    break;
+                }
+                growing += 1;
+                shallowest = depth(args);
+            }
+            let recursive = growing > MAX_GROWING_FN_MUT_INSTANCES;
+            if recursive {
+                self.tcx.dcx().fatal(format!(
+                    "`{}` is analyzed at an instance whose body calls it at other type arguments, \
+                     as a polymorphically recursive function does, which is not supported",
+                    self.tcx.def_path_str(def_id),
+                ));
+            }
+        }
         if analyze_body {
+            if fn_mut_bounded {
+                self.fn_mut_instances_in_analysis
+                    .borrow_mut()
+                    .push((def_id, generic_args));
+            }
             // The arguments the body is instantiated at: the spec's own body at the bound
             // arguments, a target's body at the call's.
             let body_args = if local_def_id.to_def_id() == def_id {
@@ -2525,6 +2566,9 @@ impl<'tcx> Analyzer<'tcx> {
             };
             let body_local_def_id = body_analyzer.local_def_id();
             body_analyzer.run(&expected);
+            if fn_mut_bounded {
+                self.fn_mut_instances_in_analysis.borrow_mut().pop();
+            }
             use mir_ty::TypeVisitableExt as _;
             if !body_args.has_param() {
                 self.concrete_instances
@@ -2917,13 +2961,6 @@ impl<'tcx> Analyzer<'tcx> {
         }
     }
 
-    fn has_attr(&self, def: LocalDefId, path: &[rustc_span::Symbol]) -> bool {
-        self.tcx
-            .get_attrs_by_path(def.to_def_id(), path)
-            .next()
-            .is_some()
-    }
-
     /// Stops at a `#[thrust::split_goals]` on anything but a function whose body Thrust analyzes
     /// (not a closure, which takes the attribute of the function it is written in, nor a predicate,
     /// logic, trusted or ignored function): rustc does not check `thrust::` attributes, and it would
@@ -2932,7 +2969,11 @@ impl<'tcx> Analyzer<'tcx> {
         let items = self.tcx.hir_crate_items(()).definitions();
         let defs: HashSet<LocalDefId> = items.chain(self.tcx.hir_body_owners()).collect();
         for def in defs {
-            if !self.has_attr(def, &analyze::annot::split_goals_path()) {
+            if !analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::split_goals_path(),
+            ) {
                 continue;
             }
             let analyzed = matches!(
@@ -2945,7 +2986,7 @@ impl<'tcx> Analyzer<'tcx> {
                 analyze::annot::logic_path(),
             ]
             .iter()
-            .any(|path| self.has_attr(def, path));
+            .any(|path| analyze::annot::has_thrust_attr(self.tcx, def.to_def_id(), path));
             if !analyzed {
                 self.tcx.dcx().span_err(
                     self.tcx.def_span(def),
@@ -2964,11 +3005,18 @@ impl<'tcx> Analyzer<'tcx> {
         let defs: Vec<LocalDefId> = self.tcx.hir_crate_items(()).definitions().collect();
         let mut opaque_modules = HashSet::new();
         for &def in &defs {
-            if !self.has_attr(def, &opaque_path) {
+            if !analyze::annot::has_thrust_attr(self.tcx, def.to_def_id(), &opaque_path) {
                 continue;
             }
-            let spec_fn = self.has_attr(def, &analyze::annot::predicate_path())
-                || self.has_attr(def, &analyze::annot::logic_path());
+            let spec_fn = analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::predicate_path(),
+            ) || analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::logic_path(),
+            );
             if !spec_fn || !self.formula_fns.contains_key(&def) {
                 self.tcx.dcx().span_err(
                     self.tcx.def_span(def),
@@ -2989,10 +3037,23 @@ impl<'tcx> Analyzer<'tcx> {
             let analyzed = matches!(
                 self.tcx.def_kind(def),
                 rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
-            ) && !self.has_attr(def, &analyze::annot::trusted_path())
-                && !self.has_attr(def, &analyze::annot::ignored_path())
-                && !self.has_attr(def, &analyze::annot::predicate_path())
-                && !self.has_attr(def, &analyze::annot::logic_path());
+            ) && !analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::trusted_path(),
+            ) && !analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::ignored_path(),
+            ) && !analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::predicate_path(),
+            ) && !analyze::annot::has_thrust_attr(
+                self.tcx,
+                def.to_def_id(),
+                &analyze::annot::logic_path(),
+            );
             if !analyzed {
                 self.tcx.dcx().span_err(
                     self.tcx.def_span(def),
@@ -3056,9 +3117,9 @@ impl<'tcx> Analyzer<'tcx> {
                 .span_err(span, format!("`#[thrust::reveal]`: cannot find `{shown}`"));
             return None;
         };
-        let opaque = target
-            .as_local()
-            .filter(|t| self.has_attr(*t, &analyze::annot::opaque_path()));
+        let opaque = target.as_local().filter(|t| {
+            analyze::annot::has_thrust_attr(self.tcx, t.to_def_id(), &analyze::annot::opaque_path())
+        });
         let Some(target) = opaque else {
             self.tcx.dcx().span_err(
                 span,
