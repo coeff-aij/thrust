@@ -57,24 +57,27 @@ pub enum FormulaFnBody {
 ///
 /// The lifted function is free, where `self` is not a legal parameter name, so a formula
 /// naming the receiver gets a synthetic parameter instead. It stands for the value that
-/// debug info records as `self`.
-pub fn lifted_param_source_name(ident: rustc_span::symbol::Ident) -> rustc_span::Symbol {
+/// debug info records as `self`. The identifier keeps the parameter's span, whose hygiene
+/// [`crate::analyze::basic_block::bindings_in_scope`] resolves it with.
+pub fn lifted_param_source_name(ident: rustc_span::symbol::Ident) -> rustc_span::symbol::Ident {
     if ident.name.as_str() == "__thrust_self" {
-        rustc_span::Symbol::intern("self")
+        rustc_span::symbol::Ident::new(rustc_span::Symbol::intern("self"), ident.span)
     } else {
-        ident.name
+        ident
     }
 }
 
 /// The parameter of the enclosing function whose entry value a parameter of a lifted loop
-/// invariant names, written `old!(x)` and spelled `__thrust_old_x` by `thrust_macros`; `None` for
-/// any other parameter.
-pub fn entry_value_param_name(ident: rustc_span::symbol::Ident) -> Option<rustc_span::Symbol> {
+/// invariant names, written `old!(x)` and spelled `__thrust_old_x` by `thrust_macros` with the
+/// span of `x`; `None` for any other parameter.
+pub fn entry_value_param_name(
+    ident: rustc_span::symbol::Ident,
+) -> Option<rustc_span::symbol::Ident> {
     ident
         .name
         .as_str()
         .strip_prefix("__thrust_old_")
-        .map(rustc_span::Symbol::intern)
+        .map(|name| rustc_span::symbol::Ident::new(rustc_span::Symbol::intern(name), ident.span))
 }
 
 impl<'a, D> Pretty<'a, D, termcolor::ColorSpec> for &FormulaFn<'_>

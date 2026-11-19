@@ -1348,7 +1348,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let scope = terminator.source_info.scope;
                 for info in analyze::basic_block::bindings_in_scope(body, name, scope) {
                     if let mir::VarDebugInfoContents::Place(place) = info.value {
-                        reads.push((place.local, location, name));
+                        reads.push((place.local, location, name.name));
                     }
                 }
             }
@@ -1956,14 +1956,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             )
             .expect("invariant formula function is not registered");
         formula_fn.param_idents().iter().all(|ident| {
-            let name = ident.expect("invariant parameters must be named").name;
+            let name = ident.expect("invariant parameters must be named");
             self.local_in_scope(name, invariant.scope)
                 .is_some_and(|local| bty.param_of_local(local).is_some())
         })
     }
 
     /// The local the name `name` stands for in `scope`, as Rust's shadowing resolves it.
-    fn local_in_scope(&self, name: rustc_span::Symbol, scope: mir::SourceScope) -> Option<Local> {
+    fn local_in_scope(
+        &self,
+        name: rustc_span::symbol::Ident,
+        scope: mir::SourceScope,
+    ) -> Option<Local> {
         analyze::basic_block::bindings_in_scope(&self.body, name, scope)
             .into_iter()
             .find_map(|vdi| match &vdi.value {
@@ -1974,11 +1978,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             })
     }
 
-    fn function_param_local_of_name(&self, name: rustc_span::Symbol) -> Option<Local> {
+    /// The argument local the identifier `name` names
+    /// ([`analyze::basic_block::names_binding`]).
+    fn function_param_local_of_name(&self, name: rustc_span::symbol::Ident) -> Option<Local> {
         let mut found: Option<Local> = None;
         for vdi in &self.body.var_debug_info {
             tracing::debug!("comparing {name:?} with {vdi:?}...");
-            if vdi.name != name {
+            if !analyze::basic_block::names_binding(name, vdi) {
                 tracing::debug!("different name, skip.");
                 continue;
             }
@@ -2190,7 +2196,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.check_invariant_param_ty(
                     site.kind.what(),
                     ident.span,
-                    name,
+                    name.name,
                     fn_param_args.type_at(0),
                     written_text,
                     local,
@@ -2206,11 +2212,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let local = self
             .local_in_scope(name, site.scope)
             .filter(|&local| bty.param_of_local(local).is_some())
-            .unwrap_or_else(|| site.kind.fatal_unresolved_name(self.tcx, name));
+            .unwrap_or_else(|| site.kind.fatal_unresolved_name(self.tcx, name.name));
         self.check_invariant_param_ty(
             site.kind.what(),
             ident.span,
-            name,
+            name.name,
             written_ty,
             written_text,
             local,
@@ -2355,7 +2361,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
         scope: mir::SourceScope,
         span: rustc_span::Span,
-    ) -> Option<Vec<rustc_span::Symbol>> {
+    ) -> Option<Vec<rustc_span::symbol::Ident>> {
         let (formula_def_id, generic_args, first_named_param) =
             self.formula_read_call(func, args)?;
         let generic_args = analyze::basic_block::resolve_closure_local_args(
