@@ -52,7 +52,7 @@ pub use did_cache::DefIdCache;
 // fn_mut_bounded_params}.
 use closure_hist_inv::HistInvRelations;
 use extern_spec::{predicate_typing_env, trait_bounds, trait_item_args, SpecAssumptions};
-use fn_mut_reuse::{fn_mut_bounded_params, has_fn_mut_closure, FnMutReuse};
+use fn_mut_reuse::{has_fn_mut_closure, FnMutReuse};
 
 fn scalar_const_term<T>(
     ty: mir_ty::Ty<'_>,
@@ -2463,7 +2463,6 @@ impl<'tcx> Analyzer<'tcx> {
         // checked over its type parameters: its body is checked at the instances of rustc's mono
         // item set (`Analyzer::check_body_at_instance`), and a call uses its contract. Otherwise
         // the contract is used as instantiated.
-        let fn_mut_bounded = !fn_mut_bounded_params(self.tcx, def_id).is_empty();
         let narrower_spec = may_analyze
             && is_generic
             && self.takes_narrower_trait_spec(def_id, generic_args, caller_def_id);
@@ -2484,8 +2483,8 @@ impl<'tcx> Analyzer<'tcx> {
                 || def_use == DefUse::Check
                 || self.per_instance_too.contains(&def_id)
                 || (!per_instance
-                    && (has_fn_mut_closure(generic_args) || fn_mut_bounded)
-                    && !self.reuse_fn_mut_generic(def_id, &expected, generic_args, caller_def_id))
+                    && has_fn_mut_closure(generic_args)
+                    && !self.reuse_fn_mut_generic(&expected, generic_args, caller_def_id))
                 || self.may_have_pred_var(&expected, generic_args, caller_def_id)
                 || narrower_spec);
         if is_generic && !analyze_body && !per_instance {

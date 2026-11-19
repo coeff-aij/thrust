@@ -2063,14 +2063,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let sig = self.closure_sig(receiver_ty);
         let logical_args = self.spec_args("post!", args, &sig);
         let (receiver_term, final_state) = self.closure_receiver_term(receiver, &fn_ty, "post!");
-        if final_state.is_some() {
-            if let Some((closure_ty, _)) = self.receiver_closure_behind_refs(receiver_ty) {
-                if let mir_ty::TyKind::Param(param) = closure_ty.kind() {
-                    self.analyzer
-                        .record_once_post_param(self.type_builder.param_def_id(param));
-                }
-            }
-        }
         let param_args: Vec<_> = std::iter::once(receiver_term).chain(logical_args).collect();
         let result = self.post_result(result, &sig);
         let mut fresh = || {

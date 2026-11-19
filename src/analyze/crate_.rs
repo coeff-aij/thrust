@@ -511,11 +511,29 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// no code reaches from `main` (`-C link-dead-code`, set in `main.rs`) and the instances a
     /// generic caller, a trait method's dispatch or a function value reaches.
     fn check_per_instance_defs(&mut self, defs: &[LocalDefId]) {
-        use rustc_middle::mir::mono::MonoItem;
-
         if defs.is_empty() {
             return;
         }
+        let instances = self.mono_instances_of(defs);
+        for &(def_id, args) in &instances {
+            self.ctx.check_body_at_instance(def_id, args);
+        }
+        // A def no instance exists of is checked over its type parameters, as any generic def is.
+        for &local_def_id in defs {
+            let has_instance = instances
+                .iter()
+                .any(|(def_id, _)| *def_id == local_def_id.to_def_id());
+            if !has_instance {
+                self.analyze_placeholder(local_def_id);
+            }
+        }
+    }
+
+    /// The instances of `defs` in rustc's mono item set, in a stable order, except those of a def
+    /// whose body is not analyzed.
+    fn mono_instances_of(&self, defs: &[LocalDefId]) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        use rustc_middle::mir::mono::MonoItem;
+
         let partitions = self.tcx.collect_and_partition_mono_items(());
         let mut instances = Vec::new();
         for unit in partitions.codegen_units {
@@ -526,29 +544,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let mir_ty::InstanceKind::Item(def_id) = instance.def else {
                     continue;
                 };
-                let is_checked = def_id
-                    .as_local()
-                    .is_some_and(|local_def_id| defs.contains(&local_def_id));
-                if is_checked && !self.skip_analysis.contains(&def_id.expect_local()) {
+                let Some(local_def_id) = def_id.as_local() else {
+                    continue;
+                };
+                if defs.contains(&local_def_id) && !self.skip_analysis.contains(&local_def_id) {
                     instances.push((def_id, instance.args));
                 }
             }
         }
-        // The mono item set is unordered; the clauses of a check follow it.
         instances.sort_by_cached_key(|(def_id, args)| {
             (self.tcx.def_path_str(*def_id), format!("{args:?}"))
         });
-        for (def_id, args) in instances {
-            self.ctx.check_body_at_instance(def_id, args);
-        }
-        for &local_def_id in defs {
-            self.body_checks.record(
-                local_def_id,
-                analyze::BodyCheck::NotAnalyzed(
-                    "generic, checked at each of its instances, and none exists",
-                ),
-            );
-        }
+        instances
     }
 
     /// Checks that the contract written on a method of a local trait impl refines the trait's
@@ -1097,8 +1104,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyze::lemma::check_proof_branches(self.tcx, proof_branch, |def_id| {
             !self.skip_analysis.contains(&def_id)
         });
-        let keys: Vec<_> = self.tcx.mir_keys(()).iter().copied().collect();
-        self.ctx.record_hist_inv_specified_params(keys.into_iter());
         self.ctx.set_trusted_bodies(self.trusted.clone());
         if self.ctx.per_instance_generics() {
             self.ctx.per_instance_law_impls = analyze::derived_pred::per_instance_law_impls(
