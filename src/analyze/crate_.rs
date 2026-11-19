@@ -113,12 +113,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     local_spec_targets.push(local_target_def_id);
                     // The spec is the target's contract; a trusted target's body is not
                     // checked against it.
-                    if self
-                        .tcx
-                        .get_attrs_by_path(target_def_id, &analyze::annot::trusted_path())
-                        .next()
-                        .is_some()
-                    {
+                    if analyze::annot::has_thrust_attr(
+                        self.tcx,
+                        target_def_id,
+                        &analyze::annot::trusted_path(),
+                    ) {
                         self.skip_analysis.insert(local_target_def_id);
                         self.trusted.insert(local_target_def_id);
                         self.body_checks.record(
@@ -292,6 +291,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if is_injected_std {
             self.skip_analysis.insert(local_def_id);
         }
+        // A lemma of std.rs, and the contract that carries its statement, is a library proof:
+        // checked where std.rs is compiled on its own, taken on contract elsewhere.
+        let is_lemma = [local_def_id.to_def_id(), analyzer.owner_fn_id]
+            .into_iter()
+            .any(|def_id| {
+                analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::lemma_path())
+            });
+        if is_injected_std && is_lemma {
+            self.skip_analysis.extend(analyzer.owner_fn_id.as_local());
+        }
 
         // A derived method has the contract of its trait method, which its derive implies. A
         // generic one is a generic def with that contract, so that at an instance where the trait
@@ -445,9 +454,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 local_def_id,
                 owner_fn_id_args,
             );
-        } else if is_injected_std && is_law_impl {
+        } else if is_injected_std && (is_law_impl || is_lemma) {
             // The contract of an injected impl's law instantiates the trait's predicates at the
-            // impl; it is built where a proof step calls the law, not in every crate.
+            // impl, and a lemma of std.rs is a library proof, checked where std.rs is compiled on
+            // its own; it is built where a proof step calls it, not in every crate.
             self.ctx.register_deferred_def_without_analysis(
                 owner_fn_id,
                 local_def_id,
@@ -488,10 +498,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.analyze_placeholder(*local_def_id);
         }
         // A def is skipped (D34) when a concrete instantiation has analyzed its body and no
-        // instance has used its generic analysis instead. Only a def whose specification relates
-        // the closure's states by `hist_inv!` can have such an instance
-        // (`Analyzer::reuse_fn_mut_generic`); analyzing a def may add one for a def skipped
-        // before, which is then analyzed too.
+        // instance has used its generic analysis instead: an instance that reuses it through
+        // `Analyzer::reuse_fn_mut_generic` (a `hist_inv!`-specified def), or any instance the
+        // analysis did not analyze at its arguments (`Analyzer::record_fn_mut_generic_reused`,
+        // with the impls of a trait method reached at a type parameter). Analyzing a def may add
+        // one for a def skipped before, which is then analyzed too.
         let mut pending = fn_mut_generic_defs;
         while !pending.is_empty() {
             let mut skipped = Vec::new();
@@ -583,10 +594,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .opt_associated_item(local_def_id.to_def_id())
             .and_then(|item| item.trait_item_def_id)
             .is_some_and(|trait_item| {
-                self.tcx
-                    .get_attrs_by_path(trait_item, &analyze::annot::law_path())
-                    .next()
-                    .is_some()
+                analyze::annot::has_thrust_attr(self.tcx, trait_item, &analyze::annot::law_path())
             })
     }
 
@@ -1064,7 +1072,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let _guard = span.enter();
 
         let proof_branch = self.ctx.def_ids().proof_branch();
-        analyze::lemma::check_lemmas(self.tcx, proof_branch);
+        let markers = [
+            self.ctx.def_ids().ghost_marker(),
+            self.ctx.def_ids().choose_marker(),
+        ];
+        analyze::lemma::check_lemmas(self.tcx, proof_branch, markers);
         self.check_model_impls();
         self.check_invariant_impls();
         self.check_sealed_impls();
@@ -1135,12 +1147,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// claim std's specialized behaviour for a type std runs the general impl on.
     fn check_sealed_impls(&self) {
         for (trait_did, impls) in self.tcx.all_local_trait_impls(()) {
-            if self
-                .tcx
-                .get_attrs_by_path(*trait_did, &analyze::annot::sealed_path())
-                .next()
-                .is_none()
-            {
+            if !analyze::annot::has_thrust_attr(
+                self.tcx,
+                *trait_did,
+                &analyze::annot::sealed_path(),
+            ) {
                 continue;
             }
             let source_map = self.tcx.sess.source_map();
@@ -1202,11 +1213,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn check_restated_laws(&self) {
         for item_id in self.tcx.hir_crate_items(()).impl_items() {
             let local_def_id = item_id.owner_id.def_id;
-            let restated = self
-                .tcx
-                .get_attrs_by_path(local_def_id.to_def_id(), &analyze::annot::law_path())
-                .next()
-                .is_some();
+            let restated = analyze::annot::has_thrust_attr(
+                self.tcx,
+                local_def_id.to_def_id(),
+                &analyze::annot::law_path(),
+            );
             if restated && !self.is_law_impl(local_def_id) {
                 self.tcx.dcx().span_err(
                     self.tcx.def_span(local_def_id),
@@ -1491,11 +1502,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn register_trait_laws(&mut self) {
         for item_id in self.tcx.hir_crate_items(()).trait_items() {
             let def_id = item_id.owner_id.to_def_id();
-            let is_law = self
-                .tcx
-                .get_attrs_by_path(def_id, &analyze::annot::law_path())
-                .next()
-                .is_some();
+            let is_law =
+                analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::law_path());
             if !is_law {
                 continue;
             }

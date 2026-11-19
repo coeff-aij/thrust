@@ -7,14 +7,13 @@ use thrust_models::model::{Array, Int, Seq};
 use crate::rustc_abi::*;
 use crate::rustc_hashes::Hash64;
 use crate::rustc_index::bit_set::{BitIter, BitMatrix, DenseBitSet, WordIter};
-use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated, SliceIter};
+use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated};
 use crate::case_study::USize;
 
 impl thrust_models::Model for Hash64 {
     type Ty = Self;
 }
-// `Reverse`'s one field, for the key type of `univariant_biased`'s sort through
-// `sort_by_key_assumed` of thrust/assumed_requires.rs.
+// `Reverse`'s one field, for the key type of `univariant_biased`'s sort.
 impl<T: thrust_models::Model> thrust_models::Model for std::cmp::Reverse<T> {
     type Ty = (<T as thrust_models::Model>::Ty,);
 }
@@ -37,11 +36,7 @@ impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
 impl<I: Idx> thrust_models::Model for IdxRange<I> {
     type Ty = Self;
 }
-// The `(raw, pos)` shape of the structs, as `WordIter`'s and `core::slice::Iter`'s in std.rs;
-// `IterEnumerated` adds the unit of its `PhantomData`.
-impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
-    type Ty = (&'a Seq<<T as thrust_models::Model>::Ty>, USize);
-}
+// `(raw, pos, marker)`: the slice, the cursor and the unit of the `PhantomData`.
 impl<'a, I: Idx, T: thrust_models::Model> thrust_models::Model for IterEnumerated<'a, I, T> {
     type Ty = (&'a Seq<<T as thrust_models::Model>::Ty>, USize, ());
 }

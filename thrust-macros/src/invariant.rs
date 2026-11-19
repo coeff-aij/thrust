@@ -5,7 +5,9 @@
 //!
 //! The forms differ only in the marker they call: an `invariant!` is the loop head's whole
 //! invariant, a `partial_invariant!` is conjoined with the inferred one, a `proof_assert!` is
-//! checked where it is written and assumed after it, and an `assume!` is assumed there unchecked.
+//! checked where it is written and assumed after it, an `assume!` is assumed there unchecked, and
+//! a `block_requires!` and the `block_ensures!` after it are the contract of the code between
+//! them.
 //!
 //! All expand a predicate closure with explicit parameter types into a
 //! `#[thrust::formula_fn]` over `Model::Ty` parameters plus a marker call
@@ -34,7 +36,7 @@ use proc_macro::TokenStream;
 use quote::{format_ident, ToTokens};
 use syn::FnArg;
 
-use crate::formula_fn_lifting::{self, ClosureWithContext, EnclosingContext, LiftedFormulaFn};
+use crate::formula_fn_lifting::{self, ClosureWithLocalTypes, EnclosingContext, LiftedFormulaFn};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -45,6 +47,8 @@ pub enum Marker {
     Partial,
     Assert,
     Assume,
+    BlockRequires,
+    BlockEnsures,
 }
 
 impl Marker {
@@ -62,7 +66,19 @@ impl Marker {
         match name {
             "proof_assert" => Some(Marker::Assert),
             "assume" => Some(Marker::Assume),
+            "block_requires" => Some(Marker::BlockRequires),
+            "block_ensures" => Some(Marker::BlockEnsures),
             _ => None,
+        }
+    }
+
+    /// Whether the form is a statement (`proof_assert!`, `assume!`, `block_requires!`,
+    /// `block_ensures!`), whose closure may leave a closure local's type to the local (`|f: _|`,
+    /// `<P: Fn(i64) -> i64> |w: Wrap<P>|`).
+    fn is_statement(self) -> bool {
+        match self {
+            Marker::Assert | Marker::Assume | Marker::BlockRequires | Marker::BlockEnsures => true,
+            Marker::Full | Marker::Partial => false,
         }
     }
 
@@ -75,6 +91,10 @@ impl Marker {
             }
             Marker::Assert => syn::parse_quote!(::thrust_macros::_proof_assert_with_context),
             Marker::Assume => syn::parse_quote!(::thrust_macros::_assume_with_context),
+            Marker::BlockRequires => {
+                syn::parse_quote!(::thrust_macros::_block_requires_with_context)
+            }
+            Marker::BlockEnsures => syn::parse_quote!(::thrust_macros::_block_ensures_with_context),
         }
     }
 
@@ -84,6 +104,8 @@ impl Marker {
             Marker::Partial => format_ident!("__partial_invariant_marker"),
             Marker::Assert => format_ident!("__assert_marker"),
             Marker::Assume => format_ident!("__assume_marker"),
+            Marker::BlockRequires => format_ident!("__block_requires_marker"),
+            Marker::BlockEnsures => format_ident!("__block_ensures_marker"),
         }
     }
 
@@ -93,6 +115,8 @@ impl Marker {
             Marker::Full | Marker::Partial => "_thrust_invariant",
             Marker::Assert => "_thrust_assert",
             Marker::Assume => "_thrust_assume",
+            Marker::BlockRequires => "_thrust_block_requires",
+            Marker::BlockEnsures => "_thrust_block_ensures",
         }
     }
 }
@@ -108,11 +132,14 @@ pub fn expand(input: TokenStream, marker: Marker) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     let input = crate::formula::wrap_closure_body(input);
-    let closure = match syn::parse2::<syn::ExprClosure>(input) {
-        Ok(closure) => closure,
+    let ClosureWithLocalTypes {
+        local_types,
+        closure,
+    } = match syn::parse2::<ClosureWithLocalTypes>(input) {
+        Ok(parsed) => parsed,
         Err(e) => return e.to_compile_error().into(),
     };
-    match expand_invariant(&closure, None, marker) {
+    match expand_invariant(&closure, &local_types, None, marker) {
         Ok(expr) => expr.into_token_stream().into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -126,11 +153,22 @@ pub fn expand_with_context(input: TokenStream, marker: Marker) -> TokenStream {
         Err(e) => return e.to_compile_error().into(),
     };
     let input = crate::formula::wrap_closure_body(input);
-    let ClosureWithContext { closure, context } = match syn::parse2::<ClosureWithContext>(input) {
+    let parser = |input: syn::parse::ParseStream| {
+        let context: EnclosingContext = input.parse()?;
+        let closure: ClosureWithLocalTypes = input.parse()?;
+        Ok((context, closure))
+    };
+    let (
+        context,
+        ClosureWithLocalTypes {
+            local_types,
+            closure,
+        },
+    ) = match syn::parse::Parser::parse2(parser, input) {
         Ok(parsed) => parsed,
         Err(e) => return e.to_compile_error().into(),
     };
-    match expand_invariant(&closure, Some(&context), marker) {
+    match expand_invariant(&closure, &local_types, Some(&context), marker) {
         Ok(expr) => expr.into_token_stream().into(),
         Err(e) => e.to_compile_error().into(),
     }
@@ -144,7 +182,7 @@ fn rename_entry_values(
 ) -> syn::Result<proc_macro2::TokenStream> {
     match marker {
         Marker::Full | Marker::Partial => crate::entry_value::rename_in_invariant(input),
-        Marker::Assert | Marker::Assume => {
+        Marker::Assert | Marker::Assume | Marker::BlockRequires | Marker::BlockEnsures => {
             crate::entry_value::reject(&input)?;
             Ok(input)
         }
@@ -154,9 +192,17 @@ fn rename_entry_values(
 /// Expands a predicate closure into a `#[thrust::formula_fn]` plus a marker call.
 fn expand_invariant(
     closure: &syn::ExprClosure,
+    local_types: &syn::Generics,
     context: Option<&EnclosingContext>,
     marker: Marker,
 ) -> syn::Result<syn::Expr> {
+    if !marker.is_statement() && !local_types.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            local_types,
+            "a loop invariant cannot leave a type to a local; only `proof_assert!`, `assume!`, \
+             `block_requires!` and `block_ensures!` can",
+        ));
+    }
     let mut params: Vec<FnArg> = Vec::new();
     for param in &closure.inputs {
         let syn::Pat::Type(pt) = param else {
@@ -172,8 +218,12 @@ fn expand_invariant(
 
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = format_ident!("{}_{}", marker.item_prefix(), id);
-    let LiftedFormulaFn { item, reference } =
-        formula_fn_lifting::lift(&name, &params, &closure.body, context)?;
+    let lifted = if marker.is_statement() {
+        formula_fn_lifting::lift_statement(&name, &params, &closure.body, context, local_types)
+    } else {
+        formula_fn_lifting::lift(&name, &params, &closure.body, context)
+    };
+    let LiftedFormulaFn { item, reference } = lifted?;
     let marker = marker.ident();
 
     Ok(syn::parse_quote!({

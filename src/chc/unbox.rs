@@ -3,55 +3,41 @@
 use super::*;
 
 fn unbox_term<V>(term: Term<V>) -> Term<V> {
-    match term {
-        Term::Var(_)
-        | Term::Bool(_)
-        | Term::Int(_)
-        | Term::String(_)
-        | Term::Null
-        | Term::ForallDefault(_) => term,
-        Term::Box(t) => unbox_term(*t),
-        Term::Mut(t1, t2) => Term::Mut(Box::new(unbox_term(*t1)), Box::new(unbox_term(*t2))),
-        Term::BoxCurrent(t) => unbox_term(*t),
-        Term::MutCurrent(t) => Term::MutCurrent(Box::new(unbox_term(*t))),
-        Term::MutFinal(t) => Term::MutFinal(Box::new(unbox_term(*t))),
-        Term::App(fun, args) => Term::App(fun, args.into_iter().map(unbox_term).collect()),
+    let term = match term {
+        Term::Box(t) | Term::BoxCurrent(t) => return unbox_term(*t),
         Term::ArrayEmpty(s1, s2) => Term::ArrayEmpty(unbox_sort(s1), unbox_sort(s2)),
         Term::SeqEmpty(s) => Term::SeqEmpty(unbox_sort(s)),
-        Term::Tuple(ts) => Term::Tuple(ts.into_iter().map(unbox_term).collect()),
-        Term::TupleProj(t, i) => Term::TupleProj(Box::new(unbox_term(*t)), i),
-        Term::DatatypeCtor(s1, s2, args) => Term::DatatypeCtor(
-            unbox_datatype_sort(s1),
-            s2,
-            args.into_iter().map(unbox_term).collect(),
-        ),
-        Term::DatatypeDiscr(sym, arg) => Term::DatatypeDiscr(sym, Box::new(unbox_term(*arg))),
+        Term::DatatypeCtor(s1, s2, args) => Term::DatatypeCtor(unbox_datatype_sort(s1), s2, args),
         Term::DatatypeSelector(sel, arg) => {
             let sel = Selector {
                 sort: unbox_datatype_sort(sel.sort),
                 field: unbox_sort(sel.field),
                 ..*sel
             };
-            Term::DatatypeSelector(Box::new(sel), Box::new(unbox_term(*arg)))
+            Term::DatatypeSelector(Box::new(sel), arg)
         }
-        Term::UserDefinedFn(symbol, sort, args) => Term::UserDefinedFn(
-            symbol,
-            unbox_sort(sort),
-            args.into_iter().map(unbox_term).collect(),
-        ),
-        Term::ForallFn(pred, args) => Term::ForallFn(
-            unbox_forall_pred_var_def(pred),
-            args.into_iter().map(unbox_term).collect(),
-        ),
-        Term::IntToBitVec { width, term } => Term::IntToBitVec {
-            width,
-            term: Box::new(unbox_term(*term)),
-        },
+        Term::UserDefinedFn(symbol, sort, args) => {
+            Term::UserDefinedFn(symbol, unbox_sort(sort), args)
+        }
+        Term::ForallFn(pred, args) => Term::ForallFn(unbox_forall_pred_var_def(pred), args),
         Term::UserQuantifiedVar(sort, var) => Term::UserQuantifiedVar(unbox_sort(sort), var),
-        Term::ArrayLambda(var, sort, t) => {
-            Term::ArrayLambda(var, unbox_sort(sort), Box::new(unbox_term(*t)))
-        }
-    }
+        Term::ArrayLambda(var, sort, t) => Term::ArrayLambda(var, unbox_sort(sort), t),
+        term @ (Term::Null
+        | Term::ForallDefault(_)
+        | Term::Var(_)
+        | Term::Bool(_)
+        | Term::Int(_)
+        | Term::String(_)
+        | Term::Mut(..)
+        | Term::MutCurrent(_)
+        | Term::MutFinal(_)
+        | Term::App(..)
+        | Term::Tuple(_)
+        | Term::TupleProj(..)
+        | Term::DatatypeDiscr(..)
+        | Term::IntToBitVec { .. }) => term,
+    };
+    term.map_subterms(unbox_term)
 }
 
 fn unbox_matcher_pred(pred: MatcherPred) -> Pred {
@@ -93,40 +79,38 @@ fn unbox_datatype_sort(sort: DatatypeSort) -> DatatypeSort {
 
 pub fn unbox_sort(sort: Sort) -> Sort {
     match sort {
-        Sort::Null => Sort::Null,
-        Sort::Int => Sort::Int,
-        Sort::BitVec { width } => Sort::BitVec { width },
-        Sort::Bool => Sort::Bool,
-        Sort::String => Sort::String,
-        Sort::Param(i) => Sort::Param(i),
         Sort::Box(inner) => unbox_sort(*inner),
-        Sort::Mut(inner) => Sort::Mut(Box::new(unbox_sort(*inner))),
-        Sort::Tuple(sorts) => Sort::Tuple(sorts.into_iter().map(unbox_sort).collect()),
-        Sort::Array(s1, s2) => Sort::Array(Box::new(unbox_sort(*s1)), Box::new(unbox_sort(*s2))),
-        Sort::Seq(elem) => Sort::seq(unbox_sort(*elem)),
-        Sort::Datatype(sort) => Sort::Datatype(unbox_datatype_sort(sort)),
-        Sort::Forall(i) => Sort::Forall(i),
+        sort @ (Sort::Null
+        | Sort::Int
+        | Sort::BitVec { .. }
+        | Sort::Bool
+        | Sort::String
+        | Sort::Param(_)
+        | Sort::Mut(_)
+        | Sort::Seq(_)
+        | Sort::Tuple(_)
+        | Sort::Array(..)
+        | Sort::Datatype(_)
+        | Sort::Forall(_)) => sort.map_children(unbox_sort),
     }
 }
 
 pub fn unbox_formula<V>(formula: Formula<V>) -> Formula<V> {
-    match formula {
-        Formula::Atom(atom) => Formula::Atom(unbox_atom(atom)),
-        Formula::Not(fo) => Formula::Not(Box::new(unbox_formula(*fo))),
-        Formula::And(fs) => Formula::And(fs.into_iter().map(unbox_formula).collect()),
-        Formula::Or(fs) => Formula::Or(fs.into_iter().map(unbox_formula).collect()),
-        Formula::Implies(lhs, rhs) => {
-            Formula::Implies(Box::new(unbox_formula(*lhs)), Box::new(unbox_formula(*rhs)))
+    let formula = match formula {
+        Formula::Atom(atom) => return Formula::Atom(unbox_atom(atom)),
+        Formula::Exists(vars, fo) => Formula::Exists(unbox_quantified_vars(vars), fo),
+        Formula::Forall(vars, fo) => Formula::Forall(unbox_quantified_vars(vars), fo),
+        formula @ (Formula::Not(_) | Formula::And(_) | Formula::Or(_) | Formula::Implies(..)) => {
+            formula
         }
-        Formula::Exists(vars, fo) => {
-            let vars = vars.into_iter().map(|(v, s)| (v, unbox_sort(s))).collect();
-            Formula::Exists(vars, Box::new(unbox_formula(*fo)))
-        }
-        Formula::Forall(vars, fo) => {
-            let vars = vars.into_iter().map(|(v, s)| (v, unbox_sort(s))).collect();
-            Formula::Forall(vars, Box::new(unbox_formula(*fo)))
-        }
-    }
+    };
+    formula.map_subformulas(unbox_formula)
+}
+
+fn unbox_quantified_vars(
+    vars: Vec<(UserQuantifiedVarId, Sort)>,
+) -> Vec<(UserQuantifiedVarId, Sort)> {
+    vars.into_iter().map(|(v, s)| (v, unbox_sort(s))).collect()
 }
 
 fn unbox_body(body: Body) -> Body {

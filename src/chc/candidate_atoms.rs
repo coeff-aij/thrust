@@ -332,19 +332,9 @@ pub(super) fn map_formula_terms<V>(
     formula: Formula<V>,
     f: &mut dyn FnMut(Term<V>) -> Term<V>,
 ) -> Formula<V> {
-    match formula {
-        Formula::Atom(atom) => Formula::Atom(map_atom_terms(atom, f)),
-        Formula::Not(fo) => Formula::Not(Box::new(map_formula_terms(*fo, f))),
-        Formula::And(fs) => {
-            Formula::And(fs.into_iter().map(|fo| map_formula_terms(fo, f)).collect())
-        }
-        Formula::Or(fs) => Formula::Or(fs.into_iter().map(|fo| map_formula_terms(fo, f)).collect()),
-        Formula::Implies(lhs, rhs) => Formula::Implies(
-            Box::new(map_formula_terms(*lhs, f)),
-            Box::new(map_formula_terms(*rhs, f)),
-        ),
-        Formula::Exists(vars, fo) => Formula::Exists(vars, Box::new(map_formula_terms(*fo, f))),
-        Formula::Forall(vars, fo) => Formula::Forall(vars, Box::new(map_formula_terms(*fo, f))),
+    match formula.map_subformulas_or_atom(|fo| map_formula_terms(fo, f)) {
+        Ok(fo) => fo,
+        Err(atom) => Formula::Atom(map_atom_terms(*atom, f)),
     }
 }
 
@@ -358,49 +348,7 @@ fn map_atom_terms<V>(atom: Atom<V>, f: &mut dyn FnMut(Term<V>) -> Term<V>) -> At
 }
 
 fn map_term<V>(term: Term<V>, f: &mut dyn FnMut(Term<V>) -> Term<V>) -> Term<V> {
-    let sub = |t: Box<Term<V>>, f: &mut dyn FnMut(Term<V>) -> Term<V>| Box::new(map_term(*t, f));
-    let term = match term {
-        Term::Box(t) => Term::Box(sub(t, f)),
-        Term::Mut(t1, t2) => {
-            let t1 = sub(t1, f);
-            Term::Mut(t1, sub(t2, f))
-        }
-        Term::BoxCurrent(t) => Term::BoxCurrent(sub(t, f)),
-        Term::MutCurrent(t) => Term::MutCurrent(sub(t, f)),
-        Term::MutFinal(t) => Term::MutFinal(sub(t, f)),
-        Term::ArrayLambda(v, s, t) => Term::ArrayLambda(v, s, sub(t, f)),
-        Term::App(fun, args) => Term::App(fun, args.into_iter().map(|t| map_term(t, f)).collect()),
-        Term::Tuple(ts) => Term::Tuple(ts.into_iter().map(|t| map_term(t, f)).collect()),
-        Term::TupleProj(t, i) => Term::TupleProj(sub(t, f), i),
-        Term::DatatypeCtor(sort, sym, args) => Term::DatatypeCtor(
-            sort,
-            sym,
-            args.into_iter().map(|t| map_term(t, f)).collect(),
-        ),
-        Term::DatatypeDiscr(sym, t) => Term::DatatypeDiscr(sym, sub(t, f)),
-        Term::DatatypeSelector(sel, t) => Term::DatatypeSelector(sel, sub(t, f)),
-        Term::IntToBitVec { width, term } => Term::IntToBitVec {
-            width,
-            term: sub(term, f),
-        },
-        Term::UserDefinedFn(sym, sort, args) => Term::UserDefinedFn(
-            sym,
-            sort,
-            args.into_iter().map(|t| map_term(t, f)).collect(),
-        ),
-        Term::ForallFn(pred, args) => {
-            Term::ForallFn(pred, args.into_iter().map(|t| map_term(t, f)).collect())
-        }
-        t @ (Term::Null
-        | Term::ForallDefault(_)
-        | Term::Var(_)
-        | Term::Bool(_)
-        | Term::Int(_)
-        | Term::String(_)
-        | Term::ArrayEmpty(_, _)
-        | Term::SeqEmpty(_)
-        | Term::UserQuantifiedVar(_, _)) => t,
-    };
+    let term = term.map_subterms(|t| map_term(t, f));
     f(term)
 }
 
@@ -662,46 +610,7 @@ impl Definitions {
                 Term::Null
             })
         };
-        let term = match t {
-            Term::Box(a) => Term::Box(Box::new(children(a, budget))),
-            Term::BoxCurrent(a) => Term::BoxCurrent(Box::new(children(a, budget))),
-            Term::MutCurrent(a) => Term::MutCurrent(Box::new(children(a, budget))),
-            Term::MutFinal(a) => Term::MutFinal(Box::new(children(a, budget))),
-            Term::Mut(a, b) => {
-                let a = children(a, budget);
-                Term::Mut(Box::new(a), Box::new(children(b, budget)))
-            }
-            Term::TupleProj(a, i) => Term::TupleProj(Box::new(children(a, budget)), *i),
-            Term::DatatypeDiscr(sym, a) => {
-                Term::DatatypeDiscr(sym.clone(), Box::new(children(a, budget)))
-            }
-            Term::DatatypeSelector(sel, a) => {
-                Term::DatatypeSelector(sel.clone(), Box::new(children(a, budget)))
-            }
-            Term::IntToBitVec { width, term } => Term::IntToBitVec {
-                width: *width,
-                term: Box::new(children(term, budget)),
-            },
-            Term::App(fun, args) => {
-                Term::App(*fun, args.iter().map(|a| children(a, budget)).collect())
-            }
-            Term::Tuple(ts) => Term::Tuple(ts.iter().map(|a| children(a, budget)).collect()),
-            Term::DatatypeCtor(sort, sym, args) => Term::DatatypeCtor(
-                sort.clone(),
-                sym.clone(),
-                args.iter().map(|a| children(a, budget)).collect(),
-            ),
-            Term::UserDefinedFn(sym, sort, args) => Term::UserDefinedFn(
-                sym.clone(),
-                sort.clone(),
-                args.iter().map(|a| children(a, budget)).collect(),
-            ),
-            Term::ForallFn(pred, args) => Term::ForallFn(
-                pred.clone(),
-                args.iter().map(|a| children(a, budget)).collect(),
-            ),
-            t => t.clone(),
-        };
+        let term = t.clone().map_subterms(|c| children(&c, budget));
         if failed {
             return None;
         }

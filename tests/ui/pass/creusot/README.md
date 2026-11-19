@@ -1,7 +1,10 @@
 # Creusot benchmark cases
 
 Cases from the Creusot artifact's iterator benchmark, each verified with a specification
-equivalent to Creusot's, plus nine additions with no Creusot counterpart (`take_count.rs`,
+equivalent to Creusot's, `empty.rs`, `once.rs`, `repeat.rs`, `zip.rs`, `cloned.rs`, `copied.rs`, `enumerate.rs`,
+`collect_creusot.rs` and `filter_creusot.rs` (Creusot's `examples/iterators/` cases that had no port;
+`zip.rs`, `collect_creusot.rs` and `filter_creusot.rs` drop Creusot's `resolve` of a generic value,
+fork #156; each header lists its other differences), plus nine additions with no Creusot counterpart (`take_count.rs`,
 `fold.rs`, `try_fold.rs`, `find.rs`, `filter.rs`, and the forms of the last four generic in the
 iterator and the closure, in `generic/`). `<file>.rs` is the pass side;
 `tests/ui/fail/creusot/<file>.rs` is its fail twin (two extra fail-only files:
@@ -16,9 +19,8 @@ flow of the 2022 artifact), without `main`, and share one file,
 `auxiliary/common.rs`, through `#[path = "auxiliary/common.rs"] mod common;`, as Creusot's cases
 share `common.rs` (the ui harness does not run files under `auxiliary/`). As in Creusot's
 `common.rs`, its `produces_refl` has no premise. Every other file in the `produces` form repeats
-one trait block, whose `produces_refl` requires the impl's `invariant` except in
-`decuple_range.rs` (`counter_creusot.rs`'s pass test is Unsat without it), Creusot's `common.rs`
-in Thrust syntax:
+one trait block, whose `produces_refl` requires the impl's `invariant` (`counter_creusot.rs`'s
+pass test is Unsat without it), Creusot's `common.rs` in Thrust syntax:
 the predicates, the laws `produces_refl` and `produces_trans` in concatenation form (the latter
 without Creusot's invariant premises, which a Thrust loop head cannot supply for its entry state),
 `invariant` defaulting to `true`, and `next` with Creusot's contract. Each law has a default empty
@@ -40,16 +42,25 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `iter_mut.rs` | the current Creusot's `examples/iterators/02_iter_mut.rs` (3620de437) | `produces` over Creusot's `IterMut { inner: &mut [T] }`, whose `next` (`split_off_first_mut`) is checked, Creusot's constructor `iter_mut(v)` (`IterMut { inner: &mut v[..] }`, with its type invariant, which needs std.rs's length-keeping `IndexMut`); 02's `all_zero` client over this `IterMut` is not ported, and `all_zero.rs` states its property over std's `slice::IterMut` |
 | `collect.rs` | `common.rs` (`collect` / `FromIterator`) | `produces` |
 | `all_zero.rs` | `examples/all_zero.rs` | a `for` loop over std's `slice::IterMut` with its `next` through std.rs, the invariant over the loop's `iter` (`slice::IterMut` has no `IteratorSpec`, so no `produced`; Creusot's own `IterMut` and constructor are in `iter_mut.rs`) |
-| `decuple_range.rs` | `examples/decuple_range.rs` | `produces`, positional property, fully checked |
+| `decuple_range.rs` | `examples/decuple_range.rs` of the 2022 artifact | `produces`, positional property, fully checked: the artifact's code over std's `Range<u32>`, with `counter_creusot.rs`'s `MapInv` built by `map_inv`, `collect` trusted as creusot-std's is, and the artifact's `proof_assert!` |
 | `skip_take.rs` | `skip_take` of `examples/iterators/03_std_iterators.rs` (3620de437) | Creusot's client over std's `take` and `skip` through std.rs's `IteratorSpec`, generic in `I`, with Creusot's `proof_assert!` |
 | `counter.rs` | `examples/counter.rs` | `step` + a unary `next_item` guard, `MapInv`'s ghost history |
-| `counter_creusot.rs` | the current Creusot's `counter` in `examples/iterators/03_std_iterators.rs` (3620de437) | `produces` with Creusot's property over `v.iter()` of a `Vec<u32>` (`x == v`, `cnt == x.len()`), the closure's postconditions (the step and the history fact) written where Creusot takes its contract from the body, its precondition inferred, std's `slice::Iter` through its std.rs model, `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
-| `counter_creusot_lemma.rs` | `examples/counter.rs` | `counter_creusot.rs` with the witnesses of `produces_trans` written as source-level lemmas (Creusot's session gives them by hand) |
+| `counter_creusot.rs` | the current Creusot's `counter` in `examples/iterators/03_std_iterators.rs` (3620de437) | `produces` with Creusot's property over `v.iter()` of a `Vec<u32>` (`x == v`, `cnt == x.len()`), the closure's contract (the step, and the history fact as precondition and as postcondition on the entry state) written where Creusot takes it from the body, since `collect` is trusted as creusot-std's is and Thrust infers a closure's precondition only from callers it analyzes; `MapInv` built by `map_inv`, std's `slice::Iter` through its std.rs model, `MapInv` over an `FnMut` closure whose states are related by `hist_inv!` (Creusot's `hist_inv`), as in creusot-std's `std/iter/map_inv.rs` |
+| `counter_creusot_lemma.rs` | `examples/counter.rs` | the form of `counter_creusot.rs` before `map_inv` and the trusted `collect`: `Map` built by its fields and a checked `FromIterator` loop, with the witnesses of `produces_trans` written as source-level lemmas (Creusot's session gives them by hand) |
 | `map_ext.rs` | `examples/iterators/06_map_precond.rs` (3620de437) | `produces` with an existential input sequence, `MapInv`'s ghost history, over an `FnMut` closure with the chain `fs` and `hist_inv!` as `counter_creusot.rs` |
 | `extend.rs` | `examples/extend.rs` of the 2022 artifact | `produces` with a local `Extend` trait; a debugging example, the benchmark's forms are `concat_vec.rs` and `extend_for.rs` |
 | `collect_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `collect` and `collect_example` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is `produced` |
 | `concat_vec.rs` | `examples/extend.rs` of the 2022 artifact, `extend_index` | std's `Vec::extend` over `v2.into_iter()` under std.rs's contract of `Vec::extend` (Creusot's) |
 | `extend_for.rs` | the current Creusot's `examples/iterators/08_collect_extend.rs` (3620de437), `extend` and `extend_index` | std.rs's `IteratorSpec`, a `for` loop whose invariant states the vector is its entry value followed by `produced` |
+| `empty.rs` | `examples/iterators/09_empty.rs` (3620de437) | `produces` |
+| `once.rs` | `examples/iterators/10_once.rs` (3620de437) | `produces` |
+| `repeat.rs` | `examples/iterators/11_repeat.rs` (3620de437) | `produces` |
+| `zip.rs` | `examples/iterators/12_zip.rs` (3620de437) | `produces`, without Creusot's `resolve` of the inner iterators' states |
+| `cloned.rs` | `examples/iterators/13_cloned.rs` (3620de437) | `produces` over an inner iterator's items by reference |
+| `copied.rs` | `examples/iterators/14_copied.rs` (3620de437) | `produces` over an inner iterator's items by reference |
+| `enumerate.rs` | `examples/iterators/15_enumerate.rs` (3620de437) | `produces` with the constructor `enumerate` and its invariant |
+| `collect_creusot.rs` | `examples/iterators/08_collect_extend.rs` (3620de437) | `produces`, without Creusot's `resolve` of a generic value |
+| `filter_creusot.rs` | `examples/iterators/17_filter.rs` (3620de437) | `produces` with Creusot's monotone index map; slow (300 s) |
 | `take_count.rs` | no counterpart | `produces`; an extra call site of `take.rs`'s `Take` |
 | `fold.rs` | no counterpart | `produces`; a hand-written `fold` with a closure contract over the accumulator |
 | `try_fold.rs` | no counterpart | `produces`; a hand-written `try_fold` that returns `None` on an early bound crossing |
@@ -57,8 +68,10 @@ with empty bodies, as Creusot does). The step-form files repeat theirs in the sa
 | `filter.rs` | no counterpart | `produces`; collects a `Range`'s items above a bound |
 
 Generic forms (`generic/`): `fold`, `try_fold`, `find` and `filter` generic in the iterator and an
-`FnMut` closure, called at `Range`, each closure's contract stated for every closure state. `<name>.rs`
-writes the loop invariant; `<name>_noinv.rs` is the same with every `invariant!` removed, left to
+`FnMut` closure, called at `Range`, each closure's contract stated for every closure state. `fold`
+and `try_fold` relate no closure states by `hist_inv!`, so each is verified at the instance its
+client makes (`Range` and a `closure!` of kind `Fn`), not over its type parameters (D34); `find`
+and `filter` are verified over theirs. `<name>.rs` writes the loop invariant; `<name>_noinv.rs` is the same with every `invariant!` removed, left to
 inference. Every `_noinv` pair but `filter_noinv.rs` verifies from fptprove `082cd295c` on;
 `filter_noinv.rs`, whose loop has to carry the ghost chain of the `produces` form, gets no answer
 within 300 s at fptprove `b9f9c9c05` and is ignored on the host.

@@ -47,13 +47,13 @@ where
     }
 
     #[thrust_macros::predicate]
-    fn next_precondition(iter: I, func: F) -> bool {
+    pub(crate) fn next_precondition(iter: I, func: F) -> bool {
         forall(|e: <I::Item as thrust_models::Model>::Ty| forall(|i: <I as thrust_models::Model>::Ty|
             !I::produces(iter, Seq::singleton(e), i) || thrust_macros::pre!(func(e))))
     }
 
     #[thrust_macros::predicate]
-    fn preservation_inv(iter: I, func: F) -> bool {
+    pub(crate) fn preservation_inv(iter: I, func: F) -> bool {
         forall(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
         forall(|e1: <I::Item as thrust_models::Model>::Ty|
         forall(|e2: <I::Item as thrust_models::Model>::Ty|
@@ -69,7 +69,7 @@ where
     }
 
     #[thrust_macros::predicate]
-    fn reinitialize() -> bool {
+    pub(crate) fn reinitialize() -> bool {
         forall(|cur: <I as thrust_models::Model>::Ty| forall(|fin: <I as thrust_models::Model>::Ty| forall(|f: Closure<F>|
             !I::completed(Mut::new(cur, fin))
                 || (Self::next_precondition(fin, f)
@@ -641,29 +641,6 @@ where
         raw: v,
         _marker: PhantomData,
     })
-}
-
-// Fallback: `Map::new` with its `requires` assumed, for the map over the variants in `layout()`
-// of rustc_abi's layout/coroutine.rs and the `largest_niche_size` map of `univariant_biased`,
-// where the solver does not answer that precondition. The closure's type cannot be written at
-// the call, so an `assume!` there cannot state it; here it is the type parameter. A new caller
-// must establish the precondition itself. Call `Map::new` again once the solver answers it.
-#[thrust_macros::context]
-#[thrust_macros::requires(true)]
-#[thrust_macros::ensures(result.0 == iter && result.1 == func)]
-#[thrust_macros::ensures(<Map<I, F> as IteratorSpec>::inv(result))]
-pub(crate) fn map_new_assumed<I, B, F>(iter: I, func: F) -> Map<I, F>
-where
-    I: IteratorSpec,
-    B: thrust_models::Model,
-    F: FnMut(I::Item) -> B,
-    I::Item: thrust_models::Model,
-{
-    thrust_macros::assume!(|iter: I, func: F| I::inv(iter)
-        && Map::<I, F>::reinitialize()
-        && Map::<I, F>::preservation_inv(iter, func)
-        && Map::<I, F>::next_precondition(iter, func));
-    Map::new(iter, func)
 }
 
 // `IndexSlice::iter_enumerated` with a contract of its own, for `univariant_biased`: the contract

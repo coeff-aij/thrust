@@ -28,8 +28,9 @@ mod closure_escape;
 mod drop_point;
 mod trait_object;
 mod visitor;
-use drop_point::MovedOut;
-pub use drop_point::{DropPoints, MoveState};
+
+use crate::analyze::block_contract::{BlockContract, Change};
+pub use drop_point::{DropPoints, MoveState, MovedOut};
 
 /// Whether a basic block needs a precondition of its own, rather than
 /// inheriting its predecessor's outgoing env state.
@@ -82,6 +83,10 @@ pub enum FormulaMarker {
     Assert,
     /// `assume!`: the formula, assumed unchecked.
     Assume,
+    /// `block_requires!`: the precondition of the code up to the next `block_ensures!`.
+    BlockRequires,
+    /// `block_ensures!`: the postcondition of the code from the last `block_requires!`.
+    BlockEnsures,
 }
 
 impl FormulaMarker {
@@ -90,7 +95,10 @@ impl FormulaMarker {
     pub fn first_named_param(self) -> usize {
         match self {
             FormulaMarker::Ghost | FormulaMarker::Choose => 1,
-            FormulaMarker::Assert | FormulaMarker::Assume => 0,
+            FormulaMarker::Assert
+            | FormulaMarker::Assume
+            | FormulaMarker::BlockRequires
+            | FormulaMarker::BlockEnsures => 0,
         }
     }
 }
@@ -111,6 +119,10 @@ pub fn formula_marker_call<'tcx>(
         FormulaMarker::Assert
     } else if Some(def_id) == ctx.def_ids().assume_marker() {
         FormulaMarker::Assume
+    } else if Some(def_id) == ctx.def_ids().block_requires_marker() {
+        FormulaMarker::BlockRequires
+    } else if Some(def_id) == ctx.def_ids().block_ensures_marker() {
+        FormulaMarker::BlockEnsures
     } else {
         return None;
     };
@@ -123,6 +135,296 @@ pub fn formula_marker_call<'tcx>(
         .as_local()
         .expect("marker formula function must be local");
     Some((marker, formula_def_id, generic_args))
+}
+
+/// The prefix of the name of a type parameter a formula function declares for a closure type its
+/// statement (`proof_assert!`, `assume!`, `block_requires!`, `block_ensures!`) leaves to a local: a `_` in a written parameter type, or a type
+/// parameter declared before the closure (`thrust-macros/src/formula_fn_lifting.rs`).
+const ELIDED_CLOSURE_LOCAL_PREFIX: &str = "__ThrustClosureOf_";
+
+pub fn is_closure_local_param(param: &mir_ty::GenericParamDef) -> bool {
+    param.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX)
+}
+
+/// `generic_args` of the formula function `formula_def_id` of a statement (`proof_assert!`,
+/// `assume!`, `block_requires!`, `block_ensures!`) at `scope`, with each type argument the formula leaves to a local taken from that local's type:
+/// a closure's type cannot be written, so the marker call gives a placeholder there, and the
+/// written type of each parameter is matched against the type of the local it names, as rustc
+/// infers the `_` of a Creusot or Verus assertion written in the body.
+pub fn resolve_closure_local_args<'tcx>(
+    ctx: &analyze::Analyzer<'tcx>,
+    body: &mir::Body<'tcx>,
+    scope: mir::SourceScope,
+    span: rustc_span::Span,
+    formula_def_id: LocalDefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+) -> mir_ty::GenericArgsRef<'tcx> {
+    let tcx = ctx.tcx();
+    let def_id = formula_def_id.to_def_id();
+    let holes: Vec<&mir_ty::GenericParamDef> = tcx
+        .generics_of(def_id)
+        .own_params
+        .iter()
+        .filter(|param| is_closure_local_param(param))
+        .collect();
+    if holes.is_empty() {
+        return generic_args;
+    }
+    let mut matcher = ClosureLocalMatcher {
+        tcx,
+        closure_model: ctx.def_ids().closure_model(),
+        bound: HashMap::new(),
+    };
+    let inputs = tcx
+        .fn_sig(def_id)
+        .instantiate_identity()
+        .skip_binder()
+        .inputs();
+    for (ident, &input) in tcx.fn_arg_idents(def_id).iter().zip(inputs) {
+        let Some(var) = ident.map(|ident| ident.name) else {
+            continue;
+        };
+        if !matcher.has_hole(input) {
+            continue;
+        }
+        let local_ty = closure_local_ty(body, var, scope).unwrap_or_else(|why| {
+            tcx.dcx().span_fatal(
+                span,
+                format!("`{var}` has a type left to its local (`_` or a type parameter of the formula), but `{var}` is {why}"),
+            )
+        });
+        if let Err(msg) = matcher.match_ty(written_ty(input), local_ty) {
+            tcx.dcx()
+                .span_fatal(span, format!("in the type of `{var}`: {msg}"));
+        }
+    }
+    let mut args: Vec<mir_ty::GenericArg<'tcx>> = generic_args.to_vec();
+    for param in holes {
+        let Some(&ty) = matcher.bound.get(&param.index) else {
+            tcx.dcx().span_fatal(
+                span,
+                format!("`{}` occurs in no parameter's type", hole_name(param.name)),
+            );
+        };
+        args[param.index as usize] = ty.into();
+    }
+    let args = tcx.mk_args(&args);
+    check_closure_local_bounds(tcx, body, span, def_id, args);
+    args
+}
+
+/// Gives the closure behind each `|f: _|` of the formula function `formula_def_id` its function
+/// type at the instance `owner` being analyzed, as a call of the closure does: the formula reads
+/// that type (`pre!`, `post!`), and in a generic body it exists only once asked for.
+/// `generic_args` are those [`resolve_closure_local_args`] gave.
+pub fn register_closure_local_types<'tcx>(
+    ctx: &mut analyze::Analyzer<'tcx>,
+    formula_def_id: LocalDefId,
+    generic_args: mir_ty::GenericArgsRef<'tcx>,
+    owner: DefId,
+) {
+    let tcx = ctx.tcx();
+    for param in &tcx.generics_of(formula_def_id.to_def_id()).own_params {
+        if !is_closure_local_param(param) {
+            continue;
+        }
+        let ty = generic_args.type_at(param.index as usize);
+        let mir_ty::TyKind::Closure(closure_def_id, closure_args) = ty.kind() else {
+            continue;
+        };
+        let parent_count = tcx.generics_of(*closure_def_id).parent_count;
+        let parent_args = tcx.mk_args(&closure_args[..parent_count]);
+        let _ = ctx.def_ty_with_args(*closure_def_id, parent_args, owner);
+    }
+}
+
+/// The type of the local `var` names in `scope`, or why it names none.
+fn closure_local_ty<'tcx>(
+    body: &mir::Body<'tcx>,
+    var: rustc_span::Symbol,
+    scope: mir::SourceScope,
+) -> Result<mir_ty::Ty<'tcx>, &'static str> {
+    let bindings = bindings_in_scope(body, var, scope);
+    let tys: Vec<mir_ty::Ty<'tcx>> = bindings
+        .iter()
+        .filter_map(|vdi| match &vdi.value {
+            mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
+                Some(body.local_decls[place.local].ty)
+            }
+            _ => None,
+        })
+        .collect();
+    if let Some(&ty) = tys.first().filter(|ty| tys.iter().all(|t| t == *ty)) {
+        return Ok(ty);
+    }
+    let is_capture = bindings.iter().any(|vdi| {
+        matches!(&vdi.value, mir::VarDebugInfoContents::Place(place) if !place.projection.is_empty())
+    });
+    if is_capture {
+        Err("a variable this closure captures, whose type is not left to it: bind it to a local first")
+    } else {
+        Err("not one live variable here")
+    }
+}
+
+/// The type written for a parameter of a formula function, which lowers it to
+/// `<T as Model>::Ty`.
+fn written_ty(input: mir_ty::Ty<'_>) -> mir_ty::Ty<'_> {
+    match input.kind() {
+        mir_ty::TyKind::Alias(mir_ty::AliasTyKind::Projection, alias) => alias.self_ty(),
+        _ => input,
+    }
+}
+
+/// The name a type parameter left to a local is written with: `_`, or the declared one.
+fn hole_name(name: rustc_span::Symbol) -> String {
+    let rest = name
+        .as_str()
+        .strip_prefix(ELIDED_CLOSURE_LOCAL_PREFIX)
+        .unwrap_or_default();
+    if rest.starts_with(|c: char| c.is_ascii_digit()) {
+        "_".to_owned()
+    } else {
+        rest.to_owned()
+    }
+}
+
+/// Rejects a closure that does not meet a bound the formula declares for the type parameter it
+/// stands for: rustc checked the formula only at the placeholder, and it is translated at the
+/// closure's type.
+fn check_closure_local_bounds<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mir::Body<'tcx>,
+    span: rustc_span::Span,
+    formula_def_id: DefId,
+    args: mir_ty::GenericArgsRef<'tcx>,
+) {
+    use rustc_infer::infer::TyCtxtInferExt as _;
+    use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
+    use rustc_trait_selection::traits::{Obligation, ObligationCause};
+
+    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, body.source.def_id());
+    let (infcx, param_env) = tcx.infer_ctxt().build_with_typing_env(typing_env);
+    for &(clause, _) in tcx.predicates_of(formula_def_id).predicates {
+        let self_ty = match clause.kind().skip_binder() {
+            mir_ty::ClauseKind::Trait(pred) => pred.self_ty(),
+            mir_ty::ClauseKind::Projection(pred) => pred.self_ty(),
+            _ => continue,
+        };
+        let mir_ty::TyKind::Param(hole) = self_ty.kind() else {
+            continue;
+        };
+        if !hole.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX) {
+            continue;
+        }
+        let clause = mir_ty::EarlyBinder::bind(clause).instantiate(tcx, args);
+        let obligation = Obligation::new(tcx, ObligationCause::dummy(), param_env, clause);
+        if infcx.predicate_must_hold_modulo_regions(&obligation) {
+            continue;
+        }
+        tcx.dcx().span_fatal(
+            span,
+            format!(
+                "`{}` stands for `{}`, which does not meet its bound: `{clause}` does not hold",
+                hole_name(hole.name),
+                args.type_at(hole.index as usize),
+            ),
+        );
+    }
+}
+
+/// Matches a written type against a local's type, binding each type parameter left to the
+/// local to the closure type at its position.
+struct ClosureLocalMatcher<'tcx> {
+    tcx: TyCtxt<'tcx>,
+    closure_model: Option<DefId>,
+    bound: HashMap<u32, mir_ty::Ty<'tcx>>,
+}
+
+impl<'tcx> ClosureLocalMatcher<'tcx> {
+    fn hole(&self, ty: mir_ty::Ty<'tcx>) -> Option<mir_ty::ParamTy> {
+        match ty.kind() {
+            mir_ty::TyKind::Param(param)
+                if param.name.as_str().starts_with(ELIDED_CLOSURE_LOCAL_PREFIX) =>
+            {
+                Some(*param)
+            }
+            _ => None,
+        }
+    }
+
+    fn has_hole(&self, ty: mir_ty::Ty<'tcx>) -> bool {
+        ty.walk()
+            .any(|arg| arg.as_type().is_some_and(|ty| self.hole(ty).is_some()))
+    }
+
+    /// Matches `written` against `actual` where `written` has a hole; a part without one is
+    /// rustc's to check.
+    fn match_ty(
+        &mut self,
+        written: mir_ty::Ty<'tcx>,
+        actual: mir_ty::Ty<'tcx>,
+    ) -> Result<(), String> {
+        if !self.has_hole(written) {
+            return Ok(());
+        }
+        if let Some(param) = self.hole(written) {
+            return self.bind(param, actual);
+        }
+        use mir_ty::TyKind;
+        match (written.kind(), actual.kind()) {
+            // A closure written at the top of a type, behind a reference or in a tuple is lowered
+            // to its model `Closure<F>`.
+            (TyKind::Adt(def, args), _) if Some(def.did()) == self.closure_model => {
+                self.match_ty(args.type_at(0), actual)
+            }
+            (TyKind::Adt(wdef, wargs), TyKind::Adt(adef, aargs)) if wdef == adef => {
+                self.match_args(wargs, aargs)
+            }
+            (TyKind::Ref(_, w, wm), TyKind::Ref(_, a, am)) if wm == am => self.match_ty(*w, *a),
+            (TyKind::RawPtr(w, wm), TyKind::RawPtr(a, am)) if wm == am => self.match_ty(*w, *a),
+            (TyKind::Array(w, _), TyKind::Array(a, _)) | (TyKind::Slice(w), TyKind::Slice(a)) => {
+                self.match_ty(*w, *a)
+            }
+            (TyKind::Tuple(ws), TyKind::Tuple(as_)) if ws.len() == as_.len() => ws
+                .iter()
+                .zip(as_.iter())
+                .try_for_each(|(w, a)| self.match_ty(w, a)),
+            _ => Err(format!(
+                "the written type does not have the shape of `{}` there",
+                self.tcx.erase_regions(actual)
+            )),
+        }
+    }
+
+    fn match_args(
+        &mut self,
+        written: mir_ty::GenericArgsRef<'tcx>,
+        actual: mir_ty::GenericArgsRef<'tcx>,
+    ) -> Result<(), String> {
+        for (w, a) in written.iter().zip(actual.iter()) {
+            if let (Some(w), Some(a)) = (w.as_type(), a.as_type()) {
+                self.match_ty(w, a)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn bind(&mut self, param: mir_ty::ParamTy, actual: mir_ty::Ty<'tcx>) -> Result<(), String> {
+        let name = hole_name(param.name);
+        if !actual.is_closure() {
+            return Err(format!(
+                "`{name}` stands for a closure's type, but it has the type `{}` there; write that type",
+                self.tcx.erase_regions(actual)
+            ));
+        }
+        match self.bound.insert(param.index, actual) {
+            Some(previous) if previous != actual => Err(format!(
+                "`{name}` stands for two closures' types, `{previous}` and `{actual}`"
+            )),
+            _ => Ok(()),
+        }
+    }
 }
 
 /// The debug entries of the variables the name `name` can stand for in `scope`: those of the
@@ -381,6 +683,7 @@ pub struct Analyzer<'tcx, 'ctx> {
     local_def_id: LocalDefId,
     analysis_key: analyze::AnalysisKey<'tcx>,
     drop_points: DropPoints,
+    block_contracts: Vec<BlockContract>,
     basic_block: BasicBlock,
     body: Cow<'tcx, Body<'tcx>>,
 
@@ -1464,7 +1767,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         bb: BasicBlock,
         outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
-        if !needs_own_precondition(&self.body, bb) {
+        let starts_block_contract = self
+            .block_contracts
+            .iter()
+            .any(|contract| contract.entry == bb);
+        if !needs_own_precondition(&self.body, bb) && !starts_block_contract {
             self.install_inherited_bb_ty(bb, outer_fn_param_vars);
             return;
         }
@@ -1896,6 +2203,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                             def_id,
                             args,
                         );
+                        self.ctx.record_dispatched_fn_mut_impls(def_id);
                         def_ty.ty
                     }
                     None => {
@@ -1931,12 +2239,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 // A trait-level spec of `std.rs` describes std's impls and the crate's own, whose
                 // bodies are checked against it; an impl from another crate is checked by
                 // nothing, so it takes no trait-level spec.
-                let unchecked_foreign_impl = resolved_def_id != def_id
-                    && !resolved_def_id.is_local()
-                    && !matches!(
-                        self.tcx.crate_name(resolved_def_id.krate).as_str(),
-                        "std" | "core" | "alloc"
-                    );
+                let unchecked_foreign_impl =
+                    analyze::is_unchecked_foreign_impl(self.tcx, def_id, resolved_def_id);
                 if unchecked_foreign_impl {
                     return self.unspecified_extern_ty(def_id, resolved_def_id, resolved_args);
                 }
@@ -2348,17 +2652,28 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// The operand a ghost term at the current terminator reads for the variable `name`: the
     /// binding Rust's scoping resolves it to ([`bindings_in_scope`], as the liveness the block
-    /// parameters come from resolves it), when it holds a value here.
+    /// parameters come from resolves it), when it holds a value here. A variable a closure body
+    /// reads from its captures is a place of the closure's environment (`*((*_1).0)`), which is
+    /// read as such.
     fn operand_of_name(&self, name: rustc_span::Symbol) -> Option<Operand<'tcx>> {
         let scope = self.body.basic_blocks[self.basic_block]
             .terminator()
             .source_info
             .scope;
+        self.operand_of_name_in(name, scope)
+    }
+
+    /// The value here of the variable `name` stands for in `scope`.
+    fn operand_of_name_in(
+        &self,
+        name: rustc_span::Symbol,
+        scope: mir::SourceScope,
+    ) -> Option<Operand<'tcx>> {
         let mut found: Option<Operand<'tcx>> = None;
         for vdi in bindings_in_scope(&self.body, name, scope) {
             let operand = match &vdi.value {
                 mir::VarDebugInfoContents::Place(place) => {
-                    if !place.projection.is_empty() || !self.is_defined(place.local) {
+                    if !self.is_defined(place.local) {
                         continue;
                     }
                     Operand::Copy(*place)
@@ -2395,36 +2710,25 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let what = match marker {
             FormulaMarker::Assert => "proof_assert!",
             FormulaMarker::Assume => "assume!",
-            FormulaMarker::Ghost | FormulaMarker::Choose => {
-                unreachable!("a ghost marker is not a statement")
+            FormulaMarker::BlockEnsures => "block_ensures!",
+            FormulaMarker::Ghost | FormulaMarker::Choose | FormulaMarker::BlockRequires => {
+                unreachable!("not a statement checked or assumed where it is written")
             }
         };
-        let sig = self
-            .tcx
-            .fn_sig(formula_fn_def_id)
-            .instantiate(self.tcx, generic_args);
-        let written_sig = self.tcx.instantiate_bound_regions_with_erased(sig);
-        let vars: IndexVec<rty::FunctionParamIdx, Var> = formula_fn
-            .params()
-            .indices()
-            .zip(written_sig.inputs())
-            .map(|(idx, written_input_ty)| {
-                let ident =
-                    formula_fn.param_idents()[idx].expect("formula parameters must be named");
-                let name = analyze::annot_fn::lifted_param_source_name(ident);
-                let operand = self.operand_of_name(name).unwrap_or_else(|| {
-                    self.tcx.dcx().span_fatal(
-                        span,
-                        format!("{what} refers to `{name}`, which is not a live variable here"),
-                    )
-                });
-                self.check_spec_param_ty(what, span, name, *written_input_ty, &operand);
-                let arg = self.operand_refined_type(operand);
-                self.env.immut_bind_tmp(arg)
-            })
-            .collect();
+        let scope = self.body.basic_blocks[self.basic_block]
+            .terminator()
+            .source_info
+            .scope;
+        let vars = self.formula_vars(
+            what,
+            formula_fn_def_id,
+            generic_args,
+            &formula_fn,
+            span,
+            scope,
+        );
         let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
-        if marker == FormulaMarker::Assert {
+        if matches!(marker, FormulaMarker::Assert | FormulaMarker::BlockEnsures) {
             self.check_formula(
                 formula_fn
                     .witnessed_formula()
@@ -2439,6 +2743,188 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             });
         }
         self.env.assume(formula.map_var(PlaceTypeVar::Var));
+    }
+
+    /// The values of the variables the parameters of a formula over live variables name, each
+    /// the binding its name stands for in `scope`.
+    fn formula_vars(
+        &mut self,
+        what: &str,
+        formula_fn_def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        formula_fn: &FormulaFn<'tcx>,
+        span: rustc_span::Span,
+        scope: mir::SourceScope,
+    ) -> IndexVec<rty::FunctionParamIdx, Var> {
+        let sig = self
+            .tcx
+            .fn_sig(formula_fn_def_id)
+            .instantiate(self.tcx, generic_args);
+        let written_sig = self.tcx.instantiate_bound_regions_with_erased(sig);
+        formula_fn
+            .params()
+            .indices()
+            .zip(written_sig.inputs())
+            .map(|(idx, written_input_ty)| {
+                let ident =
+                    formula_fn.param_idents()[idx].expect("formula parameters must be named");
+                let name = analyze::annot_fn::lifted_param_source_name(ident);
+                let operand = self.operand_of_name_in(name, scope).unwrap_or_else(|| {
+                    self.tcx.dcx().span_fatal(
+                        span,
+                        format!("{what} refers to `{name}`, which is not a live variable here"),
+                    )
+                });
+                self.check_spec_param_ty(what, span, name, *written_input_ty, &operand);
+                let arg = self.operand_refined_type(operand);
+                self.env.immut_bind_tmp(arg)
+            })
+            .collect()
+    }
+
+    /// Goes past the code under `contract`, from its opening block to the block after it, as
+    /// past a call to a function with that contract: each local the code may change takes a
+    /// fresh value, a `&mut` written only through it keeping its final value, the `ensures`
+    /// formula is assumed of the values, and the other locals keep theirs. A local the code
+    /// leaves unchanged and drops is dropped here, with the parts moved out of it before.
+    fn pass_over_block_contract(
+        &mut self,
+        contract: &BlockContract,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
+    ) {
+        let closing = self.body.basic_blocks[contract.closing]
+            .terminator()
+            .clone();
+        let TerminatorKind::Call { func, args, .. } = &closing.kind else {
+            unreachable!("a closing block ends in the marker call");
+        };
+        let (_, formula_def_id, generic_args) =
+            formula_marker_call(self.ctx, &self.local_decls, func, args)
+                .expect("a closing block ends in the marker call");
+        let generic_args = resolve_closure_local_args(
+            self.ctx,
+            &self.body,
+            closing.source_info.scope,
+            closing.source_info.span,
+            formula_def_id,
+            generic_args,
+        );
+        register_closure_local_types(
+            self.ctx,
+            formula_def_id,
+            generic_args,
+            self.type_builder.owner_fn_id(),
+        );
+        let formula_fn = self
+            .ctx
+            .formula_fn_with_args(
+                formula_def_id,
+                generic_args,
+                self.type_builder.owner_fn_id(),
+            )
+            .expect("block_ensures! formula function is not registered");
+        let named: Vec<Local> = formula_fn
+            .param_idents()
+            .iter()
+            .filter_map(|ident| {
+                let name = analyze::annot_fn::lifted_param_source_name(
+                    ident.expect("formula parameters must be named"),
+                );
+                bindings_in_scope(&self.body, name, closing.source_info.scope)
+                    .into_iter()
+                    .find_map(|vdi| match &vdi.value {
+                        mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
+                            Some(place.local)
+                        }
+                        _ => None,
+                    })
+            })
+            .collect();
+        let exit_ty = self
+            .ctx
+            .basic_block_ty(self.analysis_key, contract.exit)
+            .clone();
+        let live_after = |local: Local| exit_ty.param_of_local(local).is_some();
+
+        for (&local, &change) in &contract.changed {
+            let defined = self.is_defined(local);
+            if !(defined || live_after(local) || named.contains(&local)) {
+                continue;
+            }
+            let decl_ty = self.local_decls[local].ty;
+            if defined && !self.is_mut_local(local) && !decl_ty.is_mutable_ptr() {
+                // A local bound immutably holds one value, which a move or a drop leaves as it
+                // is; any other change makes `reassign_local_mutabilities` bind it mutably.
+                assert_eq!(change, Change::Moved, "an immutable local is changed");
+                continue;
+            }
+            let old = defined.then(|| self.env.local_type(local));
+            let mut ty = self.type_builder.build(decl_ty).vacuous().ty;
+            match &old {
+                Some(old) if self.is_mut_local(local) => {
+                    let old_elem = &old.ty.as_pointer().expect("a mutable local is boxed").elem;
+                    ty.inherit_function_types(&old_elem.ty);
+                }
+                Some(old) => ty.inherit_function_types(&old.ty),
+                None if decl_ty.walk().any(|arg| {
+                    arg.as_type().is_some_and(|ty| {
+                        matches!(
+                            ty.kind(),
+                            mir_ty::TyKind::Closure(..)
+                                | mir_ty::TyKind::FnDef(..)
+                                | mir_ty::TyKind::FnPtr(..)
+                        )
+                    })
+                }) =>
+                {
+                    self.tcx.dcx().span_fatal(
+                        closing.source_info.span,
+                        format!(
+                            "the code under this block contract gives `{local:?}` a value that \
+                             holds a function, which is not supported"
+                        ),
+                    )
+                }
+                None => {}
+            }
+            self.bind_local(local, rty::RefinedType::unrefined(ty));
+            let keeps_final = change == Change::ThroughDeref && decl_ty.is_mutable_ptr();
+            if let (Some(old), true) = (old, keeps_final) {
+                let boxed = self.is_mut_local(local);
+                let final_of = |term: chc::Term<PlaceTypeVar>| {
+                    if boxed {
+                        term.box_current().mut_final()
+                    } else {
+                        term.mut_final()
+                    }
+                };
+                let new = self.env.local_type(local);
+                let mut builder = PlaceTypeBuilder::default();
+                let (_, old_term) = builder.subsume(old);
+                let (_, new_term) = builder.subsume(new);
+                builder.push_formula(final_of(new_term).equal_to(final_of(old_term)));
+                self.env.assume(builder.build_assumption());
+            }
+        }
+
+        let vars = self.formula_vars(
+            "block_ensures!",
+            formula_def_id.to_def_id(),
+            generic_args,
+            &formula_fn,
+            closing.source_info.span,
+            closing.source_info.scope,
+        );
+        let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
+        self.env.assume(formula.map_var(PlaceTypeVar::Var));
+
+        for (local, moved_out) in &contract.ends {
+            if live_after(*local) || contract.changed.get(local) == Some(&Change::Whole) {
+                continue;
+            }
+            self.drop_local(*local, moved_out.clone());
+        }
+        self.type_goto(contract.exit, outer_fn_param_vars);
     }
 
     /// Stops unless `written_input_ty`, the type of the formula function's parameter that names
@@ -3222,9 +3708,36 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 unimplemented!()
             }
 
-            if let Some((marker @ (FormulaMarker::Assert | FormulaMarker::Assume), def_id, args)) =
+            if let Some((FormulaMarker::BlockRequires, ..)) =
                 formula_marker_call(self.ctx, &self.local_decls, func, args)
             {
+                // Checked as the precondition of the first block under the contract.
+                self.bind_local(destination, rty::RefinedType::unrefined(rty::Type::unit()));
+                return;
+            }
+
+            if let Some((
+                marker @ (FormulaMarker::Assert
+                | FormulaMarker::Assume
+                | FormulaMarker::BlockEnsures),
+                def_id,
+                args,
+            )) = formula_marker_call(self.ctx, &self.local_decls, func, args)
+            {
+                let args = resolve_closure_local_args(
+                    self.ctx,
+                    &self.body,
+                    term.source_info.scope,
+                    term.source_info.span,
+                    def_id,
+                    args,
+                );
+                register_closure_local_types(
+                    self.ctx,
+                    def_id,
+                    args,
+                    self.type_builder.owner_fn_id(),
+                );
                 let formula_fn = self
                     .ctx
                     .formula_fn_with_args(def_id, args, self.type_builder.owner_fn_id())
@@ -3349,12 +3862,25 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 );
             }
             TerminatorKind::Call { target, .. } => {
+                let block_contract = |a: &Self, at: fn(&BlockContract) -> BasicBlock| {
+                    a.block_contracts
+                        .iter()
+                        .find(|contract| at(contract) == a.basic_block)
+                        .cloned()
+                };
+                // The code under a block contract ends at its closing marker.
+                if block_contract(self, |contract| contract.closing).is_some() {
+                    return;
+                }
                 if let Some(target) = target {
                     for (local, moved_out) in self.drop_points.after_terminator(target) {
                         tracing::info!(?local, "implicitly dropped after call");
                         self.drop_local(local, moved_out);
                     }
                     self.type_goto(*target, outer_fn_param_vars);
+                }
+                if let Some(contract) = block_contract(self, |contract| contract.opening) {
+                    self.pass_over_block_contract(&contract, outer_fn_param_vars);
                 }
             }
             TerminatorKind::Drop { place, target, .. } => {
@@ -3626,6 +4152,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             local_def_id,
             analysis_key,
             drop_points,
+            block_contracts: Vec::new(),
             basic_block,
             body,
             type_builder,
@@ -3638,6 +4165,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     pub fn drop_points(&mut self, drop_points: DropPoints) -> &mut Self {
         self.drop_points = drop_points;
+        self
+    }
+
+    pub fn block_contracts(&mut self, block_contracts: Vec<BlockContract>) -> &mut Self {
+        self.block_contracts = block_contracts;
         self
     }
 

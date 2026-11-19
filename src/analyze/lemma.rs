@@ -21,8 +21,12 @@ use crate::analyze;
 
 /// Checks every lemma of the crate; the errors are reported with those of
 /// [`check_proof_branches`].
-pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>) {
-    let checker = Checker { tcx, proof_branch };
+pub fn check_lemmas(tcx: TyCtxt<'_>, proof_branch: Option<DefId>, markers: [Option<DefId>; 2]) {
+    let checker = Checker {
+        tcx,
+        proof_branch,
+        markers,
+    };
     // A law's proof, an impl's definition of a law or a trait's default body for one, is a
     // lemma too: what it proves is assumed wherever the trait is used through a type parameter,
     // so a proof that does not return would prove anything.
@@ -54,6 +58,7 @@ pub fn is_proof(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
     let checker = Checker {
         tcx,
         proof_branch: None,
+        markers: [None; 2],
     };
     checker.is_lemma(def_id) || checker.is_lemma_rec(def_id) || checker.is_law_proof(def_id)
 }
@@ -69,6 +74,7 @@ pub fn check_proof_branches(
         let checker = Checker {
             tcx,
             proof_branch: Some(proof_branch),
+            markers: [None; 2],
         };
         for &def_id in tcx.mir_keys(()) {
             let id = def_id.to_def_id();
@@ -83,6 +89,8 @@ pub fn check_proof_branches(
 struct Checker<'tcx> {
     tcx: TyCtxt<'tcx>,
     proof_branch: Option<DefId>,
+    /// The `ghost!` and `choose!` markers, as the crate's definition cache resolves them.
+    markers: [Option<DefId>; 2],
 }
 
 /// A call a lemma or a law's proof makes, at generic arguments in the caller's own parameters.
@@ -104,20 +112,16 @@ struct ProofCalls<'tcx> {
 type Calls<'tcx> = HashMap<LocalDefId, ProofCalls<'tcx>>;
 
 impl<'tcx> Checker<'tcx> {
-    fn has_attr(&self, def_id: DefId, path: &[rustc_span::Symbol]) -> bool {
-        self.tcx.get_attrs_by_path(def_id, path).next().is_some()
-    }
-
     fn is_lemma(&self, def_id: DefId) -> bool {
-        self.has_attr(def_id, &analyze::annot::lemma_path())
+        analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::lemma_path())
     }
 
     fn is_lemma_rec(&self, def_id: DefId) -> bool {
-        self.has_attr(def_id, &analyze::annot::lemma_rec_path())
+        analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::lemma_rec_path())
     }
 
     fn is_law(&self, def_id: DefId) -> bool {
-        self.has_attr(def_id, &analyze::annot::law_path())
+        analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::law_path())
     }
 
     /// Whether `def_id` is a trait law with a default body or an impl's definition of one.
@@ -308,11 +312,19 @@ impl<'tcx> Checker<'tcx> {
             analyze::annot::predicate_path(),
             analyze::annot::formula_fn_path(),
         ];
-        let model_operation = def_id
+        let injected_std = def_id
             .as_local()
-            .is_some_and(|local| analyze::is_injected_std(self.tcx, local))
-            && (analyze::is_ignored(self.tcx, def_id) || Some(def_id) == self.proof_branch);
-        spec.iter().any(|path| self.has_attr(def_id, path)) || model_operation
+            .is_some_and(|local| analyze::is_injected_std(self.tcx, local));
+        // The branch `proof!` takes and the markers `ghost!` and `choose!` expand to are model
+        // operations wherever they are defined: `std.rs` compiled as a source file
+        // (THRUST_NO_INJECT_STD) defines its own, which its laws' proofs use.
+        let model_operation = (injected_std && analyze::is_ignored(self.tcx, def_id))
+            || Some(def_id) == self.proof_branch;
+        let marker = self.markers.contains(&Some(def_id));
+        spec.iter()
+            .any(|path| analyze::annot::has_thrust_attr(self.tcx, def_id, path))
+            || marker
+            || model_operation
     }
 
     /// The lemmas and the laws `lemma` calls, after checking that it calls nothing else that
