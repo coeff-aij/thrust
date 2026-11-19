@@ -2323,6 +2323,9 @@ pub fn layout<
             Ok(VariantLayout::from_layout(variant))
         },
         );
+    // `preservation_inv` from the closure's `requires` at the items produced: its captures do not
+    // change.
+    thrust_macros::proof!(Map::preservation_inv_of_stable_closure(&variant_iter, &variant_layout_of));
     thrust_macros::proof_assert!(<P: FnMut((VariantIdx, &IndexVec<FieldIdx, LocalIdx>)) -> Result<VariantLayout<FieldIdx>, crate::rustc_abi::layout::LayoutCalculatorError<F>>>
         |variant_iter: IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>>, variant_layout_of: P|
         <IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>> as crate::IteratorSpec>::inv(variant_iter)

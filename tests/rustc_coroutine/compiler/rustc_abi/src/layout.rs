@@ -815,8 +815,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                     Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind)
                         && Cx::dl_of(*self, *dl)
                         && <core::slice::Iter<'_, F> as crate::IteratorSpec>::inv(field_iter)
-                        && forall(|e: <&F as thrust_models::Model>::Ty, i: <core::slice::Iter<'_, F> as thrust_models::Model>::Ty|
-                            !<core::slice::Iter<'_, F> as crate::IteratorSpec>::produces(field_iter, Seq::singleton(e), i)
+                        && forall(|s: Seq<<&F as thrust_models::Model>::Ty>, e: <&F as thrust_models::Model>::Ty, i: <core::slice::Iter<'_, F> as thrust_models::Model>::Ty|
+                            !<core::slice::Iter<'_, F> as crate::IteratorSpec>::produces(field_iter, s.push(e), i)
                                 || exists(|j: USize| 0 <= j && j < (*fields).len() && e == (&(*fields)[j])))
                         && forall(|e: <&F as thrust_models::Model>::Ty|
                             !forall(|d: &&LayoutData<FieldIdx, VariantIdx>, n: Niche|
@@ -824,6 +824,9 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                     || Niche::wf_in(n, *dl))
                                 || thrust_macros::pre!(niche_available(e))));
                 Self::fields_ok_of_layout_pre::<FieldIdx, VariantIdx, F>(self, fields, kind, dl);
+                // `preservation_inv` from the closure's `requires` at the items produced: its
+                // captures do not change.
+                thrust_macros::proof!(Map::preservation_inv_of_stable_closure(&field_iter, &niche_available));
                 thrust_macros::proof_assert!(<P: FnMut(&F) -> u128> |field_iter: core::slice::Iter<'_, F>, niche_available: P|
                     <core::slice::Iter<'_, F> as crate::IteratorSpec>::inv(field_iter)
                         && Map::<core::slice::Iter<'_, F>, P>::reinitialize()
