@@ -443,6 +443,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
         } else if analyzer.is_annotated_as_extern_spec_fn()
+            && !owner_fn_id.is_local()
             && owner_fn_id_args.is_some_and(has_type_or_const_args)
         {
             // An extern spec without type parameters of a generic function of another crate
@@ -1588,7 +1589,7 @@ fn has_type_or_const_args(args: mir_ty::GenericArgsRef<'_>) -> bool {
 
 /// Whether `local_def_id` is an extern spec of a function of this crate, `target`, that covers
 /// only some of its instances: it calls the target at an argument that is not one of the
-/// spec's type parameters, or bounds an associated type the target leaves free (`R:
+/// spec's type or const parameters, or bounds an associated type the target leaves free (`R:
 /// IntoSliceIdx<I, [T], Output = usize>` where the target has `R: IntoSliceIdx<I, [T]>`). The
 /// spec `requires`/`ensures` generate for a function repeats its bounds, so it covers all of it.
 fn is_narrower_local_spec<'tcx>(
@@ -1605,7 +1606,10 @@ fn is_narrower_local_spec<'tcx>(
     }
     let fixes_an_arg = target_args
         .types()
-        .any(|ty| !matches!(ty.kind(), mir_ty::TyKind::Param(_)));
+        .any(|ty| !matches!(ty.kind(), mir_ty::TyKind::Param(_)))
+        || target_args
+            .consts()
+            .any(|ct| !matches!(ct.kind(), mir_ty::ConstKind::Param(_)));
     if fixes_an_arg {
         return true;
     }

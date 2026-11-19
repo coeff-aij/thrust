@@ -1269,7 +1269,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     Err(err) => panic!("failed to evaluate constant {unevaluated:?}: {err:?}"),
                 }
             }
-            mir::Const::Ty(ty, _) => {
+            mir::Const::Ty(ty, ty_const) => {
+                // A const parameter (`N` of `fn f<const N: usize>`) is any value of its type, as
+                // the body is checked for every instance; at an instance it is a value below.
+                if let mir_ty::ConstKind::Param(_) = ty_const.kind() {
+                    return self.unknown_value_ty(*ty);
+                }
                 let scalar_int = const_
                     .try_to_scalar_int()
                     .expect("type-level const must be a primitive scalar");
