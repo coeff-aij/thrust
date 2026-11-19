@@ -1346,7 +1346,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             for ident in idents.iter().skip(first_named_param).flatten() {
                 let name = analyze::annot_fn::lifted_param_source_name(*ident);
                 let scope = terminator.source_info.scope;
-                for info in analyze::basic_block::bindings_in_scope(body, name, scope) {
+                for info in analyze::basic_block::bindings_in_scope(self.tcx, body, name, scope) {
                     if let mir::VarDebugInfoContents::Place(place) = info.value {
                         reads.push((place.local, location, name.name));
                     }
@@ -1968,7 +1968,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         name: rustc_span::symbol::Ident,
         scope: mir::SourceScope,
     ) -> Option<Local> {
-        analyze::basic_block::bindings_in_scope(&self.body, name, scope)
+        analyze::basic_block::bindings_in_scope(self.tcx, &self.body, name, scope)
             .into_iter()
             .find_map(|vdi| match &vdi.value {
                 mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
@@ -1981,11 +1981,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The argument local the identifier `name` names
     /// ([`analyze::basic_block::names_binding`]).
     fn function_param_local_of_name(&self, name: rustc_span::symbol::Ident) -> Option<Local> {
+        let idents = analyze::basic_block::binding_idents(self.tcx, &self.body);
         let mut found: Option<Local> = None;
         for vdi in &self.body.var_debug_info {
             tracing::debug!("comparing {name:?} with {vdi:?}...");
-            if !analyze::basic_block::names_binding(name, vdi) {
-                tracing::debug!("different name, skip.");
+            if !analyze::basic_block::names_binding(&idents, name, vdi) {
+                tracing::debug!("another name or another hygiene, skip.");
                 continue;
             }
             let mir::VarDebugInfoContents::Place(place) = vdi.value else {
@@ -2284,7 +2285,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             };
             let mut operands = args.to_vec();
             for name in names {
-                let bindings = analyze::basic_block::bindings_in_scope(&self.body, name, scope);
+                let bindings =
+                    analyze::basic_block::bindings_in_scope(self.tcx, &self.body, name, scope);
                 let places = bindings.into_iter().filter_map(|vdi| match &vdi.value {
                     mir::VarDebugInfoContents::Place(place) => Some(*place),
                     _ => None,
