@@ -2215,7 +2215,10 @@ impl<T> Type<T> {
     /// `fresh` gives a variable of each field of each variant, which the caller binds
     /// existentially, `matcher_pred` makes those of the value's variant its payload, and each
     /// field is resolved; the fields of the other variants are free, so their resolution says
-    /// nothing. A field that is a pointer to the enum itself is not resolved.
+    /// nothing. An enum met again inside its own payload (a recursive definition, directly or
+    /// through another enum such as `Option<Box<Self>>`), or nested past [`ENUM_NESTING_LIMIT`],
+    /// is not resolved: no finite formula follows it, so the mutable references in that tail
+    /// stay unresolved, which leaves an assumption out.
     pub fn resolution<V>(
         &self,
         term: chc::Term<V>,
@@ -2226,23 +2229,42 @@ impl<T> Type<T> {
         T: chc::Var,
         V: Clone,
     {
+        self.resolution_within(term, defs, fresh, &mut Vec::new())
+    }
+
+    fn resolution_within<V>(
+        &self,
+        term: chc::Term<V>,
+        defs: &dyn EnumDefProvider,
+        fresh: &mut impl FnMut(chc::Sort) -> chc::Term<V>,
+        enclosing: &mut Vec<EnumType<T>>,
+    ) -> chc::Body<V>
+    where
+        T: chc::Var,
+        V: Clone,
+    {
         if self.is_mut() {
             return term.clone().mut_final().equal_to(term.mut_current()).into();
         }
         if self.is_own() {
             let inner = &self.as_pointer().unwrap().elem.ty;
-            return inner.resolution(term.box_current(), defs, fresh);
+            return inner.resolution_within(term.box_current(), defs, fresh, enclosing);
         }
         if let Some(tuple) = self.as_tuple() {
             let mut body = chc::Body::default();
             for (i, elem) in tuple.elems.iter().enumerate() {
-                body.push_conj(elem.ty.resolution(term.clone().tuple_proj(i), defs, fresh));
+                let elem_term = term.clone().tuple_proj(i);
+                body.push_conj(elem.ty.resolution_within(elem_term, defs, fresh, enclosing));
             }
             return body;
         }
         let Some(ety) = self.as_enum() else {
             return chc::Body::default();
         };
+        if enclosing.contains(ety) || enclosing.len() >= ENUM_NESTING_LIMIT {
+            return chc::Body::default();
+        }
+        enclosing.push(ety.clone());
         let mut body = chc::Body::default();
         let mut pred_args = vec![];
         for field_ty in defs.enum_def(&ety.symbol).field_tys() {
@@ -2252,17 +2274,9 @@ impl<T> Type<T> {
 
             let field_term = fresh(field_type.to_sort());
             pred_args.push(field_term.clone());
-
-            if let Some(p) = field_type.as_pointer() {
-                if matches!(&p.elem.ty, Type::Enum(e) if e.symbol == ety.symbol) {
-                    // TODO: we need recursively defined drop_pred for the recursive ADTs!
-                    tracing::warn!("skipping recursive variant");
-                    continue;
-                }
-            }
-
-            body.push_conj(field_type.resolution(field_term, defs, fresh));
+            body.push_conj(field_type.resolution_within(field_term, defs, fresh, enclosing));
         }
+        enclosing.pop();
         pred_args.push(term);
         let matcher_pred = chc::MatcherPred::new(ety.symbol.clone(), ety.arg_sorts());
         body.push_conj(chc::Atom::new(matcher_pred.into(), pred_args));
