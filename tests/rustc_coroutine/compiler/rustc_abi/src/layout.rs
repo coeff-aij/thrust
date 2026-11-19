@@ -929,7 +929,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                             !(field_size - value_size - n.offset.bytes())
                                         },
                                         );
-                                        thrust_macros::assume!(|niche: Option<Niche>, end_offset_of_niche: _|
+                                        thrust_macros::proof_assert!(|niche: Option<Niche>, end_offset_of_niche: _|
                                             niche == None || exists(|i: <Niche as thrust_models::Model>::Ty| niche == Some(i) && thrust_macros::pre!(end_offset_of_niche(i))));
                                         niche.map_or(0, end_offset_of_niche)
                                     }
