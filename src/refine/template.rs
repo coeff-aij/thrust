@@ -304,21 +304,30 @@ impl<'tcx> TypeBuilder<'tcx> {
         );
 
         let name = refine::datatype_symbol(self.tcx, def_id);
+        let typing_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, def_id);
         let variants: IndexVec<_, _> = adt
             .variants()
             .iter()
             .zip(adt.discriminants(self.tcx))
             .map(|(variant, (_, discr))| {
                 let discr = discr_value(self.tcx, discr);
-                let field_tys = variant
+                let field_mir_tys: Vec<_> = variant
                     .fields
                     .iter()
-                    .map(|field| builder.build(self.tcx.type_of(field.did).instantiate_identity()))
+                    .map(|field| self.tcx.type_of(field.did).instantiate_identity())
+                    .collect();
+                let uninhabited = field_mir_tys
+                    .iter()
+                    .any(|ty| ty.is_privately_uninhabited(self.tcx, typing_env));
+                let field_tys = field_mir_tys
+                    .into_iter()
+                    .map(|ty| builder.build(ty))
                     .collect();
                 rty::EnumVariantDef {
                     name: refine::variant_symbol(&name, variant.name),
                     discr,
                     field_tys,
+                    uninhabited,
                 }
             })
             .collect();

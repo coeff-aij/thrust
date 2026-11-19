@@ -2095,7 +2095,12 @@ impl<'tcx> Analyzer<'tcx> {
             .iter()
             .enumerate()
             .filter_map(|(i, param)| {
-                rty::domain_guard(param, chc::Term::var(chc::TermVarIdx::from_usize(i)))
+                rty::domain_guard::<_, chc::Term>(
+                    param,
+                    chc::Term::var(chc::TermVarIdx::from_usize(i)),
+                    &self.enum_defs,
+                    rty::IntDomain::AssumedBounds,
+                )
             })
             .reduce(chc::Term::and);
 
