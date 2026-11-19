@@ -104,8 +104,8 @@ impl FormulaMarker {
 }
 
 /// The marker and the formula function a marker call carries, or `None` for any other call. A
-/// `for` loop ghost marker carries no formula function: it is a `ghost!` whose term is a formula
-/// of `std.rs` (`DefIdCache::for_loop_ghost_formula`) at the marker's generic arguments.
+/// `for` loop ghost marker takes no formula-function argument: it is a `ghost!` whose term is a
+/// formula of `std.rs` (`DefIdCache::for_loop_ghost_formula`) at the marker's generic arguments.
 pub fn formula_marker_call<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     local_decls: &mir::LocalDecls<'tcx>,

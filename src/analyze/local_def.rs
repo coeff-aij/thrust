@@ -2296,9 +2296,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// The formula function of a call whose formula reads live variables by name, with its
     /// generic arguments and the first parameter that names one: a formula marker (`ghost!`,
-    /// `proof_assert!`, `assume!`) or a written loop invariant (`invariant!`,
-    /// `partial_invariant!`); `None` for any other call, the history of a `for` loop included,
-    /// whose ghosts its desugaring keeps live.
+    /// `proof_assert!`, `assume!`, and the ghost markers of a `for` loop's `iter_old` and
+    /// `produced`) or a written loop invariant (`invariant!`, `partial_invariant!`); `None` for
+    /// any other call, the history marker of a `for` loop included, whose ghosts its desugaring
+    /// keeps live.
     fn formula_read_call(
         &self,
         func: &mir::Operand<'tcx>,
