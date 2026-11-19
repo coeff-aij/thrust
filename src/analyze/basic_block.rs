@@ -103,14 +103,22 @@ impl FormulaMarker {
     }
 }
 
-/// The marker and the formula function a marker call carries, or `None` for any other call.
+/// The marker and the formula function a marker call carries, or `None` for any other call. A
+/// `for` loop ghost marker takes no formula-function argument: it is a `ghost!` whose term is a
+/// formula of `std.rs` (`DefIdCache::for_loop_ghost_formula`) at the marker's generic arguments.
 pub fn formula_marker_call<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     local_decls: &mir::LocalDecls<'tcx>,
     func: &Operand<'tcx>,
     args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
 ) -> Option<(FormulaMarker, LocalDefId, mir_ty::GenericArgsRef<'tcx>)> {
-    let (def_id, _) = func.const_fn_def()?;
+    let (def_id, marker_args) = func.const_fn_def()?;
+    if let Some(formula_def_id) = ctx.def_ids().for_loop_ghost_formula(def_id) {
+        let formula_def_id = formula_def_id
+            .as_local()
+            .expect("`for` loop ghost formula must be local");
+        return Some((FormulaMarker::Ghost, formula_def_id, marker_args));
+    }
     let marker = if Some(def_id) == ctx.def_ids().ghost_marker() {
         FormulaMarker::Ghost
     } else if Some(def_id) == ctx.def_ids().choose_marker() {
@@ -669,11 +677,18 @@ enum ResolvedCallable<'tcx> {
     Unresolved,
 }
 
+/// The value of the condition of a `proof!` branch: `true`.
+fn proof_branch_value() -> rty::RefinedType<Var> {
+    rty::RefinedType::refined_with_term(rty::Type::bool(), chc::Term::bool(true))
+}
+
 /// A call typed by a rule of its own rather than by the callee's type.
 enum BuiltinCall {
     BoxNew,
     Forget,
     ManuallyDropNew,
+    /// The condition of a `proof!` branch, `true` in the analysis.
+    ProofBranch,
 }
 
 pub struct Analyzer<'tcx, 'ctx> {
@@ -2496,6 +2511,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.type_manually_drop_new(value, &expected_ret);
                 return expected_ret;
             }
+            Some(BuiltinCall::ProofBranch) => {
+                self.type_proof_branch(&expected_ret);
+                return expected_ret;
+            }
             None => {}
         }
 
@@ -2555,6 +2574,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             Some(BuiltinCall::Forget)
         } else if self.is_manually_drop_new(def_id) {
             Some(BuiltinCall::ManuallyDropNew)
+        } else if Some(def_id) == self.ctx.def_ids().proof_branch() {
+            Some(BuiltinCall::ProofBranch)
         } else {
             None
         }
@@ -2616,6 +2637,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn type_forget(&mut self, expected: &rty::RefinedType<Var>) {
         let unit: rty::RefinedType<Var> = rty::RefinedType::unrefined(rty::Type::unit());
         let clauses = self.env.relate_sub_refined_type(&unit, expected);
+        self.ctx.extend_clauses(clauses);
+    }
+
+    fn type_proof_branch(&mut self, expected: &rty::RefinedType<Var>) {
+        let clauses = self
+            .env
+            .relate_sub_refined_type(&proof_branch_value(), expected);
         self.ctx.extend_clauses(clauses);
     }
 
@@ -3771,6 +3799,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     term.source_info.span,
                 );
                 self.bind_local(destination, rty);
+                return;
+            }
+
+            if call_result_direct()
+                && destination != mir::RETURN_PLACE
+                && matches!(self.builtin_call(func), Some(BuiltinCall::ProofBranch))
+            {
+                // Bound as a callee's return type is in this mode, without a template.
+                self.bind_local(destination, proof_branch_value());
                 return;
             }
 

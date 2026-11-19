@@ -107,6 +107,12 @@ thrust_paths! {
     partial_invariant_marker_path = "partial_invariant_marker";
     for_loop_history_marker_path = "for_loop_history_marker";
     for_loop_history_path = "for_loop_history";
+    for_loop_iter_old_marker_path = "for_loop_iter_old_marker";
+    for_loop_iter_old_path = "for_loop_iter_old";
+    for_loop_produced_marker_path = "for_loop_produced_marker";
+    for_loop_produced_path = "for_loop_produced";
+    for_loop_produced_push_marker_path = "for_loop_produced_push_marker";
+    for_loop_produced_push_path = "for_loop_produced_push";
     assert_marker_path = "assert_marker";
     assume_marker_path = "assume_marker";
     block_requires_marker_path = "block_requires_marker";
