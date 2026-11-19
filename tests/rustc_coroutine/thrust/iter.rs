@@ -102,6 +102,27 @@ where
     #[thrust_macros::lemma]
     pub fn yields_entries_of<L: Idx + thrust_models::Model>(it: &Self, l: &crate::rustc_index::IndexSlice<L, B>) {}
 
+    // What `preservation_inv` needs of a closure whose captures do not change: the states its
+    // history invariant allows have its precondition, and a call ends in the state it started in.
+    #[thrust_macros::predicate]
+    pub(crate) fn closure_state_stable(func: F) -> bool {
+        forall(|f1: Closure<F>, e: <I::Item as thrust_models::Model>::Ty|
+            !(thrust_macros::hist_inv!(func, f1) && thrust_macros::pre!(func(e))) || thrust_macros::pre!(f1(e)))
+        && forall(|f1: Closure<F>, f2: Closure<F>, e: <I::Item as thrust_models::Model>::Ty, b: <B as thrust_models::Model>::Ty|
+            !(thrust_macros::hist_inv!(func, f1) && thrust_macros::post!(Mut::new(f1, f2)(e), b)) || f2 == f1)
+    }
+
+    // `preservation_inv` for a closure whose captures do not change (an `Fn`-kind closure): what
+    // the history invariant allows is a state with the same precondition, and every state a call
+    // ends in is the state it started in, so the precondition at the last item of a produced
+    // sequence carries to the closure's states.
+    #[thrust_macros::requires(forall(|s: Seq<<I::Item as thrust_models::Model>::Ty>, e: <I::Item as thrust_models::Model>::Ty, i: <I as thrust_models::Model>::Ty|
+        !I::produces(*iter, s.push(e), i) || thrust_macros::pre!((*func)(e))))]
+    #[thrust_macros::requires(Self::closure_state_stable(*func))]
+    #[thrust_macros::ensures(Self::preservation_inv(*iter, *func))]
+    #[thrust_macros::lemma]
+    pub fn preservation_inv_of_stable_closure(iter: &I, func: &F) {}
+
     // `produces_at` of the joined witnesses: the input items concatenated and the closure states
     // joined at their shared state.
     #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as thrust_models::Model>::Ty>| forall(|sbc: Seq<<I::Item as thrust_models::Model>::Ty>|
