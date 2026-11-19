@@ -1272,7 +1272,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         // chosen.
                         // Assumed (fallback, with fptprove, the step's own goal): restore
                         // `proof_assert!` once the solver answers it.
-                        thrust_macros::assume!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
+                        thrust_macros::proof_assert!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
                             forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
                         // The indexes `offsets[i]` and `offsets[j]`'s requires. They hold: `i` and `j` are
                         // positions of `iter_enumerated(fields)`, and `offsets` has as many entries as
