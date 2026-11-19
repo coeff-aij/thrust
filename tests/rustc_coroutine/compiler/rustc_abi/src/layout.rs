@@ -1294,7 +1294,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         // many entries as `fields` (the `requires`), and `FieldIdx::new(0)` is in range.
                         // The bound of `offsets[i]` is assumed (fallback, with fptprove: delete once the
                         // solver answers it); the others are checked.
-                        thrust_macros::assume!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
+                        thrust_macros::proof_assert!(|i: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(i) < offsets.len());
                         thrust_macros::proof_assert!(|j: FieldIdx, offsets: IndexVec<FieldIdx, Size>| <FieldIdx as crate::rustc_index::IntoSliceIdx<FieldIdx, [Size]>>::into_logic(j) < offsets.len());
                         thrust_macros::proof_assert!(|kind: StructKind| forall(|z: USize| z == 0usize ==> <FieldIdx as Idx>::can_new(z)));
                         let k0 = FieldIdx::new(0);
