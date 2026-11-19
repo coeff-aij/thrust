@@ -4130,6 +4130,68 @@ where
                 && thrust_macros::post!(thrust_models::model::Mut::new(f, g)(&x), false)))
 }
 
+// `Filter`'s `produces` with the inner iterator's items `s` and the index map `idx` given: the items
+// visited are those of `s` at the increasing positions `idx`, the closure answered `true` on the items
+// at those positions and `false` on the others.
+#[thrust_macros::predicate]
+fn _iter_spec_filter_produces_at<I, P>(
+    s0: core::iter::Filter<I, P>,
+    visited: Vec<I::Item>,
+    o: core::iter::Filter<I, P>,
+    s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+    idx: thrust_models::model::Array<thrust_models::model::Int, thrust_models::model::Int>,
+) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    P: FnMut(&I::Item) -> bool,
+{
+    I::produces(s0.0, s, o.0)
+        && thrust_models::forall(|i: thrust_models::model::Int|
+            !(0 <= i && i < visited.len())
+                || (0 <= idx[i] && idx[i] < s.len() && visited[i] == s[idx[i]]))
+        && thrust_models::forall(|i: thrust_models::model::Int, j: thrust_models::model::Int|
+            !(0 <= i && i < j && j < visited.len()) || idx[i] < idx[j])
+        && thrust_models::forall(|k: thrust_models::model::Int|
+            !(0 <= k && k < s.len())
+                || ((!thrust_models::exists(|j: thrust_models::model::Int|
+                        0 <= j && j < visited.len() && idx[j] == k)
+                    || thrust_macros::post!(thrust_models::model::Mut::new(s0.1, s0.1)(&s[k]), true))
+                    && (thrust_models::exists(|j: thrust_models::model::Int|
+                        0 <= j && j < visited.len() && idx[j] == k)
+                    || !thrust_macros::post!(thrust_models::model::Mut::new(s0.1, s0.1)(&s[k]), true))))
+}
+
+// The witnesses of two steps join: the inner items concatenated, and the index maps joined with the
+// second shifted past the first's inner items (Creusot's `Mapping`, here `Array::from_fn`).
+#[thrust_macros::lemma]
+#[thrust_macros::ensures(thrust_models::forall(|sab: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>|
+    thrust_models::forall(|sbc: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>|
+    thrust_models::forall(|fab: thrust_models::model::Array<thrust_models::model::Int, thrust_models::model::Int>|
+    thrust_models::forall(|fbc: thrust_models::model::Array<thrust_models::model::Int, thrust_models::model::Int>|
+        !(_iter_spec_filter_closure::<I, P>()
+            && thrust_macros::hist_inv!(a.1, b.1)
+            && thrust_macros::hist_inv!(b.1, c.1)
+            && _iter_spec_filter_produces_at::<I, P>(a, ab, b, sab, fab)
+            && _iter_spec_filter_produces_at::<I, P>(b, bc, c, sbc, fbc))
+        || (thrust_macros::hist_inv!(a.1, c.1)
+            && _iter_spec_filter_produces_at::<I, P>(a, ab.concat(bc), c, sab.concat(sbc),
+                thrust_models::model::Array::<thrust_models::model::Int, thrust_models::model::Int>::from_fn(
+                    |i: thrust_models::model::Int| if i < ab.len() { fab[i] } else { fbc[i - ab.len()] + sab.len() }))))))))]
+fn _iter_spec_filter_trans_at<I, P>(
+    a: thrust_models::Ghost<core::iter::Filter<I, P>>,
+    ab: thrust_models::Ghost<thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>>,
+    b: thrust_models::Ghost<core::iter::Filter<I, P>>,
+    bc: thrust_models::Ghost<thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>>,
+    c: thrust_models::Ghost<core::iter::Filter<I, P>>,
+)
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    P: FnMut(&I::Item) -> bool,
+{
+}
+
 #[thrust_macros::context]
 impl<I, P> IteratorSpec for core::iter::Filter<I, P>
 where
@@ -4147,22 +4209,8 @@ where
         !_iter_spec_filter_closure::<I, P>()
             || (thrust_macros::hist_inv!(self.1, o.1)
                 && thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
-                                          idx: thrust_models::model::Seq<thrust_models::model::Int>|
-                    I::produces(self.0, s, o.0)
-                        && idx.len() == visited.len()
-                        && thrust_models::forall(|i: thrust_models::model::Int|
-                            !(0 <= i && i < visited.len())
-                                || (0 <= idx[i] && idx[i] < s.len() && visited[i] == s[idx[i]]))
-                        && thrust_models::forall(|i: thrust_models::model::Int, j: thrust_models::model::Int|
-                            !(0 <= i && i < j && j < visited.len()) || idx[i] < idx[j])
-                        && thrust_models::forall(|k: thrust_models::model::Int|
-                            !(0 <= k && k < s.len())
-                                || ((!thrust_models::exists(|j: thrust_models::model::Int|
-                                        0 <= j && j < visited.len() && idx[j] == k)
-                                    || thrust_macros::post!(thrust_models::model::Mut::new(self.1, self.1)(&s[k]), true))
-                                    && (thrust_models::exists(|j: thrust_models::model::Int|
-                                        0 <= j && j < visited.len() && idx[j] == k)
-                                    || !thrust_macros::post!(thrust_models::model::Mut::new(self.1, self.1)(&s[k]), true))))))
+                                          idx: thrust_models::model::Array<thrust_models::model::Int, thrust_models::model::Int>|
+                    _iter_spec_filter_produces_at::<I, P>(self, visited, o, s, idx)))
     }
 
     #[thrust_macros::predicate]
@@ -4194,9 +4242,7 @@ where
 
     fn produces_refl(a: &Self) {}
 
-    // Trusted: PCSat (fptprove 8746111b4) gives no answer on this law in 200 s. Creusot proves it
-    // with an empty body.
-    #[thrust::trusted]
+    // By `_iter_spec_filter_trans_at`: the witnesses of the two steps join.
     fn produces_trans(
         a: &Self,
         ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
@@ -4204,6 +4250,14 @@ where
         bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
         c: &Self,
     ) {
+        let ga = thrust_macros::ghost!(|a: &Self| -> Self { *a });
+        let gb = thrust_macros::ghost!(|b: &Self| -> Self { *b });
+        let gc = thrust_macros::ghost!(|c: &Self| -> Self { *c });
+        let gab = thrust_macros::ghost!(|ab: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>| -> thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty> { ab });
+        let gbc = thrust_macros::ghost!(|bc: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>| -> thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty> { bc });
+        thrust_macros::proof!(_iter_spec_filter_trans_at::<I, P>(ga, gab, gb, gbc, gc));
+        // Keeps the parameters live at the snapshots above.
+        let _live = (a, &ab, b, &bc, c);
     }
 }
 
