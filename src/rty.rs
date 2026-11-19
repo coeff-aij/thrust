@@ -392,11 +392,14 @@ impl FunctionType {
     /// `FnMut` closure is `exists s. postcondition_mut(self, args, s, res) && resolve(s)` (the
     /// `fn_mut_once` law). The dropped state is resolved ([`Type::resolution`]), the payloads of
     /// its enums through variables `parts` makes, bound with the final state.
+    /// `final_state_relation`, if any, holds of the final state too (Creusot's
+    /// `postcondition_mut_hist_inv`).
     pub fn once_postcondition_formula<W>(
         &self,
         args: &[chc::Term<W>],
         result: chc::Term<W>,
         final_state: Option<(chc::UserQuantifiedVarId, chc::Sort)>,
+        final_state_relation: Option<chc::Formula<W>>,
         parts: &mut PartVars<'_>,
     ) -> chc::Formula<W>
     where
@@ -405,6 +408,10 @@ impl FunctionType {
         let post = self.postcondition_formula(args, result);
         let Some((final_, sort)) = final_state else {
             return post;
+        };
+        let post = match final_state_relation {
+            Some(relation) => post.and(relation),
+            None => post,
         };
         let state_ty = &self.params[FunctionParamIdx::from_usize(0)]
             .ty
