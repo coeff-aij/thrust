@@ -1203,20 +1203,33 @@ mod thrust_models {
     // The ghost history `thrust_macros::context` gives a `for` loop whose body starts with no
     // invariant (`thrust-macros/src/for_loop.rs`), as Creusot's `desugar_for` gives every loop:
     // `iter_old`, the iterator before the loop, and `produced`, the items `next` has returned so far.
-    // The desugaring cannot write the iterator's type, so these are generic in it and Thrust takes the
-    // type from the call.
+    // The desugaring cannot write the iterator's type, so a `ghost!` cannot make them: each is made
+    // by a marker generic in it, whose arguments give Thrust the type, and which Thrust types as a
+    // `ghost!` whose term is the formula function after it, at the marker's generic arguments. The
+    // formula names the loop's variables `__thrust_for_iter`, `__thrust_for_produced` and
+    // `__thrust_for_item` in the scope of the call, as `for_loop_history` does.
 
-    #[thrust::trusted]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result == *iter)]
+    #[doc(hidden)]
+    #[thrust::def::for_loop_iter_old_marker]
+    #[thrust::ignored]
     #[inline(never)]
-    pub fn __for_loop_iter_old<I: Model>(iter: &I) -> Ghost<I> {
+    pub fn __for_loop_iter_old<I: Model>(_iter: &I) -> Ghost<I> {
         Ghost(std::marker::PhantomData)
     }
 
-    #[thrust::trusted]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result == model::Seq::empty())]
+    #[allow(unused_variables)]
+    #[thrust::formula_fn]
+    #[thrust::def::for_loop_iter_old]
+    pub fn for_loop_iter_old<I: Model>(
+        __thrust_ghost_value: <I as Model>::Ty,
+        __thrust_for_iter: <I as Model>::Ty,
+    ) -> bool {
+        log_eq_args(&__thrust_ghost_value, &__thrust_for_iter).log_eq()
+    }
+
+    #[doc(hidden)]
+    #[thrust::def::for_loop_produced_marker]
+    #[thrust::ignored]
     #[inline(never)]
     pub fn __for_loop_produced<I>(
         _iter: &I,
@@ -1228,15 +1241,39 @@ mod thrust_models {
         Ghost(std::marker::PhantomData)
     }
 
-    #[thrust::trusted]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result == produced.push(*item))]
+    #[allow(unused_variables)]
+    #[thrust::formula_fn]
+    #[thrust::def::for_loop_produced]
+    pub fn for_loop_produced<I>(
+        __thrust_ghost_value: <model::Seq<<I::Item as Model>::Ty> as Model>::Ty,
+    ) -> bool
+    where
+        I: std::iter::Iterator,
+        I::Item: Model,
+    {
+        log_eq_args(&__thrust_ghost_value, &model::Seq::empty()).log_eq()
+    }
+
+    #[doc(hidden)]
+    #[thrust::def::for_loop_produced_push_marker]
+    #[thrust::ignored]
     #[inline(never)]
     pub fn __for_loop_produced_push<T: Model>(
-        produced: Ghost<model::Seq<<T as Model>::Ty>>,
-        item: &T,
+        _produced: Ghost<model::Seq<<T as Model>::Ty>>,
+        _item: &T,
     ) -> Ghost<model::Seq<<T as Model>::Ty>> {
         Ghost(std::marker::PhantomData)
+    }
+
+    #[allow(unused_variables)]
+    #[thrust::formula_fn]
+    #[thrust::def::for_loop_produced_push]
+    pub fn for_loop_produced_push<T: Model>(
+        __thrust_ghost_value: <model::Seq<<T as Model>::Ty> as Model>::Ty,
+        __thrust_for_produced: <Ghost<model::Seq<<T as Model>::Ty>> as Model>::Ty,
+        __thrust_for_item: <T as Model>::Ty,
+    ) -> bool {
+        log_eq_args(&__thrust_ghost_value, &__thrust_for_produced.push(__thrust_for_item)).log_eq()
     }
 
     /// At the head of the loop, conjoins `for_loop_history` over the loop's ghosts, which are
@@ -1273,11 +1310,9 @@ mod thrust_models {
     }
 
     /// Taken in the analysis and not at run time: the branch in which `proof!` calls a lemma.
+    /// Thrust types a call as `true`, as it types `Box::new` by a rule of its own.
     #[doc(hidden)]
     #[thrust::def::proof_branch]
-    #[thrust::trusted]
-    #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(result == true)]
     #[inline(never)]
     pub fn __proof_branch() -> bool {
         false
