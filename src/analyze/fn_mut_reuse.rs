@@ -47,6 +47,49 @@ pub fn fn_mut_bounded_params(tcx: TyCtxt<'_>, def_id: DefId) -> Vec<DefId> {
         .collect()
 }
 
+/// Whether the body of the local fn `def_id` calls a def with an `FnMut`-bounded type parameter at
+/// type arguments that hold an `FnMut` closure of its own, one whose type depends on its type
+/// parameters. The closure's contract is built where the closure is, so the callee's instance and
+/// the closure meet only in an analysis of `def_id` at an instance.
+fn passes_own_closure_to_fn_mut_def<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> bool {
+    use rustc_middle::ty::TypeVisitableExt as _;
+
+    let Some(local_def_id) = def_id.as_local() else {
+        return false;
+    };
+    if tcx.is_closure_like(def_id) || tcx.hir_maybe_body_owned_by(local_def_id).is_none() {
+        return false;
+    }
+    let typeck = tcx.typeck(local_def_id);
+    let holds_own_closure = |(callee, args): (DefId, mir_ty::GenericArgsRef<'tcx>)| {
+        !fn_mut_bounded_params(tcx, callee).is_empty()
+            && args
+                .types()
+                .any(|ty| ty.has_param() && has_fn_mut_closure(tcx.mk_args(&[ty.into()])))
+    };
+    let method_call = typeck
+        .type_dependent_defs()
+        .items()
+        .filter_map(|(local_id, res)| {
+            let (_, callee) = res.as_ref().ok()?;
+            let hir_id = rustc_hir::HirId {
+                owner: typeck.hir_owner,
+                local_id,
+            };
+            Some((*callee, typeck.node_args(hir_id)))
+        })
+        .any(holds_own_closure);
+    method_call
+        || typeck
+            .node_types()
+            .items()
+            .filter_map(|(_, ty)| match ty.kind() {
+                mir_ty::TyKind::FnDef(callee, args) => Some((*callee, *args)),
+                _ => None,
+            })
+            .any(holds_own_closure)
+}
+
 /// Whether a type argument contains a closure of kind `FnMut`.
 pub(super) fn has_fn_mut_closure(generic_args: mir_ty::GenericArgsRef<'_>) -> bool {
     generic_args.types().any(|ty| {
@@ -181,6 +224,7 @@ impl<'tcx> Analyzer<'tcx> {
     /// it has none; a call uses its contract.
     pub fn is_checked_per_instance(&self, def_id: DefId) -> bool {
         matches!(self.defs.get(&def_id), Some(DefTy::Generic(_)))
-            && !fn_mut_bounded_params(self.tcx, def_id).is_empty()
+            && (!fn_mut_bounded_params(self.tcx, def_id).is_empty()
+                || passes_own_closure_to_fn_mut_def(self.tcx, def_id))
     }
 }

@@ -2,10 +2,9 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// `S::apply` is `FnMut`-bounded and verified at each concrete closure (D34). `conc`'s closure is
-// such an instance; `gen` reaches `apply` at its own type parameter `G`, an instance analyzed
-// nowhere but through `apply`'s analysis over `F`, which is therefore emitted: there the assertion
-// fails, as an arbitrary closure may return 0 at 1.
+// `S::apply` and `gen` are `FnMut`-bounded and verified per instance (D34). `gen` reaches `apply`
+// at its own type parameter `G`; `conc` instantiates `gen` with a closure that returns 0 at 1,
+// where `apply`'s assertion fails.
 
 #[thrust_macros::context]
 trait Ap {
@@ -42,6 +41,7 @@ fn conc() {
         n += 1;
         x + 1
     });
+    gen(&S, |x| x - 1);
 }
 
 fn main() {}
