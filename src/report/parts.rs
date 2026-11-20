@@ -200,7 +200,10 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], kind: Parts) {
     };
     match kind {
         Parts::Classes => {}
-        Parts::GoalCones => note.push_str(", one per goal with the clauses it depends on"),
+        Parts::GoalCones => note.push_str(
+            ", one per goal with the clauses it depends on, and a class of clauses that share an \
+             unknown whole where one of its clauses is not definite",
+        ),
         Parts::GoalsApart => note.push_str(
             ", each goal of a `#[thrust::split_goals]` function apart with the clauses it depends \
              on",
@@ -238,7 +241,8 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], kind: Parts) {
         tcx.dcx().note(format!(
             "thrust: a function can be in several parts: {}. Each goal is a part with every clause \
              deriving an unknown it depends on, so goals that depend on one unknown share its \
-             clauses",
+             clauses, and a class of clauses that share an unknown is one part where one of its \
+             clauses is not definite",
             split.join(", ")
         ));
         return;

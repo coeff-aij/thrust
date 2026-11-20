@@ -653,7 +653,14 @@ fn a_class_that_is_not_definite_is_one_part_beside_the_cones() {
         "{stderr}"
     );
     assert!(!stderr.contains("the parts are the classes"), "{stderr}");
-    assert!(stderr.contains("5 parts solved on their own"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "5 parts solved on their own, 0 of them from earlier runs, one per goal with the \
+             clauses it depends on, and a class of clauses that share an unknown whole where one \
+             of its clauses is not definite"
+        ),
+        "{stderr}"
+    );
     assert!(
         stderr.contains("`definite`: checked, in parts 1, 2 ("),
         "{stderr}"
