@@ -53,6 +53,9 @@ struct IndexedPlaceFinder<'a, 'tcx> {
     body: &'a Body<'tcx>,
     tcx: TyCtxt<'tcx>,
     index: Local,
+    /// The slice the bounds check compares with, when known ([`checked_slice`]): a place that
+    /// indexes another sequence is not the access the check guards.
+    checked_slice: Option<mir::Place<'tcx>>,
     found: Option<mir::Place<'tcx>>,
     use_locations: Vec<mir::Location>,
     mutating_locations: Vec<mir::Location>,
@@ -90,6 +93,9 @@ impl<'tcx> mir::visit::Visitor<'tcx> for IndexedPlaceFinder<'_, 'tcx> {
                 base.ty(&self.body.local_decls, self.tcx).ty.kind(),
                 mir_ty::TyKind::Slice(_) | mir_ty::TyKind::Array(..)
             ) {
+                return;
+            }
+            if self.checked_slice.is_some_and(|slice| slice != base) {
                 return;
             }
             self.found = Some(indexed);
@@ -383,7 +389,7 @@ fn access_region<'tcx>(
     bounds_check: &BoundsCheck<'tcx>,
 ) -> Vec<BasicBlock> {
     let checked = checked_slice(tcx, body, bounds_check);
-    let rechecks_index = |block: BasicBlock| {
+    let ends_region = |block: BasicBlock| {
         let Some(check) = find_bounds_check(body, block) else {
             return false;
         };
@@ -406,7 +412,7 @@ fn access_region<'tcx>(
             continue;
         }
         region.push(block);
-        if rechecks_index(block) {
+        if ends_region(block) {
             continue;
         }
         stack.extend(body.basic_blocks[block].terminator().successors());
@@ -427,6 +433,7 @@ fn find_slice_access<'tcx>(
         body,
         tcx,
         index: bounds_check.index_local,
+        checked_slice: checked_slice(tcx, body, bounds_check),
         found: None,
         use_locations: Vec::new(),
         mutating_locations: Vec::new(),
