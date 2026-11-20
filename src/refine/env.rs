@@ -1610,12 +1610,21 @@ enum Path {
     Deref(Box<Path>),
     TupleProj(Box<Path>, usize),
     Downcast(Box<Path>, VariantIdx, FieldIdx),
-    /// The element a slice pattern takes out of a sequence: its offset, and whether it counts
-    /// from the end.
-    SeqElem(Box<Path>, u64, bool),
-    /// The subslice a slice pattern takes out of a sequence: its bounds as in
-    /// `PlaceElem::Subslice`.
-    SeqSubslice(Box<Path>, u64, u64, bool),
+    /// The element a slice pattern takes out of a sequence at `offset`, counted from the end
+    /// when `from_end`.
+    SeqElem {
+        seq: Box<Path>,
+        offset: u64,
+        from_end: bool,
+    },
+    /// The subslice a slice pattern takes out of a sequence, from `from` to `to`, `to` counted
+    /// from the end when `from_end` (as in `PlaceElem::Subslice`).
+    SeqSubslice {
+        seq: Box<Path>,
+        from: u64,
+        to: u64,
+        from_end: bool,
+    },
 }
 
 impl<'tcx> From<Place<'tcx>> for Path {
@@ -1634,10 +1643,17 @@ impl<'tcx> From<Place<'tcx>> for Path {
                 }
                 Some(PlaceElem::ConstantIndex {
                     offset, from_end, ..
-                }) => Path::SeqElem(Box::new(path), offset, from_end),
-                Some(PlaceElem::Subslice { from, to, from_end }) => {
-                    Path::SeqSubslice(Box::new(path), from, to, from_end)
-                }
+                }) => Path::SeqElem {
+                    seq: Box::new(path),
+                    offset,
+                    from_end,
+                },
+                Some(PlaceElem::Subslice { from, to, from_end }) => Path::SeqSubslice {
+                    seq: Box::new(path),
+                    from,
+                    to,
+                    from_end,
+                },
                 None => break,
                 _ => unimplemented!(),
             };
@@ -1659,12 +1675,17 @@ where
                 self.path_type(path)
                     .downcast(*variant_idx, *field_idx, &self.enum_defs)
             }
-            Path::SeqElem(path, offset, from_end) => {
-                self.path_type(path).seq_elem(*offset, *from_end)
-            }
-            Path::SeqSubslice(path, from, to, from_end) => {
-                self.path_type(path).seq_subslice(*from, *to, *from_end)
-            }
+            Path::SeqElem {
+                seq,
+                offset,
+                from_end,
+            } => self.path_type(seq).seq_elem(*offset, *from_end),
+            Path::SeqSubslice {
+                seq,
+                from,
+                to,
+                from_end,
+            } => self.path_type(seq).seq_subslice(*from, *to, *from_end),
         }
     }
 
