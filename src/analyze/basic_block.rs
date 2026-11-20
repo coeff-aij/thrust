@@ -4257,6 +4257,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let places = self.enum_places_to_expand();
         self.env.set_enum_places_to_expand(places);
 
+        let mut expected = expected.clone();
+        if self
+            .block_contracts
+            .iter()
+            .any(|contract| contract.entry == self.basic_block)
+        {
+            // The code under a block contract is checked from its `requires` and the facts of the
+            // types of the variables it takes, as a function's body is from its precondition and
+            // the facts of its parameters' types. They hold of every value of the types, so they
+            // are assumed here and not shown where the code is entered.
+            let type_facts = expected.local_type_facts(&self.ctx.enum_defs);
+            expected.conjoin_precondition(type_facts);
+        }
         let outer_fn_param_vars = self.bind_locals(&expected.as_ref().params);
         self.alloc_prophecies();
         self.analyze_statements();

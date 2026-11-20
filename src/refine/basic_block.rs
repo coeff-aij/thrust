@@ -7,6 +7,7 @@ use rustc_index::IndexVec;
 use rustc_middle::mir::Local;
 use rustc_middle::ty as mir_ty;
 
+use crate::chc;
 use crate::rty;
 
 #[derive(Debug, Clone)]
@@ -199,6 +200,25 @@ impl BasicBlockType {
             .unwrap()
             .refinement
             .push_conj(mapped);
+    }
+
+    /// The facts of the declared types of the locals the block takes
+    /// ([`rty::RefinedType::formula_with`]), which hold of every value of those types.
+    pub fn local_type_facts(
+        &self,
+        enum_defs: &dyn rty::EnumDefProvider,
+    ) -> rty::Refinement<rty::FunctionParamIdx> {
+        let mut facts = rty::Refinement::top();
+        for (idx, param) in self.ty.params.iter_enumerated() {
+            if self.local_of_param(idx).is_none() {
+                continue;
+            }
+            let param_facts = rty::RefinedType::unrefined(param.ty.clone())
+                .formula_with(Some(enum_defs))
+                .subst_value_var(|| chc::Term::var(rty::RefinedTypeVar::Free(idx)));
+            facts.push_conj(param_facts);
+        }
+        facts
     }
 
     /// Inner function type of BasicBlockType contains extra parameters that carry original
