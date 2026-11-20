@@ -1648,43 +1648,31 @@ impl<V: Clone> DomainGuard<V> for chc::Formula<V> {
     }
 }
 
-/// The integer facts a [`domain_guard`] states.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum IntDomain {
-    /// The bounds every value of the type is assumed to have ([`int_range_bounds`]): `0 <=` of an
-    /// unsigned integer in every mode, and the range of [`int_range`] when it is in use. For the
-    /// arguments a logic function's definition is checked at.
-    AssumedBounds,
-    /// The range of [`int_range`] only, when it is in use: without `THRUST_INT_RANGE`, a variable
-    /// an annotation's quantifier binds ranges over every integer (README, `THRUST_INT_RANGE`).
-    Range,
-}
-
-/// What a [`domain_guard`] traversal is at: the definitions of enums, the integer facts it states
-/// and the enum types whose payloads enclose the position.
+/// What a [`domain_guard`] traversal is at: the definitions of enums and the enum types whose
+/// payloads enclose the position.
 struct DomainCx<'a> {
     defs: &'a dyn EnumDefProvider,
-    ints: IntDomain,
     enclosing: Vec<EnumType<Closed>>,
 }
 
 /// The quantifier-free part of the facts of a value of `ty`, as a Boolean term about `value`:
-/// the integer facts `ints` names, through tuples, pointers and the payloads of enums, and of an
-/// enum the exclusion of each variant no Rust value is ([`EnumVariantDef::uninhabited`]), in every
-/// mode; `None` when there are none. A variant's payload is read by its selectors under its
-/// discriminant, `discr(v) = d => guard(sel(v))`, and a variant no Rust value is is
-/// `discr(v) != d`. An enum met again inside its own payload, or nested past
-/// [`ENUM_NESTING_LIMIT`], adds nothing, as [`enum_payload_facts`] does.
+/// the bounds every integer is assumed to have ([`int_range_bounds`]: `0 <=` of an unsigned one in
+/// every mode, its range when [`int_range`] is in use), through tuples, pointers and the payloads
+/// of enums, and of an enum the exclusion of each variant no Rust value is
+/// ([`EnumVariantDef::uninhabited`]), in every mode; `None` when there are none. A variant's
+/// payload is read by its selectors under its discriminant, `discr(v) = d => guard(sel(v))`, and a
+/// variant no Rust value is is `discr(v) != d`. An enum met again inside its own payload, or
+/// nested past [`ENUM_NESTING_LIMIT`], adds nothing, as [`enum_payload_facts`] does.
 ///
 /// It is the domain of the variable an annotation's `forall` or `exists` binds, as a quantifier
-/// in Verus or Creusot ranges over the values of its type ([`IntDomain::Range`]), and of the
-/// arguments a logic function's definition is checked at (`Analyzer::checked_logic_fn_body`,
-/// [`IntDomain::AssumedBounds`]).
+/// in Verus or Creusot ranges over the values of its type, and of the arguments a logic function's
+/// definition is checked at (`Analyzer::checked_logic_fn_body`). Every fact holds of every Rust
+/// value of `ty`, so a formula that is assumed (`assume!`, a trusted contract) assumes nothing
+/// false of its variable.
 pub fn domain_guard<V, G>(
     ty: &Type<Closed>,
     value: chc::Term<V>,
     defs: &dyn EnumDefProvider,
-    ints: IntDomain,
 ) -> Option<G>
 where
     V: Clone,
@@ -1692,7 +1680,6 @@ where
 {
     let mut cx = DomainCx {
         defs,
-        ints,
         enclosing: Vec::new(),
     };
     domain_guard_within(ty, value, &mut cx)
@@ -1708,13 +1695,7 @@ where
     G: DomainGuard<V>,
 {
     match ty {
-        Type::Int(width) | Type::UInt(width) => {
-            let ranged = int_range(matches!(ty, Type::Int(_)), *width).is_some();
-            if cx.ints == IntDomain::Range && !ranged {
-                return None;
-            }
-            G::bounds(int_range_bounds(ty, value)?)
-        }
+        Type::Int(_) | Type::UInt(_) => G::bounds(int_range_bounds(ty, value)?),
         Type::Tuple(tuple) => tuple
             .elems
             .iter()

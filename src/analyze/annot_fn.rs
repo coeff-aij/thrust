@@ -2341,7 +2341,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 &param_rty.ty,
                 term.clone(),
                 &self.analyzer.enum_defs,
-                rty::IntDomain::Range,
             ) {
                 range = Some(match range {
                     Some(range) => range.and(fact),

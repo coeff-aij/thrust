@@ -2099,7 +2099,6 @@ impl<'tcx> Analyzer<'tcx> {
                     param,
                     chc::Term::var(chc::TermVarIdx::from_usize(i)),
                     &self.enum_defs,
-                    rty::IntDomain::AssumedBounds,
                 )
             })
             .reduce(chc::Term::and);
