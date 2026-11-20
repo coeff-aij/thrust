@@ -1732,11 +1732,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if !is_int(op_ty) || !is_int(ty) {
                     unimplemented!("int cast: {:?} -> {:?}", op_ty, ty);
                 }
+                // A `char` is its code point. The only cast to it is from `u8`, whose values are
+                // scalar values; the result keeps the operand's term, of which that is assumed, as
+                // of every `char` (`rty::Type::Char`): without `THRUST_INT_RANGE` the operand's
+                // own upper bound is not.
+                if ty.is_char() {
+                    let mut builder = PlaceTypeBuilder::default();
+                    let (_, op_term) = builder.subsume(self.operand_type(operand));
+                    builder.push_formula(rty::char_code_point_formula(op_term.clone()));
+                    return builder.build(target_ty, op_term);
+                }
                 // The result has the target's type, so that the operations on it are typed and
                 // checked at the target's width: a widening keeps the operand's term, which is in
-                // the target's range, and a narrowing wraps it into that range. A `char` is its
-                // code point, of the width of `u32`; the only cast to it, from `u8`, is a widening
-                // into the scalar values, which its type assumes.
+                // the target's range, and a narrowing wraps it into that range.
                 let mut op_pty = self.operand_type(operand);
                 if int_ty_includes(self.tcx, ty, op_ty) {
                     op_pty.ty = target_ty;
