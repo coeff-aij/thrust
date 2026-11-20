@@ -462,8 +462,8 @@ impl PartVars<'_> {
 /// enum's type arguments unknown predicates, which the body assumes of the payloads it is given.
 ///
 /// The variant of an enum is stated as `bind_enum` assumes it, for the variant the value is:
-/// `discr(v) = d => exists f. v = C(f) && refinements(f)` of each variant whose fields have
-/// refinements, `f` variables `parts` makes. An enum whose arguments have no refinement has none
+/// `is_C(v) => refinements(sel_C(v))` of each variant whose fields have refinements, the tester
+/// guarding the selectors. An enum whose arguments have no refinement has none
 /// in its payload. One met again in its own payload (`enclosing`), or nested past
 /// [`ENUM_NESTING_LIMIT`], is one no finite formula follows through its payloads: the
 /// refinements of each of its type arguments are stated of every value of the argument's type
@@ -992,6 +992,11 @@ pub struct EnumVariantDef {
     pub name: chc::DatatypeSymbol,
     pub discr: BigInt,
     pub field_tys: Vec<RefinedType<Closed>>,
+    /// Whether no value is of the variant, which a `match` may then leave out: a field's type has
+    /// no value at every instance of the enum (`Infallible`, `!`, an enum without variants), as
+    /// rustc decides it. A model may give such a type a value (`Infallible` is `()`), so this is
+    /// read from the Rust type.
+    pub uninhabited: bool,
 }
 
 /// A definition of an enum datatype.
@@ -1028,6 +1033,8 @@ pub struct EnumVariant {
     pub ctor: chc::DatatypeSymbol,
     pub discr: BigInt,
     pub field_tys: Vec<Type<Closed>>,
+    /// [`EnumVariantDef::uninhabited`].
+    pub uninhabited: bool,
 }
 
 impl EnumType<Closed> {
@@ -1038,6 +1045,7 @@ impl EnumType<Closed> {
             .map(|variant| EnumVariant {
                 ctor: variant.name,
                 discr: variant.discr,
+                uninhabited: variant.uninhabited,
                 field_tys: variant
                     .field_tys
                     .into_iter()
@@ -1421,24 +1429,6 @@ where
     Some(bounds.lower.into_iter().chain(bounds.upper).collect())
 }
 
-/// The range of a value `x` of the integer type `ty` as a formula, when [`int_range`] is in use for
-/// `ty`; `None` otherwise.
-pub fn int_range_formula<T, V>(ty: &Type<T>, x: chc::Term<V>) -> Option<chc::Formula<V>>
-where
-    V: Clone,
-{
-    let (signed, width) = match ty {
-        Type::Int(width) => (true, *width),
-        Type::UInt(width) => (false, *width),
-        _ => return None,
-    };
-    int_range(signed, width)?;
-    int_range_atoms(ty, x)?
-        .into_iter()
-        .map(chc::Formula::Atom)
-        .reduce(chc::Formula::and)
-}
-
 /// The facts [`RefinedType::formula_with`] states of every value of `ty`, the ranges of the integers
 /// it holds through tuples, pointers, sequences and enum payloads, when [`int_range_mode`] is on;
 /// `None` when it is off.
@@ -1597,47 +1587,258 @@ where
     builder.with_value_var(ty).add_body(value).head(checks)
 }
 
-/// The quantifier-free part of the facts of a value of `ty`, the ranges of the integers it holds
-/// through tuples and pointers ([`int_range_bounds`]), as a Boolean term about `value`; `None`
-/// when there are none. A logic function's definition is restricted to arguments that have these
-/// (`Analyzer::checked_logic_fn_body`).
-pub fn domain_guard<V>(ty: &Type<Closed>, value: chc::Term<V>) -> Option<chc::Term<V>>
+/// A Boolean a [`domain_guard`] is built as: a term, for the domain a logic function's definition
+/// tests, or a formula, for the range of a quantified variable.
+pub trait DomainGuard<V>: Sized {
+    /// The conjunction of the bounds; `None` when there are none.
+    fn bounds(bounds: IntRangeBounds<V>) -> Option<Self>;
+    /// `discr != d`.
+    fn other_variant(discr: chc::Term<V>, d: BigInt) -> Self;
+    fn and(self, other: Self) -> Self;
+    fn or(self, other: Self) -> Self;
+    /// `forall k. 0 <= k < len(seq) => elem`, `elem` the guard of `seq[k]`, `k` the variable
+    /// `var`; `None` where a quantifier cannot be stated.
+    fn every_elem(var: chc::UserQuantifiedVarId, seq: chc::Term<V>, elem: Self) -> Option<Self>;
+}
+
+impl<V: Clone> DomainGuard<V> for chc::Term<V> {
+    fn bounds(bounds: IntRangeBounds<V>) -> Option<Self> {
+        // `lower` is `x >= min` and `upper` is `x < end`.
+        let lower = bounds.lower.and_then(|atom| {
+            let [x, min]: [chc::Term<V>; 2] = atom.args.try_into().ok()?;
+            Some(x.ge(min))
+        });
+        let upper = bounds.upper.and_then(|atom| {
+            let [x, end]: [chc::Term<V>; 2] = atom.args.try_into().ok()?;
+            Some(x.lt(end))
+        });
+        conj_guard(lower, upper)
+    }
+
+    fn other_variant(discr: chc::Term<V>, d: BigInt) -> Self {
+        discr.ne(chc::Term::int(d))
+    }
+
+    fn and(self, other: Self) -> Self {
+        chc::Term::and(self, other)
+    }
+
+    fn or(self, other: Self) -> Self {
+        chc::Term::or(self, other)
+    }
+
+    /// A term has no quantifier: a logic function's domain stays quantifier-free.
+    fn every_elem(_var: chc::UserQuantifiedVarId, _seq: chc::Term<V>, _elem: Self) -> Option<Self> {
+        None
+    }
+}
+
+impl<V: Clone> DomainGuard<V> for chc::Formula<V> {
+    fn bounds(bounds: IntRangeBounds<V>) -> Option<Self> {
+        bounds
+            .lower
+            .into_iter()
+            .chain(bounds.upper)
+            .map(chc::Formula::Atom)
+            .reduce(chc::Formula::and)
+    }
+
+    fn other_variant(discr: chc::Term<V>, d: BigInt) -> Self {
+        chc::Formula::Atom(discr.not_equal_to(chc::Term::int(d)))
+    }
+
+    fn and(self, other: Self) -> Self {
+        chc::Formula::and(self, other)
+    }
+
+    fn or(self, other: Self) -> Self {
+        chc::Formula::or(self, other)
+    }
+
+    fn every_elem(var: chc::UserQuantifiedVarId, seq: chc::Term<V>, elem: Self) -> Option<Self> {
+        let k = chc::Term::UserQuantifiedVar(chc::Sort::int(), var);
+        let in_bounds = chc::Formula::Atom(chc::Atom::new(
+            chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+            vec![k.clone(), chc::Term::int(0)],
+        ))
+        .and(chc::Formula::Atom(chc::Atom::new(
+            chc::KnownPred::LESS_THAN.into(),
+            vec![k, seq.seq_len()],
+        )));
+        Some(chc::Formula::forall(
+            vec![(var, chc::Sort::int())],
+            in_bounds.implies(elem),
+        ))
+    }
+}
+
+/// The integer facts a [`domain_guard`] states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntDomain {
+    /// The bounds every value of the type is assumed to have ([`int_range_bounds`]): `0 <=` of an
+    /// unsigned integer in every mode, and the range of [`int_range`] when it is in use. For the
+    /// arguments a logic function's definition is checked at.
+    AssumedBounds,
+    /// The range of [`int_range`] only, when it is in use: without `THRUST_INT_RANGE`, a variable
+    /// an annotation's quantifier binds ranges over every integer (README, `THRUST_INT_RANGE`).
+    Range,
+}
+
+/// What a [`domain_guard`] traversal is at: the definitions of enums, the integer facts it states,
+/// the enum types whose payloads enclose the position and the number of sequences that do.
+struct DomainCx<'a> {
+    defs: &'a dyn EnumDefProvider,
+    ints: IntDomain,
+    enclosing: Vec<EnumType<Closed>>,
+    seq_depth: usize,
+}
+
+/// The index variable of the guard of a sequence's elements at nesting `depth`
+/// ([`DomainGuard::every_elem`]). The identifiers are reserved, as [`seq_elem_var`]'s is.
+fn seq_guard_var(depth: usize) -> chc::UserQuantifiedVarId {
+    assert!(depth < 0x1_0000, "sequence guard nested too deep");
+    chc::UserQuantifiedVarId::from_usize(0xFFFD_0000 + depth)
+}
+
+/// The facts of a value of `ty` as a Boolean about `value`: the integer facts `ints` names, through
+/// tuples, pointers, the payloads of enums and, in a formula, the elements of sequences
+/// ([`DomainGuard::every_elem`], stated only when the elements have a guard), and of an enum the
+/// exclusion of each variant no Rust value is ([`EnumVariantDef::uninhabited`]), in every mode;
+/// `None` when there are none. As a term it is quantifier-free. A variant's payload is read by its selectors under its
+/// discriminant, `discr(v) = d => guard(sel(v))`, and a variant no Rust value is is
+/// `discr(v) != d`. An enum met again inside its own payload, or nested past
+/// [`ENUM_NESTING_LIMIT`], adds nothing, as [`enum_payload_facts`] does.
+///
+/// It is the domain of the variable an annotation's `forall` or `exists` binds, as a quantifier
+/// in Verus or Creusot ranges over the values of its type ([`IntDomain::Range`]), and of the
+/// arguments a logic function's definition is checked at (`Analyzer::checked_logic_fn_body`,
+/// [`IntDomain::AssumedBounds`]).
+pub fn domain_guard<V, G>(
+    ty: &Type<Closed>,
+    value: chc::Term<V>,
+    defs: &dyn EnumDefProvider,
+    ints: IntDomain,
+) -> Option<G>
 where
     V: Clone,
+    G: DomainGuard<V>,
 {
-    let conj = |a: Option<chc::Term<V>>, b: Option<chc::Term<V>>| match (a, b) {
-        (Some(a), Some(b)) => Some(a.and(b)),
-        (a, b) => a.or(b),
+    let mut cx = DomainCx {
+        defs,
+        ints,
+        enclosing: Vec::new(),
+        seq_depth: 0,
     };
+    domain_guard_within(ty, value, &mut cx)
+}
+
+fn domain_guard_within<V, G>(
+    ty: &Type<Closed>,
+    value: chc::Term<V>,
+    cx: &mut DomainCx<'_>,
+) -> Option<G>
+where
+    V: Clone,
+    G: DomainGuard<V>,
+{
     match ty {
-        Type::Int(_) | Type::UInt(_) => {
-            let bounds = int_range_bounds(ty, value)?;
-            // `lower` is `x >= min` and `upper` is `x < end`.
-            let lower = bounds.lower.map(|atom| {
-                let [x, min]: [chc::Term<V>; 2] = atom.args.try_into().ok()?;
-                Some(x.ge(min))
-            });
-            let upper = bounds.upper.map(|atom| {
-                let [x, end]: [chc::Term<V>; 2] = atom.args.try_into().ok()?;
-                Some(x.lt(end))
-            });
-            conj(lower.flatten(), upper.flatten())
+        Type::Int(width) | Type::UInt(width) => {
+            let ranged = int_range(matches!(ty, Type::Int(_)), *width).is_some();
+            if cx.ints == IntDomain::Range && !ranged {
+                return None;
+            }
+            G::bounds(int_range_bounds(ty, value)?)
         }
         Type::Tuple(tuple) => tuple
             .elems
             .iter()
             .enumerate()
-            .map(|(index, elem)| domain_guard(&elem.ty, value.clone().tuple_proj(index)))
-            .fold(None, conj),
+            .map(|(index, elem)| domain_guard_within(&elem.ty, value.clone().tuple_proj(index), cx))
+            .fold(None, conj_guard),
         Type::Pointer(pointer) => {
-            let current = domain_guard(&pointer.elem.ty, pointer.kind.deref_term(value.clone()));
-            let final_ = pointer
-                .is_mut()
-                .then(|| domain_guard(&pointer.elem.ty, value.mut_final()))
-                .flatten();
-            conj(current, final_)
+            let current =
+                domain_guard_within(&pointer.elem.ty, pointer.kind.deref_term(value.clone()), cx);
+            let final_ = if pointer.is_mut() {
+                domain_guard_within(&pointer.elem.ty, value.mut_final(), cx)
+            } else {
+                None
+            };
+            conj_guard(current, final_)
         }
-        _ => None,
+        Type::Enum(enum_ty) => enum_domain_guard(enum_ty, value, cx),
+        Type::Seq(elem) => {
+            let var = seq_guard_var(cx.seq_depth);
+            let k = chc::Term::UserQuantifiedVar(chc::Sort::int(), var);
+            cx.seq_depth += 1;
+            let elem_guard = domain_guard_within(&elem.ty, value.clone().seq_nth(k), cx);
+            cx.seq_depth -= 1;
+            G::every_elem(var, value, elem_guard?)
+        }
+        Type::BitVec(_)
+        | Type::Bool
+        | Type::String
+        | Type::Opaque
+        | Type::Never
+        | Type::Param(_)
+        | Type::Alias(_)
+        | Type::Function(_)
+        | Type::Array(_) => None,
+    }
+}
+
+/// [`domain_guard`] of a value of the enum type `enum_ty`: for each variant, `discr(v) != d` when
+/// no Rust value is of it, and `discr(v) = d => guards(sel(v))` when its fields have guards, the
+/// test left out when the variant is the only one.
+fn enum_domain_guard<V, G>(
+    enum_ty: &EnumType<Closed>,
+    value: chc::Term<V>,
+    cx: &mut DomainCx<'_>,
+) -> Option<G>
+where
+    V: Clone,
+    G: DomainGuard<V>,
+{
+    if cx.enclosing.contains(enum_ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
+        return None;
+    }
+    cx.enclosing.push(enum_ty.clone());
+    let sort = chc::DatatypeSort::new(enum_ty.symbol.clone(), enum_ty.arg_sorts());
+    let variants = enum_ty.variants(cx.defs);
+    let single_variant = variants.len() == 1;
+    let mut guard = None;
+    for variant in variants {
+        let discr = chc::Term::datatype_discr(enum_ty.symbol.clone(), value.clone());
+        let is_other_variant = G::other_variant(discr, variant.discr.clone());
+        if variant.uninhabited {
+            guard = conj_guard(guard, Some(is_other_variant));
+            continue;
+        }
+        let mut fields = None;
+        for (index, field_ty) in variant.field_tys.iter().enumerate() {
+            let field = chc::Term::datatype_selector(
+                sort.clone(),
+                variant.ctor.clone(),
+                index,
+                field_ty.to_sort(),
+                value.clone(),
+            );
+            fields = conj_guard(fields, domain_guard_within(field_ty, field, cx));
+        }
+        let payload = if single_variant {
+            fields
+        } else {
+            fields.map(|fields| is_other_variant.or(fields))
+        };
+        guard = conj_guard(guard, payload);
+    }
+    cx.enclosing.pop();
+    guard
+}
+
+fn conj_guard<V, G: DomainGuard<V>>(a: Option<G>, b: Option<G>) -> Option<G> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a.and(b)),
+        (a, b) => a.or(b),
     }
 }
 
@@ -2215,7 +2416,10 @@ impl<T> Type<T> {
     /// `fresh` gives a variable of each field of each variant, which the caller binds
     /// existentially, `matcher_pred` makes those of the value's variant its payload, and each
     /// field is resolved; the fields of the other variants are free, so their resolution says
-    /// nothing. A field that is a pointer to the enum itself is not resolved.
+    /// nothing. An enum met again inside its own payload (a recursive definition, directly or
+    /// through another enum such as `Option<Box<Self>>`), or nested past [`ENUM_NESTING_LIMIT`],
+    /// is not resolved: no finite formula follows it, so the mutable references in that tail
+    /// stay unresolved, which leaves an assumption out.
     pub fn resolution<V>(
         &self,
         term: chc::Term<V>,
@@ -2226,23 +2430,42 @@ impl<T> Type<T> {
         T: chc::Var,
         V: Clone,
     {
+        self.resolution_within(term, defs, fresh, &mut Vec::new())
+    }
+
+    fn resolution_within<V>(
+        &self,
+        term: chc::Term<V>,
+        defs: &dyn EnumDefProvider,
+        fresh: &mut impl FnMut(chc::Sort) -> chc::Term<V>,
+        enclosing: &mut Vec<EnumType<T>>,
+    ) -> chc::Body<V>
+    where
+        T: chc::Var,
+        V: Clone,
+    {
         if self.is_mut() {
             return term.clone().mut_final().equal_to(term.mut_current()).into();
         }
         if self.is_own() {
             let inner = &self.as_pointer().unwrap().elem.ty;
-            return inner.resolution(term.box_current(), defs, fresh);
+            return inner.resolution_within(term.box_current(), defs, fresh, enclosing);
         }
         if let Some(tuple) = self.as_tuple() {
             let mut body = chc::Body::default();
             for (i, elem) in tuple.elems.iter().enumerate() {
-                body.push_conj(elem.ty.resolution(term.clone().tuple_proj(i), defs, fresh));
+                let elem_term = term.clone().tuple_proj(i);
+                body.push_conj(elem.ty.resolution_within(elem_term, defs, fresh, enclosing));
             }
             return body;
         }
         let Some(ety) = self.as_enum() else {
             return chc::Body::default();
         };
+        if enclosing.contains(ety) || enclosing.len() >= ENUM_NESTING_LIMIT {
+            return chc::Body::default();
+        }
+        enclosing.push(ety.clone());
         let mut body = chc::Body::default();
         let mut pred_args = vec![];
         for field_ty in defs.enum_def(&ety.symbol).field_tys() {
@@ -2252,17 +2475,9 @@ impl<T> Type<T> {
 
             let field_term = fresh(field_type.to_sort());
             pred_args.push(field_term.clone());
-
-            if let Some(p) = field_type.as_pointer() {
-                if matches!(&p.elem.ty, Type::Enum(e) if e.symbol == ety.symbol) {
-                    // TODO: we need recursively defined drop_pred for the recursive ADTs!
-                    tracing::warn!("skipping recursive variant");
-                    continue;
-                }
-            }
-
-            body.push_conj(field_type.resolution(field_term, defs, fresh));
+            body.push_conj(field_type.resolution_within(field_term, defs, fresh, enclosing));
         }
+        enclosing.pop();
         pred_args.push(term);
         let matcher_pred = chc::MatcherPred::new(ety.symbol.clone(), ety.arg_sorts());
         body.push_conj(chc::Atom::new(matcher_pred.into(), pred_args));
