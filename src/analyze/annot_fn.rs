@@ -2345,7 +2345,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     &param_rty.ty,
                     term.clone(),
                     &self.analyzer.enum_defs,
-                    rty::IntDomain::Range,
                 )
             };
             if let Some(fact) = fact {

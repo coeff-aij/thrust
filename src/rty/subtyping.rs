@@ -352,13 +352,12 @@ where
                     .subst_value_var(|| expected.kind.deref_term(value())),
             );
         }
-        // An enum's payloads have facts under `THRUST_INT_RANGE` (`RefinedType::formula_with`).
+        // An enum's payloads have the facts of their integers (`RefinedType::formula_with`).
         // A value entering the type at other arguments (a type parameter, an alias, another
         // integer type) is checked against them when the type has any; without the enums'
         // definitions that cannot be told, which no analysis scope lacks.
         (Type::Enum(got), Type::Enum(expected))
-            if super::int_range_mode() != super::IntRange::Off
-                && got.clone().strip_refinement() != expected.clone().strip_refinement() =>
+            if got.clone().strip_refinement() != expected.clone().strip_refinement() =>
         {
             let expected = Type::Enum(expected.clone().strip_refinement());
             let Some(defs) = enum_defs else {
