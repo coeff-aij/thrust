@@ -45,7 +45,9 @@ use sites::{Names, Site, SiteKind};
 use solution::Solution;
 
 pub use constraints::Provenance;
-pub use parts::{emit_not_horn_note, emit_notes as emit_part_notes, Part, Parts};
+pub use parts::{
+    emit_kept_whole_note, emit_not_horn_note, emit_notes as emit_part_notes, Part, Parts,
+};
 
 #[derive(Debug, Clone, Copy, Default)]
 struct Items {

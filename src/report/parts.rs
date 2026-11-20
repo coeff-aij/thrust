@@ -200,7 +200,10 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], kind: Parts) {
     };
     match kind {
         Parts::Classes => {}
-        Parts::GoalCones => note.push_str(", one per goal with the clauses it depends on"),
+        Parts::GoalCones => note.push_str(
+            ", one per goal with the clauses it depends on, and a class of clauses that share an \
+             unknown whole where one of its clauses is not definite",
+        ),
         Parts::GoalsApart => note.push_str(
             ", each goal of a `#[thrust::split_goals]` function apart with the clauses it depends \
              on",
@@ -238,7 +241,8 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], kind: Parts) {
         tcx.dcx().note(format!(
             "thrust: a function can be in several parts: {}. Each goal is a part with every clause \
              deriving an unknown it depends on, so goals that depend on one unknown share its \
-             clauses",
+             clauses, and a class of clauses that share an unknown is one part where one of its \
+             clauses is not definite",
             split.join(", ")
         ));
         return;
@@ -259,45 +263,43 @@ pub fn emit_notes(tcx: TyCtxt<'_>, parts: &[Part], kind: Parts) {
 }
 
 /// Why `asked_by` (`THRUST_SPLIT_GOALS`, or the attributes that set goals apart) does not split
-/// `system` into the cones of its goals, at the clause that is no definite Horn clause when it
-/// is one.
-pub fn emit_not_horn_note(
-    tcx: TyCtxt<'_>,
-    system: &chc::System,
-    why: chc::NotHorn,
-    asked_by: &str,
-) {
-    let instead = "the parts are the classes of clauses that share an unknown instead";
-    let clause = match why {
+/// `system` into the cones of its goals in any class.
+pub fn emit_not_horn_note(tcx: TyCtxt<'_>, why: chc::NotHorn, asked_by: &str) {
+    let why = match why {
         chc::NotHorn::InLaw => {
-            tcx.dcx().note(format!(
-                "thrust: {asked_by}: an unknown is applied in a law, directly or through \
-                 a predicate's definition, or raw SMT-LIB text names a definition that applies \
-                 one; {instead}"
-            ));
-            return;
+            "an unknown is applied in a law, directly or through a predicate's definition, or raw \
+             SMT-LIB text names a definition that applies one"
         }
         chc::NotHorn::RecursiveDefinition => {
-            tcx.dcx().note(format!(
-                "thrust: {asked_by}: a predicate's definition that applies an unknown \
-                 applies itself; {instead}"
-            ));
-            return;
+            "a predicate's definition that applies an unknown applies itself"
         }
-        chc::NotHorn::Derived => {
-            tcx.dcx().note(format!(
-                "thrust: {asked_by}: a derived predicate is an unknown; {instead}"
-            ));
-            return;
-        }
-        chc::NotHorn::Clause(id) => id,
+        chc::NotHorn::Derived => "a derived predicate is an unknown",
+    };
+    tcx.dcx().note(format!(
+        "thrust: {asked_by}: {why}; the parts are the classes of clauses that share an unknown \
+         instead"
+    ));
+}
+
+/// Why `asked_by` keeps whole the class of clauses that share an unknown with `clause`, the
+/// first of the class that is no definite Horn clause, at the code the clause comes from.
+pub fn emit_kept_whole_note(
+    tcx: TyCtxt<'_>,
+    system: &chc::System,
+    clause: chc::ClauseId,
+    asked_by: &str,
+) {
+    let provenance = Provenance::of(&system.clauses[clause].debug_info);
+    let constraint = match provenance.def {
+        Some(def) => format!("a constraint of `{}`", tcx.def_path_str(def.to_def_id())),
+        None => "a constraint".to_owned(),
     };
     let message = format!(
-        "thrust: {asked_by}: a constraint, with the predicates it applies read as \
-         their definitions, has a disjunction of unknowns in head positions, or one under an \
-         existential quantifier there; {instead}"
+        "thrust: {asked_by}: {constraint}, with the predicates it applies read as their \
+         definitions, has a disjunction of unknowns in head positions, or one under an \
+         existential quantifier there; the clauses that share an unknown with it are one part, \
+         not split by goal"
     );
-    let provenance = Provenance::of(&system.clauses[clause].debug_info);
     match provenance.span(tcx) {
         Some(span) => tcx.dcx().span_note(span, message),
         None => tcx.dcx().note(message),
