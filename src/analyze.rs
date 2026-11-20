@@ -2961,6 +2961,22 @@ impl<'tcx> Analyzer<'tcx> {
         }
     }
 
+    /// Whether `def` is a function whose body Thrust analyzes: not a closure, nor a trusted,
+    /// ignored, predicate or logic function.
+    fn body_is_analyzed(&self, def: LocalDefId) -> bool {
+        matches!(
+            self.tcx.def_kind(def),
+            rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
+        ) && ![
+            analyze::annot::trusted_path(),
+            analyze::annot::ignored_path(),
+            analyze::annot::predicate_path(),
+            analyze::annot::logic_path(),
+        ]
+        .iter()
+        .any(|path| analyze::annot::has_thrust_attr(self.tcx, def.to_def_id(), path))
+    }
+
     /// Stops at a `#[thrust::split_goals]` on anything but a function whose body Thrust analyzes
     /// (not a closure, which takes the attribute of the function it is written in, nor a predicate,
     /// logic, trusted or ignored function): rustc does not check `thrust::` attributes, and it would
@@ -2976,17 +2992,7 @@ impl<'tcx> Analyzer<'tcx> {
             ) {
                 continue;
             }
-            let analyzed = matches!(
-                self.tcx.def_kind(def),
-                rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
-            ) && ![
-                analyze::annot::trusted_path(),
-                analyze::annot::ignored_path(),
-                analyze::annot::predicate_path(),
-                analyze::annot::logic_path(),
-            ]
-            .iter()
-            .any(|path| analyze::annot::has_thrust_attr(self.tcx, def.to_def_id(), path));
+            let analyzed = self.body_is_analyzed(def);
             if !analyzed {
                 self.tcx.dcx().span_err(
                     self.tcx.def_span(def),
@@ -3034,26 +3040,7 @@ impl<'tcx> Analyzer<'tcx> {
             if attrs.is_empty() {
                 continue;
             }
-            let analyzed = matches!(
-                self.tcx.def_kind(def),
-                rustc_hir::def::DefKind::Fn | rustc_hir::def::DefKind::AssocFn
-            ) && !analyze::annot::has_thrust_attr(
-                self.tcx,
-                def.to_def_id(),
-                &analyze::annot::trusted_path(),
-            ) && !analyze::annot::has_thrust_attr(
-                self.tcx,
-                def.to_def_id(),
-                &analyze::annot::ignored_path(),
-            ) && !analyze::annot::has_thrust_attr(
-                self.tcx,
-                def.to_def_id(),
-                &analyze::annot::predicate_path(),
-            ) && !analyze::annot::has_thrust_attr(
-                self.tcx,
-                def.to_def_id(),
-                &analyze::annot::logic_path(),
-            );
+            let analyzed = self.body_is_analyzed(def);
             if !analyzed {
                 self.tcx.dcx().span_err(
                     self.tcx.def_span(def),
