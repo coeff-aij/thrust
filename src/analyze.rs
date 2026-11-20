@@ -750,6 +750,17 @@ pub struct Analyzer<'tcx> {
     handover_counts: Vec<unanalyzed_entry::HandoverCount<'tcx>>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
+    /// See [`WitnessCalls`].
+    witness_calls: Rc<RefCell<WitnessCalls>>,
+}
+
+/// The calls of `thrust_models::witness` a formula reads as their formula, with their spans, and
+/// those whose witness a `proof_assert!`, `block_ensures!` or `choose!` checks; the others are
+/// warned about by [`Analyzer::warn_unchecked_witnesses`].
+#[derive(Debug, Default)]
+struct WitnessCalls {
+    read_as_formula: HashMap<rustc_hir::HirId, rustc_span::Span>,
+    checked: HashSet<rustc_hir::HirId>,
 }
 
 /// An `assume!` the analysis took: where it is written, the body it is in, and its formula
@@ -1055,6 +1066,7 @@ impl<'tcx> Analyzer<'tcx> {
             per_instance_law_impls: Default::default(),
             instance_laws_checked: Default::default(),
             law_uses: Default::default(),
+            witness_calls: Default::default(),
             template_site: None,
             template_vars: Default::default(),
             template_sites: Default::default(),
@@ -3725,6 +3737,44 @@ impl<'tcx> Analyzer<'tcx> {
             .struct_span_warn(site.span, "`assume!` is assumed without proof")
             .with_note("what is verified after it holds only if it does")
             .emit();
+    }
+
+    /// Records that a formula reads the `witness` call `call` as its formula.
+    pub fn record_witness_read_as_formula(&self, call: &rustc_hir::Expr<'_>) {
+        self.witness_calls
+            .borrow_mut()
+            .read_as_formula
+            .insert(call.hir_id, call.span);
+    }
+
+    /// Records that the witnesses of the `witness` calls [`annot_fn::FormulaFn::witnessed_formula`]
+    /// instantiates are checked.
+    pub fn record_checked_witnesses(&self, formula_fn: &annot_fn::FormulaFn<'tcx>) {
+        self.witness_calls
+            .borrow_mut()
+            .checked
+            .extend(formula_fn.witness_calls().iter().copied());
+    }
+
+    /// Warns at each `witness` call read as its formula whose witness no check uses, once for
+    /// each span.
+    pub fn warn_unchecked_witnesses(&self) {
+        let calls = self.witness_calls.borrow();
+        let mut spans: Vec<_> = calls
+            .read_as_formula
+            .iter()
+            .filter(|(hir_id, _)| !calls.checked.contains(hir_id))
+            .map(|(_, span)| *span)
+            .collect();
+        spans.sort();
+        spans.dedup();
+        for span in spans {
+            self.tcx.dcx().span_warn(
+                span,
+                "this `witness` is read as its formula here; its term is used only at the top \
+                 level of `proof_assert!`, `block_ensures!` or `choose!`",
+            );
+        }
     }
 
     /// See [`BodyChecks`].

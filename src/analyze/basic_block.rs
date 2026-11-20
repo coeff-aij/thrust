@@ -2823,6 +2823,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         );
         let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
         if matches!(marker, FormulaMarker::Assert | FormulaMarker::BlockEnsures) {
+            self.ctx.record_checked_witnesses(&formula_fn);
             self.check_formula(
                 formula_fn
                     .witnessed_formula()
@@ -3178,6 +3179,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
         let value_ty = self.type_builder.build(*value_ty).ty.strip_refinement();
         let checks = self.value_fact_checks(&value_ty, "a chosen value", span);
+        self.ctx.record_checked_witnesses(&formula_fn);
         let witnessed = formula_fn.to_witnessed_refinement();
         if !checks.is_top() {
             let clauses = self.check_ghost_term(params, args, &value_ty, witnessed.clone(), checks);
