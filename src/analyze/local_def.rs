@@ -3368,11 +3368,11 @@ pub(crate) fn spec_param_written_ty<'tcx>(
             alias.args.type_at(0)
         }
         mir_ty::TyKind::Adt(adt, _)
-            if ctx
-                .tcx()
-                .get_attrs_by_path(adt.did(), &analyze::annot::no_model_path())
-                .next()
-                .is_some() =>
+            if analyze::annot::has_thrust_attr(
+                ctx.tcx(),
+                adt.did(),
+                &analyze::annot::no_model_path(),
+            ) =>
         {
             mir_ty::Ty::new_imm_ref(
                 ctx.tcx(),
