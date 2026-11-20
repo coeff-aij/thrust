@@ -2578,8 +2578,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .iter()
                 .find(|contract| contract.entry == bb)
             {
-                // The code under a block contract starts from its `requires` alone, as a function
-                // body with a written contract does.
+                // The code under a block contract starts from its `requires` and the facts of the
+                // types of the variables it takes, which `basic_block::Analyzer::run` assumes, as a
+                // function body with a written contract does.
                 let mut bty = self
                     .type_builder
                     .build_basic_block(&self.body, live_locals, ret_ty);
