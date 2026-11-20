@@ -12,7 +12,7 @@ use rustc_middle::mir::{
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::def_id::{DefId, LocalDefId};
 
-use crate::analyze::{self, annot_fn::FormulaFn, TypeParam};
+use crate::analyze::{self, annot_fn::FormulaFn};
 use crate::chc;
 use crate::chc::debug;
 use crate::pretty::PrettyDisplayExt as _;
@@ -672,7 +672,8 @@ pub(super) fn peel_shared_refs(mut ty: mir_ty::Ty<'_>) -> mir_ty::Ty<'_> {
 
 enum ResolvedCallable<'tcx> {
     Concrete(DefId, mir_ty::GenericArgsRef<'tcx>),
-    Generic(TypeParam),
+    /// A call of a closure type parameter through the trait of the closure kind.
+    Generic(mir_ty::ParamTy, mir_ty::ClosureKind),
     /// A trait method whose impl depends on the caller's type parameters.
     Unresolved,
 }
@@ -2106,10 +2107,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
                 // A call through `dyn Fn*`, which `check_dyn_instance` rejects.
                 mir_ty::TyKind::Dynamic(..) => ResolvedCallable::Concrete(def_id, args),
-                mir_ty::TyKind::Param(ty) => ResolvedCallable::Generic(TypeParam::GenericType {
-                    param_def_id: self.type_builder.param_def_id(ty),
-                    local_idx: self.type_builder.param_local_idx(ty),
-                }),
+                mir_ty::TyKind::Param(ty) => ResolvedCallable::Generic(
+                    *ty,
+                    self.ctx
+                        .fn_trait_method_kind(def_id)
+                        .expect("a method of an `Fn` trait"),
+                ),
                 // A function item is a closure without captures: the call runs the function
                 // under its own contract. `RustCallVisitor` passes it the call's arguments
                 // untupled.
@@ -2198,13 +2201,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ));
         }
         match resolved {
-            ResolvedCallable::Generic(type_param) => {
-                tracing::debug!(?type_param, ?self.ctx.closure_type_params);
-                self.ctx
-                    .get_closure_type(type_param)
-                    .expect("unknown closure type")
-                    .into()
-            }
+            ResolvedCallable::Generic(param_ty, call_kind) => self
+                .type_builder
+                .closure_param_call_contract(
+                    param_ty,
+                    call_kind,
+                    self.local_def_id,
+                    self.analysis_key.generic_args,
+                )
+                .expect("unknown closure type")
+                .into(),
             ResolvedCallable::Unresolved => {
                 // The type inferred from a default body is not the type of the impls that
                 // override it, so a call that may reach any of them takes the unspecified type.

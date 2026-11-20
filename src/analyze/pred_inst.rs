@@ -569,17 +569,30 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             }
             ClosureContractPart::Post => {
                 let (result, args) = terms.get(1..)?.split_last()?;
-                let (receiver, final_state) = receiver("postcondition");
-                let call_args: Vec<_> = std::iter::once(receiver)
-                    .chain(args.iter().cloned())
-                    .collect();
-                fn_ty.once_postcondition_formula(
-                    &call_args,
-                    result.clone(),
-                    final_state,
-                    None,
-                    &mut parts,
-                )
+                if let Some(receiver) = unchanged_pair_receiver(&terms[0], &params[0], &fn_ty) {
+                    let call_args: Vec<_> = std::iter::once(receiver)
+                        .chain(args.iter().cloned())
+                        .collect();
+                    let unchanged = terms[0]
+                        .clone()
+                        .mut_current()
+                        .equal_to(terms[0].clone().mut_final());
+                    fn_ty
+                        .postcondition_formula(&call_args, result.clone())
+                        .and(unchanged.into())
+                } else {
+                    let (receiver, final_state) = receiver("postcondition");
+                    let call_args: Vec<_> = std::iter::once(receiver)
+                        .chain(args.iter().cloned())
+                        .collect();
+                    fn_ty.once_postcondition_formula(
+                        &call_args,
+                        result.clone(),
+                        final_state,
+                        None,
+                        &mut parts,
+                    )
+                }
             }
             ClosureContractPart::Pre => {
                 let (receiver, final_state) = receiver("precondition");
@@ -633,6 +646,28 @@ fn final_state_sort(declared: &chc::Sort, fn_ty: &rty::FunctionType) -> Option<c
         .ty
         .to_sort();
     (contract_sort == chc::Sort::mut_(declared.clone())).then(|| declared.clone())
+}
+
+/// The receiver the contract of a closure that is not `FnMut` takes, when the predicate declares
+/// the `Mut` pair `pair` of a call through `&mut` (`post_receiver_sort` in `refine::template`):
+/// the pair's current state, behind the `&` an `Fn` closure takes it through. No call of such a
+/// closure changes its state (Creusot's `fn_mut` law), which the definition states of the pair.
+fn unchanged_pair_receiver<V: chc::Var>(
+    pair: &chc::Term<V>,
+    declared: &chc::Sort,
+    fn_ty: &rty::FunctionType,
+) -> Option<chc::Term<V>> {
+    let chc::Sort::Mut(state) = declared else {
+        return None;
+    };
+    let contract_sort = fn_ty.params[rty::FunctionParamIdx::from_usize(0)]
+        .ty
+        .to_sort();
+    let current = pair.clone().mut_current();
+    if contract_sort == **state {
+        return Some(current);
+    }
+    (contract_sort == chc::Sort::box_((**state).clone())).then(|| chc::Term::box_(current))
 }
 
 /// Whether the trait item `def_id` stands for no body at `generic_args`, in the parameters of
