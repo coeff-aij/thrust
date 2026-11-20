@@ -1025,6 +1025,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         rty::Type::int_of_width(size.bits() as u32),
                         chc::Term::int(size.sign_extend(bits)),
                     )
+                } else if ty.is_char() {
+                    // A `char` literal is a scalar value, as every `char` is.
+                    PlaceType::with_ty_and_term(rty::Type::char(), chc::Term::int(bits))
                 } else {
                     // An unsigned literal is non-negative as written, so it needs no check where
                     // it becomes a value of an unsigned type.
@@ -1535,24 +1538,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         let (ty, term) = self.checked_int_op(lhs_term.mul(rhs_term), lhs_mir_ty);
                         builder.build(ty, term)
                     }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Ge) => {
-                        builder.build(rty::Type::Bool, lhs_term.ge(rhs_term))
-                    }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Gt) => {
-                        builder.build(rty::Type::Bool, lhs_term.gt(rhs_term))
-                    }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Le) => {
-                        builder.build(rty::Type::Bool, lhs_term.le(rhs_term))
-                    }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Lt) => {
-                        builder.build(rty::Type::Bool, lhs_term.lt(rhs_term))
-                    }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Eq) => {
-                        builder.build(rty::Type::Bool, lhs_term.eq(rhs_term))
-                    }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Ne) => {
-                        builder.build(rty::Type::Bool, lhs_term.ne(rhs_term))
-                    }
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Ge,
+                    ) => builder.build(rty::Type::Bool, lhs_term.ge(rhs_term)),
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Gt,
+                    ) => builder.build(rty::Type::Bool, lhs_term.gt(rhs_term)),
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Le,
+                    ) => builder.build(rty::Type::Bool, lhs_term.le(rhs_term)),
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Lt,
+                    ) => builder.build(rty::Type::Bool, lhs_term.lt(rhs_term)),
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Eq,
+                    ) => builder.build(rty::Type::Bool, lhs_term.eq(rhs_term)),
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Ne,
+                    ) => builder.build(rty::Type::Bool, lhs_term.ne(rhs_term)),
                     _ => unimplemented!("ty={}, op={:?}", lhs_ty.display(), op),
                 }
             }
@@ -1725,8 +1734,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
                 // The result has the target's type, so that the operations on it are typed and
                 // checked at the target's width: a widening keeps the operand's term, which is in
-                // the target's range, and a narrowing wraps it into that range. A `char` is the
-                // `u32` of its code point.
+                // the target's range, and a narrowing wraps it into that range. A `char` is its
+                // code point, of the width of `u32`; the only cast to it, from `u8`, is a widening
+                // into the scalar values, which its type assumes.
                 let mut op_pty = self.operand_type(operand);
                 if int_ty_includes(self.tcx, ty, op_ty) {
                     op_pty.ty = target_ty;
@@ -2111,7 +2121,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let target_term = match (bits, &discr_ty.ty) {
                 (0, rty::Type::Bool) => chc::Term::bool(false),
                 (1, rty::Type::Bool) => chc::Term::bool(true),
-                (_, rty::Type::Int(_) | rty::Type::UInt(_)) => {
+                (_, rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char) => {
                     let size = discr_mir_ty.primitive_size(self.tcx);
                     if discr_mir_ty.is_signed() {
                         chc::Term::int(size.sign_extend(bits))

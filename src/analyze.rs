@@ -64,13 +64,13 @@ fn scalar_const_term<T>(
             rty::Type::int_of_width(v.size().bits() as u32),
             chc::Term::int(v.to_int(v.size())),
         )),
-        (
-            mir_ty::TyKind::Uint(_) | mir_ty::TyKind::Char,
-            mir::ConstValue::Scalar(Scalar::Int(v)),
-        ) => Some((
+        (mir_ty::TyKind::Uint(_), mir::ConstValue::Scalar(Scalar::Int(v))) => Some((
             rty::Type::uint_of_width(v.size().bits() as u32),
             chc::Term::int(v.to_uint(v.size())),
         )),
+        (mir_ty::TyKind::Char, mir::ConstValue::Scalar(Scalar::Int(v))) => {
+            Some((rty::Type::char(), chc::Term::int(v.to_uint(v.size()))))
+        }
         (mir_ty::TyKind::Bool, mir::ConstValue::Scalar(Scalar::Int(v))) => {
             Some((rty::Type::bool(), chc::Term::bool(v.try_to_bool().unwrap())))
         }
