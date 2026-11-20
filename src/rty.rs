@@ -3466,8 +3466,14 @@ fn subst_ty_params_in_term<T, V>(term: &mut chc::Term<V>, subst: &TypeParamSubst
 
 #[cfg(test)]
 mod tests {
-    use super::{ParamType, TypeParamIdx};
-    use crate::chc::ForallSortIdx;
+    use num_bigint::BigInt;
+    use rustc_index::IndexVec;
+
+    use super::{
+        has_range_facts, Closed, EnumDatatypeDef, EnumDefProvider, EnumType, EnumVariantDef,
+        ParamType, RefinedType, TupleType, Type, TypeParamIdx,
+    };
+    use crate::chc::{self, ForallSortIdx};
     use crate::pretty::PrettyDisplayExt as _;
 
     #[test]
@@ -3475,5 +3481,125 @@ mod tests {
         let param = ParamType::new(TypeParamIdx::from(0_usize), ForallSortIdx::from(2_usize));
 
         assert_eq!(param.display().to_string(), "T0(ForallSortIdx=a2)");
+    }
+
+    /// The enums of [`has_range_facts_agrees_with_facts`]: `Opt<T> { None, Some(T) }`,
+    /// `E { A(u64), B(i64) }`, `List { Nil, Cons(UInt, Box<List>) }` and
+    /// `IntList { Nil, Cons(Int, Box<IntList>) }`.
+    struct Defs(Vec<EnumDatatypeDef>);
+
+    impl EnumDefProvider for Defs {
+        fn enum_def(&self, name: &chc::DatatypeSymbol) -> EnumDatatypeDef {
+            self.0
+                .iter()
+                .find(|def| def.name == *name)
+                .expect("a test enum")
+                .clone()
+        }
+    }
+
+    fn variant(name: &str, discr: u32, fields: Vec<Type<Closed>>) -> EnumVariantDef {
+        EnumVariantDef {
+            name: chc::DatatypeSymbol::new(name.to_owned()),
+            discr: BigInt::from(discr),
+            field_tys: fields.into_iter().map(RefinedType::unrefined).collect(),
+            uninhabited: false,
+        }
+    }
+
+    fn def(name: &str, ty_params: usize, variants: Vec<EnumVariantDef>) -> EnumDatatypeDef {
+        EnumDatatypeDef {
+            name: chc::DatatypeSymbol::new(name.to_owned()),
+            ty_params,
+            variants: IndexVec::from_raw(variants),
+        }
+    }
+
+    fn enum_ty(name: &str, args: Vec<Type<Closed>>) -> Type<Closed> {
+        let args = args.into_iter().map(RefinedType::unrefined).collect();
+        EnumType::new(
+            chc::DatatypeSymbol::new(name.to_owned()),
+            IndexVec::from_raw(args),
+        )
+        .into()
+    }
+
+    fn boxed(ty: Type<Closed>) -> Type<Closed> {
+        RefinedType::unrefined(ty).boxed().ty
+    }
+
+    /// `has_range_facts`, which decides whether a value entering an enum type is checked, says a
+    /// type has facts exactly when `RefinedType::facts` states some of its values (the mode the
+    /// test runs in: `0 <=` of unsigned integers without `THRUST_INT_RANGE`).
+    #[test]
+    fn has_range_facts_agrees_with_facts() {
+        let t = Type::Param(ParamType::new(
+            TypeParamIdx::from(0_usize),
+            ForallSortIdx::from(0_usize),
+        ));
+        let defs = Defs(vec![
+            def(
+                "Opt",
+                1,
+                vec![variant("None", 0, vec![]), variant("Some", 1, vec![t])],
+            ),
+            def(
+                "E",
+                0,
+                vec![
+                    variant("A", 0, vec![Type::uint_of_width(64)]),
+                    variant("B", 1, vec![Type::int_of_width(64)]),
+                ],
+            ),
+            def(
+                "List",
+                0,
+                vec![
+                    variant("ListNil", 0, vec![]),
+                    variant(
+                        "ListCons",
+                        1,
+                        vec![Type::uint(), boxed(enum_ty("List", vec![]))],
+                    ),
+                ],
+            ),
+            def(
+                "IntList",
+                0,
+                vec![
+                    variant("IntListNil", 0, vec![]),
+                    variant(
+                        "IntListCons",
+                        1,
+                        vec![Type::int(), boxed(enum_ty("IntList", vec![]))],
+                    ),
+                ],
+            ),
+        ]);
+        let tys = vec![
+            Type::uint(),
+            Type::uint_of_width(8),
+            Type::int(),
+            Type::int_of_width(64),
+            Type::bool(),
+            TupleType::new(vec![Type::bool(), Type::uint()]).into(),
+            TupleType::new(vec![Type::bool(), Type::int()]).into(),
+            boxed(Type::uint()),
+            enum_ty("Opt", vec![Type::uint()]),
+            enum_ty("Opt", vec![Type::int()]),
+            enum_ty("Opt", vec![enum_ty("Opt", vec![Type::uint()])]),
+            enum_ty(
+                "Opt",
+                vec![TupleType::new(vec![Type::int(), boxed(Type::uint())]).into()],
+            ),
+            enum_ty("E", vec![]),
+            enum_ty("List", vec![]),
+            enum_ty("IntList", vec![]),
+        ];
+        for ty in tys {
+            let has = has_range_facts(&ty, &defs, &mut Vec::new());
+            let facts = RefinedType::<Closed>::unrefined(ty.clone()).formula_with(Some(&defs));
+            assert_eq!(has, !facts.is_top(), "{ty:?}");
+        }
     }
 }
