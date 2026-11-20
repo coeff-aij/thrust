@@ -199,8 +199,11 @@ fn pre_upvars_term<V>(upvars: chc::Term<V>, closure_kind: mir_ty::ClosureKind) -
 enum PostReading {
     /// `q_post` at the receiver, the `Mut` pair of a call through `&mut`.
     Pair,
-    /// `q_post` at the pair of the receiver's state with itself.
-    UnchangedState,
+    /// `q_post` at the pair of two equal states, the state behind the `&` of an `Fn` call.
+    UnchangedShared,
+    /// `q_post` at the pair of two equal states, the state a call by value consumes of a
+    /// parameter that is `Fn` wherever it is in scope.
+    UnchangedConsumed,
     /// `q_post_once` at the receiver.
     Consumed,
 }
@@ -209,40 +212,29 @@ impl PostReading {
     fn of(closure_kind: mir_ty::ClosureKind, fn_where_declared: bool) -> Self {
         match closure_kind {
             mir_ty::ClosureKind::FnMut => PostReading::Pair,
-            mir_ty::ClosureKind::Fn => PostReading::UnchangedState,
-            mir_ty::ClosureKind::FnOnce if fn_where_declared => PostReading::UnchangedState,
+            mir_ty::ClosureKind::Fn => PostReading::UnchangedShared,
+            mir_ty::ClosureKind::FnOnce if fn_where_declared => PostReading::UnchangedConsumed,
             mir_ty::ClosureKind::FnOnce => PostReading::Consumed,
         }
     }
 
-    /// The sort the relation takes the receiver in, from the sort `receiver` of the receiver of a
-    /// call through the trait of `closure_kind`.
-    fn receiver_sort(self, receiver: chc::Sort, closure_kind: mir_ty::ClosureKind) -> chc::Sort {
+    /// The sort the relation takes the receiver in, from the sort `receiver` of the call's
+    /// receiver.
+    fn receiver_sort(self, receiver: chc::Sort) -> chc::Sort {
         match self {
             PostReading::Pair | PostReading::Consumed => receiver,
-            PostReading::UnchangedState => chc::Sort::mut_(match closure_kind {
-                mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnMut => receiver.deref(),
-                mir_ty::ClosureKind::FnOnce => receiver,
-            }),
+            PostReading::UnchangedShared => chc::Sort::mut_(receiver.deref()),
+            PostReading::UnchangedConsumed => chc::Sort::mut_(receiver),
         }
     }
 
     /// The receiver term matching [`Self::receiver_sort`].
-    fn receiver_term<V: chc::Var>(
-        self,
-        receiver: chc::Term<V>,
-        closure_kind: mir_ty::ClosureKind,
-    ) -> chc::Term<V> {
+    fn receiver_term<V: chc::Var>(self, receiver: chc::Term<V>) -> chc::Term<V> {
+        let unchanged = |state: chc::Term<V>| chc::Term::mut_(state.clone(), state);
         match self {
             PostReading::Pair | PostReading::Consumed => receiver,
-            PostReading::UnchangedState => {
-                let state = match closure_kind {
-                    mir_ty::ClosureKind::Fn => receiver.box_current(),
-                    mir_ty::ClosureKind::FnMut => receiver.mut_current(),
-                    mir_ty::ClosureKind::FnOnce => receiver,
-                };
-                chc::Term::mut_(state.clone(), state)
-            }
+            PostReading::UnchangedShared => unchanged(receiver.box_current()),
+            PostReading::UnchangedConsumed => unchanged(receiver),
         }
     }
 }
@@ -1384,16 +1376,18 @@ impl<'tcx> TypeBuilder<'tcx> {
             closure_kind,
             analyze::fn_bounded_where_declared(self.tcx, contract_owner),
         );
-        params_sort[0] = post_reading.receiver_sort(params_sort[0].clone(), closure_kind);
+        params_sort[0] = post_reading.receiver_sort(params_sort[0].clone());
         params_sort.push(ret_sort);
         let post_pred = match post_reading {
-            PostReading::Pair | PostReading::UnchangedState => refine::closure_post_forall_pred(
-                self.tcx,
-                contract_owner,
-                type_args,
-                type_params,
-                params_sort,
-            ),
+            PostReading::Pair | PostReading::UnchangedShared | PostReading::UnchangedConsumed => {
+                refine::closure_post_forall_pred(
+                    self.tcx,
+                    contract_owner,
+                    type_args,
+                    type_params,
+                    params_sort,
+                )
+            }
             PostReading::Consumed => refine::closure_post_once_forall_pred(
                 self.tcx,
                 contract_owner,
@@ -1422,7 +1416,7 @@ impl<'tcx> TypeBuilder<'tcx> {
             });
 
         let mut post_args = args;
-        post_args[0] = post_reading.receiver_term(post_args[0].clone(), closure_kind);
+        post_args[0] = post_reading.receiver_term(post_args[0].clone());
         post_args.push(value);
         ret.extend_refinement(chc::Atom::new(post_pred.into(), post_args).into());
         let ret = Box::new(ret);
