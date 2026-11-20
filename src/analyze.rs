@@ -556,8 +556,7 @@ struct BasicBlockDef {
 }
 
 /// The definitions of the enums the crate's types name: those whose datatypes the query declares
-/// ([`Analyzer::get_or_register_enum_def`]) and, under `THRUST_INT_RANGE`, every enum a type built
-/// so far names, whose definition the facts of its payloads read
+/// ([`Analyzer::get_or_register_enum_def`]) and every enum a type built so far names, whose definition the facts of its payloads read
 /// ([`refine::TypeBuilder::register_enum_def`]).
 #[derive(Debug, Clone, Default)]
 pub struct EnumDefs {
@@ -2031,7 +2030,7 @@ impl<'tcx> Analyzer<'tcx> {
     /// ([`Self::checked_logic_fn_body`]), so they hold of every interpretation an opaque
     /// declaration stands for, as the value of an opaque function in Dafny or Verus keeps the
     /// constraint of its result type. `None` when the type states none, and when stating them
-    /// needs an existential (the payload of an enum with `THRUST_INT_RANGE`): a law of the form
+    /// needs an existential (the payload of an enum): a law of the form
     /// `forall params. exists payload. ..` has no test with PCSat, so that declaration keeps
     /// no law.
     fn logic_fn_result_facts(

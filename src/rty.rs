@@ -1429,25 +1429,20 @@ where
     Some(bounds.lower.into_iter().chain(bounds.upper).collect())
 }
 
-/// The facts [`RefinedType::formula_with`] states of every value of `ty`, the ranges of the integers
-/// it holds through tuples, pointers, sequences and enum payloads, when [`int_range_mode`] is on;
-/// `None` when it is off.
-pub fn int_range_type_facts<FV>(ty: &Type<FV>, defs: &dyn EnumDefProvider) -> Option<Refinement<FV>>
+/// The facts [`RefinedType::formula_with`] states of every value of `ty`, the bounds of the integers
+/// it holds through tuples, pointers, sequences and enum payloads ([`int_range_bounds`]).
+pub fn int_range_type_facts<FV>(ty: &Type<FV>, defs: &dyn EnumDefProvider) -> Refinement<FV>
 where
     FV: chc::Var,
 {
-    if int_range_mode() == IntRange::Off {
-        return None;
-    }
-    Some(RefinedType::unrefined(ty.clone()).formula_with(Some(defs)))
+    RefinedType::unrefined(ty.clone()).formula_with(Some(defs))
 }
 
 /// Variables a quantifier binds, with their sorts.
 pub type QuantifiedVars = Vec<(chc::UserQuantifiedVarId, chc::Sort)>;
 
-/// The facts [`RefinedType::formula_with`] states of every value of `ty`, as a formula about
-/// `value`: [`int_range_type_facts`] when [`int_range_mode`] is on, and `0 <=` of the unsigned
-/// integers `ty` holds through tuples and pointers when it is off. `None` when there are none.
+/// The facts [`RefinedType::formula_with`] states of every value of `ty` ([`int_range_type_facts`]),
+/// as a formula about `value`. `None` when there are none.
 ///
 /// A binding is assumed to have these facts, so a variable that stands for a binding of a proof,
 /// such as a law's, ranges over them: the law's quantifier gets them as a premise. Their
@@ -1556,7 +1551,7 @@ impl<'a> FactsCx<'a> {
 
 /// The facts of every value of `ty` ([`RefinedType::formula_with`]) as an obligation on a value,
 /// for a value made from a logical term, whose arithmetic is unbounded: the same traversal, with
-/// each enum payload checked as `forall f. v = C(f) => checks(f)` for each variant. A recursive
+/// each enum payload checked as `is_C(v) => checks(sel_C(v))` for each variant. A recursive
 /// enum whose payloads hold integers with facts cannot be checked by a finite formula: the error
 /// names it.
 pub fn type_fact_checks(
@@ -1888,19 +1883,20 @@ fn enum_value<V: Clone>(
     value
 }
 
-/// The facts of the payloads of a value of the enum type `ty` when [`int_range_mode`] is on and
-/// `cx` has the definitions, for each variant whose fields have facts. Assumed:
+/// The facts of the payloads of a value of the enum type `ty` when `cx` has the definitions, for
+/// each variant whose fields have facts (`0 <=` of an unsigned integer in every mode, its range
+/// when [`int_range_mode`] is on). Assumed:
 /// `exists f. discr(v) = d => v = C(f) && facts(f)`, quantifier-free in a clause body; where the
 /// variant is the value's, `f` is its payload, and elsewhere the implication holds for any `f`.
-/// Checked: `forall f. v = C(f) => facts(f)`. Both say of the value's payload what the facts of
-/// its type say, and nothing of the other variants.
+/// Checked: `is_C(v) => facts(sel_C(v))`, by selectors. Both say of the value's payload what
+/// the facts of its type say, and nothing of the other variants.
 ///
 /// An enum type inside its own payload (the same type, as a recursive definition makes it) gets no
 /// facts, since a finite formula cannot follow it; nor does one nested past
 /// [`ENUM_NESTING_LIMIT`]. Its check is an error ([`type_fact_checks`]) when it holds integers with
 /// facts, so no fact is assumed that is not checked.
 fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Closed> {
-    let Some(defs) = cx.defs.filter(|_| int_range_mode() != IntRange::Off) else {
+    let Some(defs) = cx.defs else {
         return Refinement::top();
     };
     if cx.enclosing.contains(ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
@@ -1958,46 +1954,38 @@ fn assumed_variant_facts(
     facts.guarded(discr.into())
 }
 
-/// `forall f. v = C(f) => checks(f)` of `variant` of `ty`; top when its fields have no facts.
+/// `is_C(v) => checks(sel_C(v))` of `variant` of `ty`, the selector form of
+/// `forall f. v = C(f) => checks(f)`, quantifier-free as [`domain_guard`] is; top when its fields
+/// have no facts.
 fn checked_variant_facts(
     ty: &EnumType<Closed>,
     variant: EnumVariant,
     cx: &mut FactsCx,
 ) -> Refinement<Closed> {
-    let depth = cx.enclosing.len() - 1;
-    let vars: QuantifiedVars = variant
-        .field_tys
-        .iter()
-        .enumerate()
-        .map(|(index, field_ty)| (enum_payload_var(depth, index), field_ty.to_sort()))
-        .collect();
-    let field = |(var, sort): &(chc::UserQuantifiedVarId, chc::Sort)| {
-        chc::Term::UserQuantifiedVar(sort.clone(), *var)
-    };
+    let value = || chc::Term::var(RefinedTypeVar::Value);
+    let sort = chc::DatatypeSort::new(ty.symbol.clone(), ty.arg_sorts());
     let mut checks = Refinement::top();
-    for (field_ty, var) in variant.field_tys.iter().zip(&vars) {
+    for (index, field_ty) in variant.field_tys.iter().enumerate() {
+        let field = || {
+            chc::Term::datatype_selector(
+                sort.clone(),
+                variant.ctor.clone(),
+                index,
+                field_ty.to_sort(),
+                value(),
+            )
+        };
         let field_checks = RefinedType::unrefined(field_ty.clone()).facts(cx);
-        checks.push_conj(field_checks.subst_value_var(|| field(var)));
+        checks.push_conj(field_checks.subst_value_var(field));
     }
     if checks.is_top() {
         return checks;
     }
     assert!(!checks.has_existentials(), "a check states no existential");
-    let fields = vars.iter().map(field).collect();
-    let ctor = chc::Term::datatype_ctor(ty.symbol.clone(), ty.arg_sorts(), variant.ctor, fields);
-    let is_variant = chc::Formula::Atom(chc::Term::var(RefinedTypeVar::Value).equal_to(ctor));
-    chc::Formula::forall(vars, is_variant.implies(checks.body.into_formula())).into()
-}
-
-/// The variable of the field `field` of a variant in the check of an enum's payloads at nesting
-/// `depth` ([`checked_variant_facts`]). Quantifiers of different depths nest, those of one depth
-/// do not; the identifiers are reserved, as [`seq_elem_var`]'s is.
-fn enum_payload_var(depth: usize, field: usize) -> chc::UserQuantifiedVarId {
-    assert!(
-        depth < 0x100 && field < 0x100,
-        "enum payload check too deep or too wide"
-    );
-    chc::UserQuantifiedVarId::from_usize(0xFFFE_0000 + (depth << 8) + field)
+    // The constructor's tester rather than `discr(v) = d`, an `ite` over the testers that Spacer
+    // answers `unknown` on in a goal.
+    let is_variant = chc::Atom::new(chc::Pred::Tester(variant.ctor), vec![value()]);
+    checks.guarded(is_variant.into())
 }
 
 /// Whether a value of `ty` holds an integer with facts under [`int_range_mode`], through tuples,
