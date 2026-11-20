@@ -2,8 +2,8 @@
 //@compile-flags: -C debug-assertions=off
 
 // Every `char` is a Unicode scalar value: its code point is at most `0x10FFFF` and not a
-// surrogate (`0xD800..=0xDFFF`). That holds of a parameter of any value and of `u8 as char`,
-// whose operand has no upper bound here.
+// surrogate (`0xD800..=0xDFFF`). That holds of a parameter of any value, of the payload of an
+// enum and of `u8 as char`, whose operand has no upper bound here.
 
 #[thrust::callable]
 fn code_point(c: char) -> u32 {
@@ -18,6 +18,18 @@ fn from_byte(x: u8) -> u32 {
     let n = x as char as u32;
     assert!(n <= 0x10FFFF);
     n
+}
+
+#[thrust::callable]
+fn payload(o: Option<char>) -> u32 {
+    match o {
+        Some(c) => {
+            let n = c as u32;
+            assert!(n <= 0x10FFFF);
+            n
+        }
+        None => 0,
+    }
 }
 
 fn main() {}

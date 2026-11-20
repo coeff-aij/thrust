@@ -1013,11 +1013,18 @@ impl EnumDatatypeDef {
 /// [`type_fact_checks`]) are read from a provider.
 pub trait EnumDefProvider {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> EnumDatatypeDef;
+
+    /// Whether the definition of the enum `name` is registered, so that [`Self::enum_def`] has it.
+    fn has_enum_def(&self, name: &chc::DatatypeSymbol) -> bool;
 }
 
 impl<T: EnumDefProvider> EnumDefProvider for &T {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> EnumDatatypeDef {
         <T as EnumDefProvider>::enum_def(self, name)
+    }
+
+    fn has_enum_def(&self, name: &chc::DatatypeSymbol) -> bool {
+        <T as EnumDefProvider>::has_enum_def(self, name)
     }
 }
 
@@ -1444,33 +1451,6 @@ where
         .and(not_surrogate)
 }
 
-/// [`char_code_point_formula`] of each `char` a value `x` of `ty` holds through tuples and
-/// pointers, the current and final values of a `&mut`; `None` when it holds none. A variable a
-/// quantifier binds ranges over these in every mode, as every value of `ty` has them.
-pub fn char_facts_formula<T, V>(ty: &Type<T>, x: chc::Term<V>) -> Option<chc::Formula<V>>
-where
-    V: Clone,
-{
-    match ty {
-        Type::Char => Some(char_code_point_formula(x)),
-        Type::Tuple(tuple) => tuple
-            .elems
-            .iter()
-            .enumerate()
-            .filter_map(|(index, elem)| char_facts_formula(&elem.ty, x.clone().tuple_proj(index)))
-            .reduce(chc::Formula::and),
-        Type::Pointer(pointer) => {
-            let current = char_facts_formula(&pointer.elem.ty, pointer.kind.deref_term(x.clone()));
-            let final_ = pointer
-                .is_mut()
-                .then(|| char_facts_formula(&pointer.elem.ty, x.mut_final()))
-                .flatten();
-            current.into_iter().chain(final_).reduce(chc::Formula::and)
-        }
-        _ => None,
-    }
-}
-
 /// [`char_code_point_formula`] as a Boolean term.
 fn char_code_point_term<V>(x: chc::Term<V>) -> chc::Term<V>
 where
@@ -1512,18 +1492,24 @@ pub fn int_range_type_facts<FV>(ty: &Type<FV>, defs: &dyn EnumDefProvider) -> Op
 where
     FV: chc::Var,
 {
+    if int_range_mode() != IntRange::Off {
+        return Some(RefinedType::unrefined(ty.clone()).formula_with(Some(defs)));
+    }
+    // The refinements inside `ty` are the place's own, not facts of its type.
     let mut cx = FactsCx::new(FactsUse::Assumed, Some(defs));
-    cx.in_payload = true;
-    let facts = RefinedType::unrefined(ty.clone()).facts(&mut cx);
-    (!facts.is_top()).then_some(facts)
+    cx.chars_only = true;
+    let facts = RefinedType::unrefined(ty.clone().strip_refinement()).facts(&mut cx);
+    (!facts.is_top()).then(|| facts.map_free_var(|v| match v {}))
 }
 
 /// Variables a quantifier binds, with their sorts.
 pub type QuantifiedVars = Vec<(chc::UserQuantifiedVarId, chc::Sort)>;
 
 /// The facts [`RefinedType::formula_with`] states of every value of `ty`, as a formula about
-/// `value`: [`int_range_type_facts`] when [`int_range_mode`] is on, and `0 <=` of the unsigned
-/// integers `ty` holds through tuples and pointers when it is off. `None` when there are none.
+/// `value`: the ranges of its integers through tuples, pointers, sequences and enum payloads when
+/// [`int_range_mode`] is on, and `0 <=` of the unsigned integers `ty` holds through tuples and
+/// pointers when it is off; and in every mode the code points of its `char`s. `None` when there are
+/// none.
 ///
 /// A binding is assumed to have these facts, so a variable that stands for a binding of a proof,
 /// such as a law's, ranges over them: the law's quantifier gets them as a premise. Their
@@ -1533,7 +1519,7 @@ pub type QuantifiedVars = Vec<(chc::UserQuantifiedVarId, chc::Sort)>;
 pub fn int_range_type_formula<FV, W>(
     ty: &Type<FV>,
     value: chc::Term<W>,
-    mut fresh: impl FnMut() -> chc::UserQuantifiedVarId,
+    fresh: impl FnMut() -> chc::UserQuantifiedVarId,
     defs: &dyn EnumDefProvider,
 ) -> Option<(QuantifiedVars, chc::Formula<W>)>
 where
@@ -1541,6 +1527,39 @@ where
     W: chc::Var,
 {
     let facts = RefinedType::unrefined(ty.clone()).formula_with(Some(defs));
+    facts_formula(facts, value, fresh)
+}
+
+/// The code points of the `char`s a value of `ty` holds, through tuples, pointers, sequences and
+/// enum payloads, as a formula about `value` with its existentials as in
+/// [`int_range_type_formula`]; `None` when it holds none. A variable an annotation's `forall` or
+/// `exists` binds ranges over them in every mode, as every value of `ty` has them.
+pub fn char_type_formula<FV, W>(
+    ty: &Type<FV>,
+    value: chc::Term<W>,
+    fresh: impl FnMut() -> chc::UserQuantifiedVarId,
+    defs: &dyn EnumDefProvider,
+) -> Option<(QuantifiedVars, chc::Formula<W>)>
+where
+    FV: chc::Var,
+    W: chc::Var,
+{
+    let mut cx = FactsCx::new(FactsUse::Assumed, Some(defs));
+    cx.chars_only = true;
+    let facts = RefinedType::unrefined(ty.clone()).facts(&mut cx);
+    facts_formula(facts, value, fresh)
+}
+
+/// `facts` of a value as a formula about `value`, each existential a variable `fresh` makes.
+fn facts_formula<FV, W>(
+    facts: Refinement<FV>,
+    value: chc::Term<W>,
+    mut fresh: impl FnMut() -> chc::UserQuantifiedVarId,
+) -> Option<(QuantifiedVars, chc::Formula<W>)>
+where
+    FV: chc::Var,
+    W: chc::Var,
+{
     if facts.is_top() {
         return None;
     }
@@ -1610,8 +1629,8 @@ struct FactsCx<'a> {
     use_: FactsUse,
     defs: Option<&'a dyn EnumDefProvider>,
     enclosing: Vec<EnumType<Closed>>,
-    /// Whether the value is itself in an enum's payload, read from it by a place.
-    in_payload: bool,
+    /// Whether only the facts of `char`s are stated, of no integer.
+    chars_only: bool,
     /// A checked enum type whose facts no finite formula states, met on the way.
     unsupported: Option<Type<Closed>>,
 }
@@ -1622,16 +1641,16 @@ impl<'a> FactsCx<'a> {
             use_,
             defs,
             enclosing: Vec::new(),
-            in_payload: false,
+            chars_only: false,
             unsupported: None,
         }
     }
 
     /// Whether the facts of the integers at the position are stated: everywhere when
-    /// [`int_range_mode`] is on, and outside enum payloads when it is off. Those of a `char` are
-    /// stated everywhere.
+    /// [`int_range_mode`] is on, and outside enum payloads when it is off, unless only those of
+    /// `char`s are. Those of a `char` are stated everywhere.
     fn states_int_facts(&self) -> bool {
-        int_range_mode() != IntRange::Off || (self.enclosing.is_empty() && !self.in_payload)
+        !self.chars_only && (int_range_mode() != IntRange::Off || self.enclosing.is_empty())
     }
 }
 
@@ -1827,6 +1846,9 @@ fn enum_value<V: Clone>(
 /// Checked: `forall f. v = C(f) => facts(f)`. Both say of the value's payload what the facts of
 /// its type say, and nothing of the other variants.
 ///
+/// When the mode is off, an enum whose definition is not registered, or whose payloads hold no
+/// `char`, gets no facts ([`has_range_facts`]), the same of a value and of a quantified variable.
+///
 /// An enum type inside its own payload (the same type, as a recursive definition makes it) gets no
 /// facts, since a finite formula cannot follow it; nor does one nested past
 /// [`ENUM_NESTING_LIMIT`]. Its check is an error ([`type_fact_checks`]) when it holds integers with
@@ -1835,8 +1857,11 @@ fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Clo
     let Some(defs) = cx.defs else {
         return Refinement::top();
     };
+    let enum_ty = Type::Enum(ty.clone());
+    if int_range_mode() == IntRange::Off && !has_range_facts(&enum_ty, defs, &mut Vec::new()) {
+        return Refinement::top();
+    }
     if cx.enclosing.contains(ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
-        let enum_ty = Type::Enum(ty.clone());
         if cx.use_ == FactsUse::Checked && has_range_facts(&enum_ty, defs, &mut Vec::new()) {
             cx.unsupported.get_or_insert(enum_ty);
         }
@@ -1934,7 +1959,8 @@ fn enum_payload_var(depth: usize, field: usize) -> chc::UserQuantifiedVarId {
 
 /// Whether a value of `ty` holds an integer with facts under [`int_range_mode`] or a `char`, through
 /// tuples, pointers, sequences and enum payloads; an integer in an enum's payload has none when the
-/// mode is off ([`FactsCx::states_int_facts`]). An enum met again on the way (`visited`) is searched no
+/// mode is off ([`FactsCx::states_int_facts`]), nor does an enum whose definition is not
+/// registered ([`EnumDefProvider::has_enum_def`]). An enum met again on the way (`visited`) is searched no
 /// further, except in its arguments: what its recursive fields add over the first visit comes from
 /// them.
 pub(super) fn has_range_facts(
@@ -1964,6 +1990,9 @@ pub(super) fn has_range_facts(
             .args
             .iter()
             .any(|arg| has_range_facts(&arg.ty, defs, visited)),
+        Type::Enum(ty) if int_range_mode() == IntRange::Off && !defs.has_enum_def(&ty.symbol) => {
+            false
+        }
         Type::Enum(ty) => {
             visited.push(ty.symbol.clone());
             let found = ty.variants(defs).iter().any(|variant| {
@@ -3053,6 +3082,7 @@ impl<FV> RefinedType<FV> {
                     char_code_point_formula(chc::Term::var(RefinedTypeVar::Value)).into(),
                 );
             }
+            Type::Seq(elem) if !cx.states_int_facts() && !matches!(elem.ty, Type::Char) => {}
             Type::Seq(elem) => {
                 if let Some(range) = seq_elem_range(&elem.ty, chc::Term::var(RefinedTypeVar::Value))
                 {

@@ -2318,7 +2318,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// The parameters of an `exists` / `forall` closure as quantified variables, the range of
     /// those of an integer type whose range is in use ([`rty::int_range`]) and the code points of
-    /// the `char`s they hold ([`rty::char_facts_formula`]), over which they range, and the body.
+    /// the `char`s they hold ([`rty::char_type_formula`]), over which they range, and the body.
     fn to_formula_with_quantified_vars(&self, closure: &rustc_hir::Body<'tcx>) -> QuantifiedBody {
         let mut inner_translator = self.clone();
         let mut vars = Vec::new();
@@ -2342,7 +2342,20 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
             let int_range = rty::int_range_formula(&param_rty.ty, term.clone());
-            let char_facts = rty::char_facts_formula(&param_rty.ty, term.clone());
+            let payload = || {
+                self.analyzer
+                    .generate_user_quantified_var(format!("payload of {ident}"))
+            };
+            let char_facts = rty::char_type_formula(
+                &param_rty.ty,
+                term.clone(),
+                payload,
+                &self.analyzer.enum_defs,
+            );
+            let char_facts = char_facts.map(|(payloads, facts)| {
+                vars.extend(payloads);
+                facts
+            });
             for fact in int_range.into_iter().chain(char_facts) {
                 range = Some(match range {
                     Some(range) => range.and(fact),
