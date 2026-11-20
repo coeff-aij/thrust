@@ -1591,6 +1591,9 @@ pub trait DomainGuard<V>: Sized {
     fn other_variant(discr: chc::Term<V>, d: BigInt) -> Self;
     fn and(self, other: Self) -> Self;
     fn or(self, other: Self) -> Self;
+    /// `forall k. 0 <= k < len(seq) => elem`, `elem` the guard of `seq[k]`, `k` the variable
+    /// `var`; `None` where a quantifier cannot be stated.
+    fn every_elem(var: chc::UserQuantifiedVarId, seq: chc::Term<V>, elem: Self) -> Option<Self>;
 }
 
 impl<V: Clone> DomainGuard<V> for chc::Term<V> {
@@ -1618,6 +1621,11 @@ impl<V: Clone> DomainGuard<V> for chc::Term<V> {
     fn or(self, other: Self) -> Self {
         chc::Term::or(self, other)
     }
+
+    /// A term has no quantifier: a logic function's domain stays quantifier-free.
+    fn every_elem(_var: chc::UserQuantifiedVarId, _seq: chc::Term<V>, _elem: Self) -> Option<Self> {
+        None
+    }
 }
 
 impl<V: Clone> DomainGuard<V> for chc::Formula<V> {
@@ -1641,23 +1649,49 @@ impl<V: Clone> DomainGuard<V> for chc::Formula<V> {
     fn or(self, other: Self) -> Self {
         chc::Formula::or(self, other)
     }
+
+    fn every_elem(var: chc::UserQuantifiedVarId, seq: chc::Term<V>, elem: Self) -> Option<Self> {
+        let k = chc::Term::UserQuantifiedVar(chc::Sort::int(), var);
+        let in_bounds = chc::Formula::Atom(chc::Atom::new(
+            chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+            vec![k.clone(), chc::Term::int(0)],
+        ))
+        .and(chc::Formula::Atom(chc::Atom::new(
+            chc::KnownPred::LESS_THAN.into(),
+            vec![k, seq.seq_len()],
+        )));
+        Some(chc::Formula::forall(
+            vec![(var, chc::Sort::int())],
+            in_bounds.implies(elem),
+        ))
+    }
 }
 
-/// What a [`domain_guard`] traversal is at: the definitions of enums and the enum types whose
-/// payloads enclose the position.
+/// What a [`domain_guard`] traversal is at: the definitions of enums, the enum types whose
+/// payloads enclose the position and the number of sequences that do.
 struct DomainCx<'a> {
     defs: &'a dyn EnumDefProvider,
     enclosing: Vec<EnumType<Closed>>,
+    seq_depth: usize,
 }
 
-/// The quantifier-free part of the facts of a value of `ty`, as a Boolean term about `value`:
-/// the bounds every integer is assumed to have ([`int_range_bounds`]: `0 <=` of an unsigned one in
-/// every mode, its range when [`int_range`] is in use), through tuples, pointers and the payloads
-/// of enums, and of an enum the exclusion of each variant no Rust value is
-/// ([`EnumVariantDef::uninhabited`]), in every mode; `None` when there are none. A variant's
-/// payload is read by its selectors under its discriminant, `discr(v) = d => guard(sel(v))`, and a
-/// variant no Rust value is is `discr(v) != d`. An enum met again inside its own payload, or
-/// nested past [`ENUM_NESTING_LIMIT`], adds nothing, as [`enum_payload_facts`] does.
+/// The index variable of the guard of a sequence's elements at nesting `depth`
+/// ([`DomainGuard::every_elem`]). The identifiers are reserved, as [`seq_elem_var`]'s is.
+fn seq_guard_var(depth: usize) -> chc::UserQuantifiedVarId {
+    assert!(depth < 0x1_0000, "sequence guard nested too deep");
+    chc::UserQuantifiedVarId::from_usize(0xFFFD_0000 + depth)
+}
+
+/// The facts of a value of `ty` as a Boolean about `value`: the bounds every integer is assumed to
+/// have ([`int_range_bounds`]: `0 <=` of an unsigned one in every mode, its range when
+/// [`int_range`] is in use), through tuples, pointers, the payloads of enums and, in a formula, the
+/// elements of sequences ([`DomainGuard::every_elem`], stated only when the elements have a
+/// guard), and of an enum the exclusion of each variant no Rust value is
+/// ([`EnumVariantDef::uninhabited`]), in every mode; `None` when there are none. As a term it is
+/// quantifier-free. A variant's payload is read by its selectors under its discriminant,
+/// `discr(v) = d => guard(sel(v))`, and a variant no Rust value is is `discr(v) != d`. An enum met
+/// again inside its own payload, or nested past [`ENUM_NESTING_LIMIT`], adds nothing, as
+/// [`enum_payload_facts`] does.
 ///
 /// It is the domain of the variable an annotation's `forall` or `exists` binds, as a quantifier
 /// in Verus or Creusot ranges over the values of its type, and of the arguments a logic function's
@@ -1676,6 +1710,7 @@ where
     let mut cx = DomainCx {
         defs,
         enclosing: Vec::new(),
+        seq_depth: 0,
     };
     domain_guard_within(ty, value, &mut cx)
 }
@@ -1708,6 +1743,14 @@ where
             conj_guard(current, final_)
         }
         Type::Enum(enum_ty) => enum_domain_guard(enum_ty, value, cx),
+        Type::Seq(elem) => {
+            let var = seq_guard_var(cx.seq_depth);
+            let k = chc::Term::UserQuantifiedVar(chc::Sort::int(), var);
+            cx.seq_depth += 1;
+            let elem_guard = domain_guard_within(&elem.ty, value.clone().seq_nth(k), cx);
+            cx.seq_depth -= 1;
+            G::every_elem(var, value, elem_guard?)
+        }
         Type::BitVec(_)
         | Type::Bool
         | Type::String
@@ -1716,8 +1759,7 @@ where
         | Type::Param(_)
         | Type::Alias(_)
         | Type::Function(_)
-        | Type::Array(_)
-        | Type::Seq(_) => None,
+        | Type::Array(_) => None,
     }
 }
 
