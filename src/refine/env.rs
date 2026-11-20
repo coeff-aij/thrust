@@ -508,6 +508,43 @@ impl PlaceType {
         builder.build(ty, term)
     }
 
+    /// The element that a slice pattern takes out of this sequence at `offset`, counted from the
+    /// end when `from_end`. The pattern's length test guards the access.
+    pub fn seq_elem(self, offset: u64, from_end: bool) -> PlaceType {
+        let mut builder = PlaceTypeBuilder::default();
+        let (seq_ty, seq) = builder.subsume(self);
+        let rty::Type::Seq(elem_rty) = seq_ty else {
+            panic!("slice pattern on a value that is not a sequence: {seq_ty:?}")
+        };
+        let offset = chc::Term::int(offset);
+        let index = if from_end {
+            seq.clone().seq_len().sub(offset)
+        } else {
+            offset
+        };
+        let (ty, value_var) = builder.subsume_rty(*elem_rty);
+        let value = chc::Term::var(value_var.into());
+        builder.push_formula(value.clone().equal_to(seq.seq_nth(index)));
+        builder.build(ty, value)
+    }
+
+    /// The subslice that a slice pattern takes out of this sequence from `from` to `to`, `to`
+    /// counted from the end when `from_end`. The pattern's length test guards the access.
+    pub fn seq_subslice(self, from: u64, to: u64, from_end: bool) -> PlaceType {
+        let mut builder = PlaceTypeBuilder::default();
+        let (seq_ty, seq) = builder.subsume(self);
+        let start = chc::Term::int(from);
+        let length = if from_end {
+            seq.clone()
+                .seq_len()
+                .sub(start.clone())
+                .sub(chc::Term::int(to))
+        } else {
+            chc::Term::int(to - from)
+        };
+        builder.build(seq_ty, seq.seq_extract(start, length))
+    }
+
     pub fn downcast<T>(
         self,
         variant_idx: VariantIdx,
@@ -1573,6 +1610,12 @@ enum Path {
     Deref(Box<Path>),
     TupleProj(Box<Path>, usize),
     Downcast(Box<Path>, VariantIdx, FieldIdx),
+    /// The element a slice pattern takes out of a sequence: its offset, and whether it counts
+    /// from the end.
+    SeqElem(Box<Path>, u64, bool),
+    /// The subslice a slice pattern takes out of a sequence: its bounds as in
+    /// `PlaceElem::Subslice`.
+    SeqSubslice(Box<Path>, u64, u64, bool),
 }
 
 impl<'tcx> From<Place<'tcx>> for Path {
@@ -1588,6 +1631,12 @@ impl<'tcx> From<Place<'tcx>> for Path {
                         panic!("downcast not followed by field")
                     };
                     Path::Downcast(Box::new(path), variant_idx, field_idx)
+                }
+                Some(PlaceElem::ConstantIndex {
+                    offset, from_end, ..
+                }) => Path::SeqElem(Box::new(path), offset, from_end),
+                Some(PlaceElem::Subslice { from, to, from_end }) => {
+                    Path::SeqSubslice(Box::new(path), from, to, from_end)
                 }
                 None => break,
                 _ => unimplemented!(),
@@ -1609,6 +1658,12 @@ where
             Path::Downcast(path, variant_idx, field_idx) => {
                 self.path_type(path)
                     .downcast(*variant_idx, *field_idx, &self.enum_defs)
+            }
+            Path::SeqElem(path, offset, from_end) => {
+                self.path_type(path).seq_elem(*offset, *from_end)
+            }
+            Path::SeqSubslice(path, from, to, from_end) => {
+                self.path_type(path).seq_subslice(*from, *to, *from_end)
             }
         }
     }
