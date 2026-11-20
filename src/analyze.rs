@@ -556,8 +556,7 @@ struct BasicBlockDef {
 }
 
 /// The definitions of the enums the crate's types name: those whose datatypes the query declares
-/// ([`Analyzer::get_or_register_enum_def`]) and, under `THRUST_INT_RANGE`, every enum a type built
-/// so far names, whose definition the facts of its payloads read
+/// ([`Analyzer::get_or_register_enum_def`]) and every enum a type built so far names, whose definition the facts of its payloads read
 /// ([`refine::TypeBuilder::register_enum_def`]).
 #[derive(Debug, Clone, Default)]
 pub struct EnumDefs {

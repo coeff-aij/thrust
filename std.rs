@@ -777,6 +777,10 @@ mod thrust_models {
         type Ty = bool;
     }
 
+    impl Model for char {
+        type Ty = char;
+    }
+
     impl Model for std::cmp::Ordering {
         type Ty = std::cmp::Ordering;
     }
