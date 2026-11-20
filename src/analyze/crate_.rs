@@ -1110,6 +1110,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.check_ignored_not_run();
         self.check_invariants_not_assumed_unanalyzed();
         self.assert_callable_entry();
+        self.ctx.warn_unchecked_witnesses();
     }
 
     /// Stops at an `Invariant` impl whose self type is not an ADT defined in the crate (not in the injected

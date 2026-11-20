@@ -32,6 +32,8 @@ pub struct FormulaFn<'tcx> {
     body: FormulaFnBody,
     /// [`FormulaFn::witnessed_formula`], when it differs from the formula.
     witnessed: Option<chc::Formula<rty::FunctionParamIdx>>,
+    /// See [`FormulaFn::witness_calls`].
+    witness_calls: Vec<HirId>,
     /// The binders and the body of the formula when it is a call of `exists`, as written. The
     /// stored formula may read an enum's payload through selectors instead
     /// (`Formula::exists_over_payload`); a `witness` instantiates this form.
@@ -127,6 +129,11 @@ impl<'tcx> FormulaFn<'tcx> {
     /// replaced by the body of `φ`'s `exists` at `t`.
     pub fn witnessed_formula(&self) -> &chc::Formula<rty::FunctionParamIdx> {
         self.witnessed.as_ref().unwrap_or_else(|| self.formula())
+    }
+
+    /// The `witness` calls whose witness [`Self::witnessed_formula`] instantiates.
+    pub fn witness_calls(&self) -> &[HirId] {
+        &self.witness_calls
     }
 
     pub fn ret(&self) -> mir_ty::Ty<'tcx> {
@@ -986,6 +993,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// The translation, with the `pre!` receivers it recorded, its quantifier bodies' included.
     pub fn into_formula_fn(self) -> FormulaFn<'tcx> {
+        let mut witness_calls = Vec::new();
         let (body, witnessed, exists) = if self.is_logic(self.local_def_id.to_def_id()) {
             (
                 FormulaFnBody::Term(self.to_term(self.logic_body_expr().0)),
@@ -995,7 +1003,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         } else {
             (
                 FormulaFnBody::Formula(self.to_formula(self.body.value)),
-                self.witnessed_formula(self.body.value),
+                self.witnessed_formula(self.body.value, &mut witness_calls),
                 self.exists_call_parts(self.body.value),
             )
         };
@@ -1019,19 +1027,22 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             ret,
             body,
             witnessed,
+            witness_calls,
             exists,
             pre_receivers: self.pre_receivers.borrow().clone(),
         }
     }
 
     /// [`FormulaFn::witnessed_formula`] of the formula `hir`, or `None` when no conjunct of it is
-    /// a `witness`.
+    /// a `witness`; pushes the `witness` calls it instantiates to `witness_calls`.
     fn witnessed_formula(
         &self,
         hir: &'tcx rustc_hir::Expr<'tcx>,
+        witness_calls: &mut Vec<HirId>,
     ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
         let hir = peel_wrappers(hir);
         if let Some((formula, witness)) = self.witness_args(hir) {
+            witness_calls.push(hir.hir_id);
             return Some(self.witness_instance(formula, witness));
         }
         let rustc_hir::ExprKind::Binary(op, lhs, rhs) = hir.kind else {
@@ -1040,8 +1051,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         if op.node != rustc_hir::BinOpKind::And {
             return None;
         }
-        let (lhs_witnessed, rhs_witnessed) =
-            (self.witnessed_formula(lhs), self.witnessed_formula(rhs));
+        let (lhs_witnessed, rhs_witnessed) = (
+            self.witnessed_formula(lhs, witness_calls),
+            self.witnessed_formula(rhs, witness_calls),
+        );
         if lhs_witnessed.is_none() && rhs_witnessed.is_none() {
             return None;
         }
@@ -3074,6 +3087,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             let [formula, _] = args else {
                                 panic!("witness takes a formula and its witness");
                             };
+                            self.analyzer.record_witness_read_as_formula(hir);
                             return self.to_formula_or_term(formula);
                         }
                         if Some(def_id) == self.def_ids.exists() {
