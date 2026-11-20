@@ -3817,12 +3817,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 && self.builtin_call(func).is_none()
             {
                 let rty = self.type_call_direct(func.clone(), args.iter().map(|a| a.node.clone()));
-                debug_assert_eq!(
+                let destination_sort = self
+                    .type_builder
+                    .build(self.local_decls[destination].ty)
+                    .ty
+                    .to_sort();
+                assert_eq!(
                     rty.ty.to_sort(),
-                    self.type_builder
-                        .build(self.local_decls[destination].ty)
-                        .ty
-                        .to_sort(),
+                    destination_sort,
                     "the callee's return type has the shape of the destination",
                 );
                 self.bind_local(destination, rty);

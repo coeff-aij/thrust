@@ -1201,8 +1201,10 @@ mod thrust_models {
     }
 
     // The ghost history `thrust_macros::context` gives a `for` loop whose body starts with no
-    // invariant (`thrust-macros/src/for_loop.rs`), as Creusot's `desugar_for` gives every loop:
-    // `iter_old`, the iterator before the loop, and `produced`, the items `next` has returned so far.
+    // invariant (`thrust-macros/src/for_loop.rs`): `iter_old`, the iterator before the loop, and
+    // `produced`, the items `next` has returned so far. Creusot's `desugar_for` makes them only for
+    // a loop with an `#[invariant]` or `#[variant]` attribute; Thrust's mode makes them for every
+    // `for` loop when it is enabled.
     // The desugaring cannot write the iterator's type, so a `ghost!` cannot make them: each is made
     // by a marker generic in it, whose arguments give Thrust the type, and which Thrust types as a
     // `ghost!` whose term is the formula function after it, at the marker's generic arguments. The

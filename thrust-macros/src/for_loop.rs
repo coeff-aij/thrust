@@ -10,8 +10,9 @@
 //!
 //! With `THRUST_FOR_LOOP_HISTORY=1`, a loop with no invariant gets the same ghosts, and
 //! `inv(iter)` and `produces(iter_old, produced, iter)` are conjoined to the invariant Thrust
-//! infers, so that the inferred part can relate the loop's state to `produced`, as Creusot does
-//! for every loop.
+//! infers, so that the inferred part can relate the loop's state to `produced`. Creusot gives a
+//! `for` loop these ghosts only when it carries an `#[invariant]` or `#[variant]` attribute; with
+//! this option Thrust gives them to every `for` loop.
 //!
 //! The variables of an annotated loop get names of their own for each loop, and the invariant's
 //! `iter`, `iter_old` and `produced` are renamed to them, so the loop body sees its own variables
