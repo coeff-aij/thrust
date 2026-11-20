@@ -1785,9 +1785,49 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
         marked.extend(self.assigned_params().iter());
+        marked.extend(self.reinitialized_under_contracts(move_data));
         for local in marked {
             self.body.local_decls[local].mutability = mir::Mutability::Mut;
         }
+    }
+
+    /// The locals the code under a block contract assigns as a whole that may have been set
+    /// before the contract opens: a local moved out before the code or in it and set again by
+    /// it, which the check above misses where the move is in another block, since the local is
+    /// uninitialized at the assignment. The analysis goes past the code from the bindings of the
+    /// opening block, which may still hold such a local (a drop on an unwind path keeps it
+    /// live), so the code replaces a binding, as an assignment after a move in the same block
+    /// does, and the local takes a fresh value after the contract. Binding an immutable local
+    /// again would change the value its variable stands for in the facts already known.
+    fn reinitialized_under_contracts(&self, move_data: &MoveData<'tcx>) -> Vec<Local> {
+        if self.block_contracts.is_empty() {
+            return Vec::new();
+        }
+        let mut ever_init = EverInitializedPlaces::new(&self.body, move_data)
+            .iterate_to_fixpoint(self.tcx, &self.body, None)
+            .into_results_cursor(&self.body);
+        let mut reinitialized = Vec::new();
+        for contract in &self.block_contracts {
+            ever_init.seek_before_primary_effect(self.body.terminator_loc(contract.opening));
+            let ever_set = locals_of(
+                ever_init
+                    .get()
+                    .iter()
+                    .map(|init| move_data.inits[init].path),
+                move_data,
+            );
+            reinitialized.extend(
+                contract
+                    .changed
+                    .iter()
+                    .filter(|(local, change)| {
+                        **change == analyze::block_contract::Change::Whole
+                            && ever_set.contains(*local)
+                    })
+                    .map(|(local, _)| *local),
+            );
+        }
+        reinitialized
     }
 
     /// The parameters that the body assigns as a whole. A parameter is initialized on entry, so
@@ -2435,7 +2475,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .iterate_to_fixpoint(self.tcx, body, None)
                 .into_results_cursor(body)
         });
-        self.block_contracts = analyze::block_contract::collect(self.ctx, &self.body);
         let contract_body = (!self.block_contracts.is_empty()).then(|| {
             analyze::block_contract::body_ending_at_closings(
                 ghost_read_body.clone().unwrap_or_else(|| self.body.clone()),
@@ -3019,6 +3058,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
         self.normalize_switch_int_discriminant_order();
         analyze::block_contract::separate_entries(self.ctx, &mut self.body);
+        self.block_contracts = analyze::block_contract::collect(self.ctx, &self.body);
         let move_data = self.move_data();
         self.reassign_local_mutabilities(&move_data);
         self.refine_basic_blocks(&move_data);
