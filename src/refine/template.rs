@@ -583,6 +583,12 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
+    /// Whether no value has `ty` (`Infallible`, `!`, an enum without variants, a struct or tuple
+    /// holding one), as rustc decides it: its model may have a value (`Infallible` is `()`).
+    pub fn is_uninhabited(&self, ty: mir_ty::Ty<'tcx>) -> bool {
+        ty.is_privately_uninhabited(self.tcx, self.typing_env)
+    }
+
     pub fn resolve_model_ty(&self, orig_ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let replaced = self.replace_closure_model(orig_ty);
 
