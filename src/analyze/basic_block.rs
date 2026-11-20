@@ -189,13 +189,13 @@ pub fn resolve_closure_local_args<'tcx>(
         .skip_binder()
         .inputs();
     for (ident, &input) in tcx.fn_arg_idents(def_id).iter().zip(inputs) {
-        let Some(var) = ident.map(|ident| ident.name) else {
+        let Some(var) = *ident else {
             continue;
         };
         if !matcher.has_hole(input) {
             continue;
         }
-        let local_ty = closure_local_ty(body, var, scope).unwrap_or_else(|why| {
+        let local_ty = closure_local_ty(tcx, body, var, scope).unwrap_or_else(|why| {
             tcx.dcx().span_fatal(
                 span,
                 format!("`{var}` has a type left to its local (`_` or a type parameter of the formula), but `{var}` is {why}"),
@@ -248,11 +248,12 @@ pub fn register_closure_local_types<'tcx>(
 
 /// The type of the local `var` names in `scope`, or why it names none.
 fn closure_local_ty<'tcx>(
+    tcx: TyCtxt<'tcx>,
     body: &mir::Body<'tcx>,
-    var: rustc_span::Symbol,
+    var: rustc_span::symbol::Ident,
     scope: mir::SourceScope,
 ) -> Result<mir_ty::Ty<'tcx>, &'static str> {
-    let bindings = bindings_in_scope(body, var, scope);
+    let bindings = bindings_in_scope(tcx, body, var, scope);
     let tys: Vec<mir_ty::Ty<'tcx>> = bindings
         .iter()
         .filter_map(|vdi| match &vdi.value {
@@ -435,19 +436,24 @@ impl<'tcx> ClosureLocalMatcher<'tcx> {
     }
 }
 
-/// The debug entries of the variables the name `name` can stand for in `scope`: those of the
-/// innermost enclosing scope that binds the name, as Rust's shadowing resolves it.
+/// The debug entries of the variables the identifier `name` can stand for in `scope`: those of
+/// the innermost enclosing scope that binds it, as Rust's shadowing resolves it.
 pub fn bindings_in_scope<'a, 'tcx>(
+    tcx: TyCtxt<'tcx>,
     body: &'a mir::Body<'tcx>,
-    name: rustc_span::Symbol,
+    name: rustc_span::symbol::Ident,
     scope: mir::SourceScope,
 ) -> Vec<&'a mir::VarDebugInfo<'tcx>> {
+    if !body.var_debug_info.iter().any(|vdi| vdi.name == name.name) {
+        return Vec::new();
+    }
+    let idents = binding_idents(tcx, body);
     let mut scope = Some(scope);
     while let Some(current) = scope {
         let bound: Vec<_> = body
             .var_debug_info
             .iter()
-            .filter(|vdi| vdi.name == name && vdi.source_info.scope == current)
+            .filter(|vdi| vdi.source_info.scope == current && names_binding(&idents, name, vdi))
             .collect();
         if !bound.is_empty() {
             return bound;
@@ -455,6 +461,66 @@ pub fn bindings_in_scope<'a, 'tcx>(
         scope = body.source_scopes[current].parent_scope;
     }
     Vec::new()
+}
+
+/// The identifiers the patterns of `body`'s typeck root bind, its closures' included, keyed by
+/// the span of the pattern and by their own span, with their name: a debug entry carries the
+/// pattern's span (`mut $x` in a macro has the macro's context) or, for a capture, the
+/// identifier's, while hygiene is the identifier's (`$x` keeps the caller's context).
+pub fn binding_idents(
+    tcx: TyCtxt<'_>,
+    body: &mir::Body<'_>,
+) -> HashMap<(rustc_span::Span, rustc_span::Symbol), rustc_span::symbol::Ident> {
+    struct Bindings<'tcx> {
+        tcx: TyCtxt<'tcx>,
+        idents: HashMap<(rustc_span::Span, rustc_span::Symbol), rustc_span::symbol::Ident>,
+    }
+    impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for Bindings<'tcx> {
+        type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
+
+        fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
+            self.tcx
+        }
+
+        fn visit_pat(&mut self, pat: &'tcx rustc_hir::Pat<'tcx>) {
+            if let rustc_hir::PatKind::Binding(_, _, ident, _) = pat.kind {
+                self.idents.insert((pat.span, ident.name), ident);
+                self.idents.insert((ident.span, ident.name), ident);
+            }
+            rustc_hir::intravisit::walk_pat(self, pat);
+        }
+    }
+    let def_id = body.source.def_id().expect_local();
+    let root = tcx.typeck_root_def_id(def_id.to_def_id()).expect_local();
+    let mut bindings = Bindings {
+        tcx,
+        idents: HashMap::new(),
+    };
+    rustc_hir::intravisit::Visitor::visit_body(&mut bindings, tcx.hir_body_owned_by(root));
+    bindings.idents
+}
+
+/// Whether the identifier `name` names the variable of `vdi` where both are in scope, as rustc
+/// resolves a local: by the name and by the syntax context of the binding identifier's span and
+/// of `name`'s, normalized as for `macro_rules!` hygiene, so a variable a `macro_rules!` macro
+/// binds is not named from outside it, and one it binds through a `$x` it is passed is named as
+/// the caller writes it. The binding identifier is found in `idents` ([`binding_idents`]); a
+/// variable no pattern binds is named by no identifier, and neither is one a desugaring binds,
+/// which lowering binds after resolution: its pattern or its identifier has a desugared span (the
+/// iterator of a `for` loop has the head's span and an identifier with none). That includes a
+/// parameter of an `async fn`, rebound with an `Async`-desugared span, which Thrust does not
+/// support.
+pub fn names_binding(
+    idents: &HashMap<(rustc_span::Span, rustc_span::Symbol), rustc_span::symbol::Ident>,
+    name: rustc_span::symbol::Ident,
+    vdi: &mir::VarDebugInfo<'_>,
+) -> bool {
+    let Some(binding) = idents.get(&(vdi.source_info.span, vdi.name)) else {
+        return false;
+    };
+    vdi.source_info.span.desugaring_kind().is_none()
+        && binding.span.desugaring_kind().is_none()
+        && binding.normalize_to_macro_rules() == name.normalize_to_macro_rules()
 }
 
 /// Whether `elem` takes an element or a subslice out of a slice or an array by its position, as a
@@ -2683,7 +2749,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// parameters come from resolves it), when it holds a value here. A variable a closure body
     /// reads from its captures is a place of the closure's environment (`*((*_1).0)`), which is
     /// read as such.
-    fn operand_of_name(&self, name: rustc_span::Symbol) -> Option<Operand<'tcx>> {
+    fn operand_of_name(&self, name: rustc_span::symbol::Ident) -> Option<Operand<'tcx>> {
         let scope = self.body.basic_blocks[self.basic_block]
             .terminator()
             .source_info
@@ -2694,11 +2760,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The value here of the variable `name` stands for in `scope`.
     fn operand_of_name_in(
         &self,
-        name: rustc_span::Symbol,
+        name: rustc_span::symbol::Ident,
         scope: mir::SourceScope,
     ) -> Option<Operand<'tcx>> {
         let mut found: Option<Operand<'tcx>> = None;
-        for vdi in bindings_in_scope(&self.body, name, scope) {
+        for vdi in bindings_in_scope(self.tcx, &self.body, name, scope) {
             let operand = match &vdi.value {
                 mir::VarDebugInfoContents::Place(place) => {
                     if !self.is_defined(place.local) {
@@ -2803,7 +2869,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         format!("{what} refers to `{name}`, which is not a live variable here"),
                     )
                 });
-                self.check_spec_param_ty(what, span, name, *written_input_ty, &operand);
+                self.check_spec_param_ty(what, span, name.name, *written_input_ty, &operand);
                 let arg = self.operand_refined_type(operand);
                 self.env.immut_bind_tmp(arg)
             })
@@ -2858,7 +2924,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let name = analyze::annot_fn::lifted_param_source_name(
                     ident.expect("formula parameters must be named"),
                 );
-                bindings_in_scope(&self.body, name, closing.source_info.scope)
+                bindings_in_scope(self.tcx, &self.body, name, closing.source_info.scope)
                     .into_iter()
                     .find_map(|vdi| match &vdi.value {
                         mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
@@ -3065,7 +3131,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         "{what} refers to `{name}`, which is not a live variable here"
                     ))
                 });
-                self.check_spec_param_ty(what, span, name, *written_input_ty, &operand);
+                self.check_spec_param_ty(what, span, name.name, *written_input_ty, &operand);
                 self.operand_refined_type(operand)
             })
             .collect()

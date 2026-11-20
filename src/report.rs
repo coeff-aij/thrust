@@ -148,11 +148,14 @@ impl Config {
 
     /// Whether the report shows `def`: written in the program, and among `THRUST_REPORT_ONLY`.
     pub fn reports(&self, tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
-        user_written(tcx, def)
-            && self
-                .only
-                .as_ref()
-                .is_none_or(|only| only.contains(tcx, def.to_def_id()))
+        user_written(tcx, def) && self.selects(tcx, def)
+    }
+
+    /// Whether `def` is among `THRUST_REPORT_ONLY`.
+    pub fn selects(&self, tcx: TyCtxt<'_>, def: LocalDefId) -> bool {
+        self.only
+            .as_ref()
+            .is_none_or(|only| only.contains(tcx, def.to_def_id()))
     }
 
     /// What the report needs from the solver besides the verdict.
