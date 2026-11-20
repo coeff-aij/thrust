@@ -5,10 +5,11 @@
 //! contract, whose first block has the `requires` formula as its precondition and assumes the
 //! facts of the declared types of the locals it takes, as a function body has those of its
 //! parameters' types: the code is checked once from there, and the `block_ensures!` marker
-//! checks the `ensures` formula and ends the path. The opening block also goes on to the block after the contract, past the code,
-//! with each local the code may change given a fresh value and the `ensures` formula assumed, as
-//! a call's result and its `&mut` arguments are given in RustHorn. The other locals keep the
-//! values and the facts they had at the opening, which is the frame of the contract.
+//! checks the `ensures` formula and ends the path. The opening block also goes on to the block
+//! after the contract, past the code, with each local the code may change given a fresh value and
+//! the `ensures` formula assumed, as a call's result and its `&mut` arguments are given in
+//! RustHorn. The other locals keep the values and the facts they had at the opening, which is the
+//! frame of the contract.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
