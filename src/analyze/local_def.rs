@@ -1791,24 +1791,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// The locals the code under a block contract assigns as a whole that may have been set
-    /// before the contract opens: a local moved out before the code or in it and set again by
-    /// it, which the check above misses where the move is in another block, since the local is
+    /// The locals the code under a block contract assigns as a whole that the opening block
+    /// holds a binding of: a local moved out before the code or in it and set again by it, which
+    /// the check above misses where the move is in another block, since the local is
     /// uninitialized at the assignment. The analysis goes past the code from the bindings of the
-    /// opening block, which may still hold such a local (a drop on an unwind path keeps it
-    /// live), so the code replaces a binding, as an assignment after a move in the same block
-    /// does, and the local takes a fresh value after the contract. Binding an immutable local
-    /// again would change the value its variable stands for in the facts already known.
+    /// opening block, which keep such a local after a move out of it (a drop on an unwind path
+    /// can keep it live), so the code replaces a binding, as an assignment after a move in the
+    /// same block does, and the local takes a fresh value after the contract. Binding an
+    /// immutable local again would change the value its variable stands for in the facts
+    /// already known.
     fn reinitialized_under_contracts(&self, move_data: &MoveData<'tcx>) -> Vec<Local> {
         if self.block_contracts.is_empty() {
             return Vec::new();
         }
+        // The liveness `refine_basic_blocks` gives the parameters of a block outside the code
+        // under a contract, as the opening block is.
+        let ghost_read_body = self.body_with_ghost_reads();
+        let live_body = ghost_read_body.as_ref().unwrap_or(&self.body);
+        let mut live = MaybeLiveLocals
+            .iterate_to_fixpoint(self.tcx, live_body, None)
+            .into_results_cursor(live_body);
         let mut ever_init = EverInitializedPlaces::new(&self.body, move_data)
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
         let mut reinitialized = Vec::new();
         for contract in &self.block_contracts {
-            ever_init.seek_before_primary_effect(self.body.terminator_loc(contract.opening));
+            let opening = contract.opening;
+            live.seek_to_block_start(opening);
+            ever_init.seek_to_block_start(opening);
             let ever_set = locals_of(
                 ever_init
                     .get()
@@ -1816,13 +1826,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .map(|init| move_data.inits[init].path),
                 move_data,
             );
+            let data = &self.body.basic_blocks[opening];
+            let assigned: HashSet<Local> = (0..data.statements.len())
+                .filter_map(|statement_index| assigned_local(data, statement_index))
+                .collect();
+            let bound = |local: Local| {
+                (live.get().contains(local) && ever_set.contains(&local))
+                    || assigned.contains(&local)
+            };
             reinitialized.extend(
                 contract
                     .changed
                     .iter()
                     .filter(|(local, change)| {
-                        **change == analyze::block_contract::Change::Whole
-                            && ever_set.contains(*local)
+                        **change == analyze::block_contract::Change::Whole && bound(**local)
                     })
                     .map(|(local, _)| *local),
             );
