@@ -300,8 +300,8 @@ pub fn explicit_laws(
 
 /// Whether the type parameter `param_def_id` is bounded by `Fn` on the item that declares it, so
 /// that it is an `Fn` closure wherever it is in scope. A bound written on one method of an impl
-/// whose parameter it is does not count: the parameter's `hist_inv!` relation is shared by every
-/// method of the impl.
+/// whose parameter it is does not count: the parameter's `hist_inv!` relation and its contract at
+/// each closure trait are shared by every method of the impl.
 pub fn fn_bounded_where_declared(tcx: mir_ty::TyCtxt<'_>, param_def_id: DefId) -> bool {
     let Some(fn_trait) = tcx.lang_items().fn_trait() else {
         return false;
@@ -324,13 +324,14 @@ pub fn fn_bounded_where_declared(tcx: mir_ty::TyCtxt<'_>, param_def_id: DefId) -
         })
 }
 
-/// The laws of the relation `pred` of a closure type parameter whose contract is `contract`;
-/// when the parameter is an `Fn` closure wherever it is in scope (`fn_bounded`, see
-/// [`fn_bounded_where_declared`]), as in Creusot, the relation is the equality of states.
+/// The laws of the relation `pred` of a closure type parameter whose contract at a call through
+/// `&mut` is `call_mut_contract`; when the parameter is an `Fn` closure wherever it is in scope
+/// (`fn_bounded`, see [`fn_bounded_where_declared`]), as in Creusot, the relation is the equality
+/// of states.
 pub fn laws(
     system: &mut chc::System,
     pred: &chc::ForallPred,
-    contract: &rty::FunctionType,
+    call_mut_contract: &rty::FunctionType,
     fn_bounded: bool,
     enum_defs: &dyn rty::EnumDefProvider,
 ) -> Vec<chc::Formula<chc::TermVarIdx>> {
@@ -363,44 +364,41 @@ pub fn laws(
         );
         laws.push(unchanged);
     }
-    let receiver = &contract.params[rty::FunctionParamIdx::from_usize(0)].ty;
-    let receiver_kind = receiver.as_pointer().map(|ty| ty.kind);
-    if receiver_kind == Some(rty::PointerKind::Ref(rty::RefKind::Mut)) {
-        let mut params: Vec<(chc::UserQuantifiedVarId, chc::Sort)> = contract
-            .params
-            .iter_enumerated()
-            .map(|(idx, param)| {
-                let v = fresh(system, &format!("hist_inv_p{}", idx.index()));
-                (v, param.ty.to_sort())
-            })
-            .collect();
-        let args: Vec<_> = params
-            .iter()
-            .map(|(v, sort)| chc::Term::UserQuantifiedVar(sort.clone(), *v))
-            .collect();
-        let result_sort = contract.ret.ty.to_sort();
-        let r = fresh(system, "hist_inv_r");
-        let result = chc::Term::UserQuantifiedVar(result_sort.clone(), r);
-        params.push((r, result_sort));
-        let mut premise = contract.postcondition_formula(&args, result.clone());
-        // The law's variables range over the types of the parameters and the result.
-        let typed = contract
-            .params
-            .iter()
-            .zip(&args)
-            .map(|(param, arg)| (&param.ty, arg));
-        for (ty, term) in typed.chain([(&contract.ret.ty, &result)]) {
-            let payload = || fresh(system, "hist_inv_payload");
-            if let Some((vars, range)) =
-                rty::int_range_type_formula(ty, term.clone(), payload, enum_defs)
-            {
-                params.extend(vars);
-                premise = range.and(premise);
-            }
+    // Creusot's `postcondition_mut_hist_inv`: a call's states are related.
+    let mut params: Vec<(chc::UserQuantifiedVarId, chc::Sort)> = call_mut_contract
+        .params
+        .iter_enumerated()
+        .map(|(idx, param)| {
+            let v = fresh(system, &format!("hist_inv_p{}", idx.index()));
+            (v, param.ty.to_sort())
+        })
+        .collect();
+    let args: Vec<_> = params
+        .iter()
+        .map(|(v, sort)| chc::Term::UserQuantifiedVar(sort.clone(), *v))
+        .collect();
+    let result_sort = call_mut_contract.ret.ty.to_sort();
+    let r = fresh(system, "hist_inv_r");
+    let result = chc::Term::UserQuantifiedVar(result_sort.clone(), r);
+    params.push((r, result_sort));
+    let mut premise = call_mut_contract.postcondition_formula(&args, result.clone());
+    // The law's variables range over the types of the parameters and the result.
+    let typed = call_mut_contract
+        .params
+        .iter()
+        .zip(&args)
+        .map(|(param, arg)| (&param.ty, arg));
+    for (ty, term) in typed.chain([(&call_mut_contract.ret.ty, &result)]) {
+        let payload = || fresh(system, "hist_inv_payload");
+        if let Some((vars, range)) =
+            rty::int_range_type_formula(ty, term.clone(), payload, enum_defs)
+        {
+            params.extend(vars);
+            premise = range.and(premise);
         }
-        let states = related(args[0].clone().mut_current(), args[0].clone().mut_final());
-        laws.push(chc::Formula::forall(params, premise.implies(states)));
     }
+    let states = related(args[0].clone().mut_current(), args[0].clone().mut_final());
+    laws.push(chc::Formula::forall(params, premise.implies(states)));
     for law in &mut laws {
         law.simplify();
     }

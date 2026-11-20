@@ -1574,19 +1574,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 let (bound_owner, bound_args) = self.closure_bound_owner(refs);
                 let closure_fun_ty =
                     self.type_builder
-                        .build_closure_type_for_param(*ty, bound_owner, bound_args);
+                        .closure_param_contract(*ty, bound_owner, bound_args);
                 tracing::debug!(
                     "the obtained FunctionType for the closure {ty:?}: {closure_fun_ty:#?}"
                 );
-                if let Some(closure_fun_ty) = closure_fun_ty.clone() {
-                    self.type_builder.register_closure_type_param(
-                        analyze::TypeParam::GenericType {
-                            param_def_id: self.type_builder.param_def_id(ty),
-                            local_idx: self.type_builder.param_local_idx(ty),
-                        },
-                        closure_fun_ty,
-                    );
-                };
                 return closure_fun_ty;
             }
             return None;
@@ -2224,9 +2215,22 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         param_ty: mir_ty::ParamTy,
         model_ty: mir_ty::Ty<'tcx>,
     ) -> chc::ForallPred {
-        let contract = self
-            .receiver_closure_fn_type(model_ty)
-            .unwrap_or_else(|| panic!("hist_inv! at {param_ty:?}, which has no closure bound"));
+        let no_bound = format!("hist_inv! at {param_ty:?}, which has no closure bound");
+        let (_, refs) = self
+            .receiver_closure_behind_refs(model_ty)
+            .expect(&no_bound);
+        let (bound_owner, bound_args) = self.closure_bound_owner(refs);
+        // The laws speak of a call through `&mut`, which every `Fn` and `FnMut` closure takes
+        // (Creusot's `FnMutExt`), whichever closure trait bounds the parameter here.
+        let call_mut_contract = self
+            .type_builder
+            .closure_param_call_contract(
+                param_ty,
+                mir_ty::ClosureKind::FnMut,
+                bound_owner,
+                bound_args,
+            )
+            .expect(&no_bound);
         let param = param_ty.to_ty(self.tcx);
         let sort = self.type_builder.build(param).to_sort();
         let param_def_id = self.type_builder.param_def_id(&param_ty);
@@ -2244,7 +2248,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             for law in analyze::closure_hist_inv::laws(
                 &mut system,
                 &pred,
-                &contract,
+                &call_mut_contract,
                 analyze::closure_hist_inv::fn_bounded_where_declared(self.tcx, param_def_id),
                 &self.analyzer.enum_defs,
             ) {

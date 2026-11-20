@@ -46,6 +46,7 @@ mod two_phase_borrow;
 pub mod unanalyzed_entry;
 
 // TODO: organize structure and remove cross dependency between refine
+pub use closure_hist_inv::fn_bounded_where_declared;
 pub use did_cache::DefIdCache;
 
 // Also the paths siblings use: analyze::{predicate_typing_env, trait_bounds, trait_item_args,
@@ -603,6 +604,10 @@ impl refine::EnumDefProvider for Rc<RefCell<EnumDefs>> {
 pub type Env = refine::Env<Rc<RefCell<EnumDefs>>>;
 pub type TypeParamMap<'tcx> = HashMap<TypeParam, ForallSortIdx>;
 
+/// The contract of a call of a closure type parameter through `Fn`, `FnMut` or `FnOnce`, by the
+/// parameter and the trait the call goes through.
+pub type ClosureParamContracts = HashMap<(TypeParam, mir_ty::ClosureKind), rty::FunctionType>;
+
 #[derive(Eq, PartialEq, Hash, Debug, Clone)]
 pub enum TypeParam {
     /// A type parameter identified by its declaration def_id and its
@@ -667,7 +672,7 @@ pub struct Analyzer<'tcx> {
     enum_defs: Rc<RefCell<EnumDefs>>,
 
     type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
-    closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
+    closure_type_params: Rc<RefCell<ClosureParamContracts>>,
 
     /// Where each [`chc::ForallPred`] standing for a trait predicate came from,
     /// so that an instantiation of the item that quantified over it can say
@@ -1768,10 +1773,6 @@ impl<'tcx> Analyzer<'tcx> {
                 cache: Rc::new(RefCell::new(HashMap::new())),
             }),
         );
-    }
-
-    pub fn get_closure_type(&self, type_param: TypeParam) -> Option<rty::FunctionType> {
-        self.closure_type_params.borrow().get(&type_param).cloned()
     }
 
     /// Whether a generic def with a body is analyzed at each instance a call reaches rather than
@@ -3832,10 +3833,14 @@ impl<'tcx> Analyzer<'tcx> {
     /// Whether the given `def_id` corresponds to a method of a trait.
     /// Whether the given `def_id` corresponds to a method of one of the `Fn` traits.
     fn is_fn_trait_method(&self, def_id: DefId) -> bool {
+        self.fn_trait_method_kind(def_id).is_some()
+    }
+
+    /// The closure kind of the `Fn` trait whose method `def_id` is, if it is one.
+    pub fn fn_trait_method_kind(&self, def_id: DefId) -> Option<mir_ty::ClosureKind> {
         self.tcx
             .opt_associated_item(def_id)
             .and_then(|item| item.trait_container(self.tcx))
             .and_then(|trait_did| self.tcx.fn_trait_kind_from_def_id(trait_did))
-            .is_some()
     }
 }
