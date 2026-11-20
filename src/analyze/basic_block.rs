@@ -3252,11 +3252,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The type of `place`, which is the one value of its sort if it lies in a field that the
     /// model lowering leaves out of a transparent struct.
     fn place_type(&self, place: &mir::Place<'tcx>) -> PlaceType {
-        if let Some((base, elem)) = place.as_ref().last_projection() {
-            if is_slice_pattern_elem(elem) {
-                return self.sequence_part_type(&base.to_place(self.tcx), elem);
-            }
-        }
         let mut base = mir::PlaceTy::from_ty(self.local_decls[place.local].ty);
         for elem in place.projection {
             let is_omitted_field = matches!(elem, mir::PlaceElem::Field(idx, _)
@@ -3276,46 +3271,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             base = base.projection_ty(self.tcx, elem);
         }
         self.env.place_type(self.elaborate_place(place))
-    }
-
-    /// The type of the element or the subslice that a slice pattern takes out of the slice or
-    /// the array at `base`, read off the sequence that models it. The pattern's length test
-    /// guards the access.
-    fn sequence_part_type(&self, base: &mir::Place<'tcx>, elem: mir::PlaceElem<'tcx>) -> PlaceType {
-        let mut builder = PlaceTypeBuilder::default();
-        let (seq_ty, seq) = builder.subsume(self.place_type(base));
-        match elem {
-            mir::PlaceElem::ConstantIndex {
-                offset, from_end, ..
-            } => {
-                let rty::Type::Seq(elem_rty) = seq_ty else {
-                    panic!("slice pattern on a value that is not a sequence: {seq_ty:?}")
-                };
-                let offset = chc::Term::int(offset);
-                let index = if from_end {
-                    seq.clone().seq_len().sub(offset)
-                } else {
-                    offset
-                };
-                let (ty, value_var) = builder.subsume_rty(*elem_rty);
-                let value = chc::Term::var(value_var.into());
-                builder.push_formula(value.clone().equal_to(seq.seq_nth(index)));
-                builder.build(ty, value)
-            }
-            mir::PlaceElem::Subslice { from, to, from_end } => {
-                let start = chc::Term::int(from);
-                let length = if from_end {
-                    seq.clone()
-                        .seq_len()
-                        .sub(start.clone())
-                        .sub(chc::Term::int(to))
-                } else {
-                    chc::Term::int(to - from)
-                };
-                builder.build(seq_ty, seq.seq_extract(start, length))
-            }
-            _ => unreachable!("not a slice pattern projection: {elem:?}"),
-        }
     }
 
     /// Stops at a statement that would read the value of a raw pointer or a trait object, whose
