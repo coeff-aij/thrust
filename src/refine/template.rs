@@ -911,8 +911,11 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// Builds `ty`, taking from `m` the parts where an unrefined type and a template differ.
     fn build_ty_in<M: TyMode<'tcx>>(&self, m: &mut M, ty: mir_ty::Ty<'tcx>) -> rty::Type<M::Var> {
         // An integer keeps its width, which its model `Int` or `UInt` does not have. A `char` is
-        // the `u32` of its code point.
-        if ty.is_integral() || ty.is_char() {
+        // its code point.
+        if ty.is_char() {
+            return rty::Type::char();
+        }
+        if ty.is_integral() {
             let width = ty.primitive_size(self.tcx).bits() as u32;
             return if ty.is_signed() {
                 rty::Type::int_of_width(width)

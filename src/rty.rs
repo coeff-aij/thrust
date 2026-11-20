@@ -1421,8 +1421,47 @@ where
     Some(bounds.lower.into_iter().chain(bounds.upper).collect())
 }
 
+/// The surrogate code points `[start, end)`, which no `char` is.
+const CHAR_SURROGATES: (u32, u32) = (0xD800, 0xE000);
+
+/// That the code point `x` is a Unicode scalar value, as that of every `char` is:
+/// `0 <= x < 0x110000` and `x` is not a surrogate (`0xD800..0xE000`).
+pub fn char_code_point_formula<V>(x: chc::Term<V>) -> chc::Formula<V>
+where
+    V: Clone,
+{
+    let atom = |pred: chc::KnownPred, x: chc::Term<V>, bound: u32| {
+        chc::Formula::Atom(chc::Atom::new(pred.into(), vec![x, chc::Term::int(bound)]))
+    };
+    let (surrogate_start, surrogate_end) = CHAR_SURROGATES;
+    let not_surrogate = atom(chc::KnownPred::LESS_THAN, x.clone(), surrogate_start).or(atom(
+        chc::KnownPred::GREATER_THAN_OR_EQUAL,
+        x.clone(),
+        surrogate_end,
+    ));
+    atom(chc::KnownPred::GREATER_THAN_OR_EQUAL, x.clone(), 0)
+        .and(atom(chc::KnownPred::LESS_THAN, x, u32::from(char::MAX) + 1))
+        .and(not_surrogate)
+}
+
+/// [`char_code_point_formula`] as a Boolean term.
+fn char_code_point_term<V>(x: chc::Term<V>) -> chc::Term<V>
+where
+    V: Clone,
+{
+    let (surrogate_start, surrogate_end) = CHAR_SURROGATES;
+    let not_surrogate = x
+        .clone()
+        .lt(chc::Term::int(surrogate_start))
+        .or(x.clone().ge(chc::Term::int(surrogate_end)));
+    x.clone()
+        .ge(chc::Term::int(0))
+        .and(x.lt(chc::Term::int(u32::from(char::MAX) + 1)))
+        .and(not_surrogate)
+}
+
 /// The range of a value `x` of the integer type `ty` as a formula, when [`int_range`] is in use for
-/// `ty`; `None` otherwise.
+/// `ty`, and the code points of a `char` when [`int_range_mode`] is on; `None` otherwise.
 pub fn int_range_formula<T, V>(ty: &Type<T>, x: chc::Term<V>) -> Option<chc::Formula<V>>
 where
     V: Clone,
@@ -1430,6 +1469,9 @@ where
     let (signed, width) = match ty {
         Type::Int(width) => (true, *width),
         Type::UInt(width) => (false, *width),
+        Type::Char if int_range_mode() != IntRange::Off => {
+            return Some(char_code_point_formula(x));
+        }
         _ => return None,
     };
     int_range(signed, width)?;
@@ -1500,17 +1542,12 @@ fn seq_elem_var() -> chc::UserQuantifiedVarId {
 }
 
 /// `forall i. 0 <= i < len(seq) => range(seq[i])` of a sequence whose element type `elem` is an
-/// integer type with a width whose range is in use ([`int_range`]); `None` otherwise.
+/// integer type with a width whose range is in use ([`int_range`]), or `char` when
+/// [`int_range_mode`] is on ([`int_range_formula`]); `None` otherwise.
 pub fn seq_elem_range<T, V>(elem: &Type<T>, seq: chc::Term<V>) -> Option<chc::Formula<V>>
 where
     V: Clone,
 {
-    let (signed, width) = match elem {
-        Type::Int(width) => (true, *width),
-        Type::UInt(width) => (false, *width),
-        _ => return None,
-    };
-    int_range(signed, width)?;
     let i = chc::Term::UserQuantifiedVar(chc::Sort::int(), seq_elem_var());
     let in_bounds = chc::Formula::Atom(chc::Atom::new(
         chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
@@ -1520,10 +1557,7 @@ where
         chc::KnownPred::LESS_THAN.into(),
         vec![i.clone(), seq.clone().seq_len()],
     )));
-    let range = int_range_atoms(elem, seq.seq_nth(i))?
-        .into_iter()
-        .map(chc::Formula::Atom)
-        .reduce(chc::Formula::and)?;
+    let range = int_range_formula(elem, seq.seq_nth(i))?;
     Some(chc::Formula::forall(
         vec![(seq_elem_var(), chc::Sort::int())],
         in_bounds.implies(range),
@@ -1623,6 +1657,7 @@ where
             });
             conj(lower.flatten(), upper.flatten())
         }
+        Type::Char => Some(char_code_point_term(value)),
         Type::Tuple(tuple) => tuple
             .elems
             .iter()
@@ -1873,6 +1908,7 @@ pub(super) fn has_range_facts(
         Type::Int(_) | Type::UInt(_) => {
             int_range_atoms(ty, value).is_some_and(|atoms| !atoms.is_empty())
         }
+        Type::Char => true,
         Type::Seq(elem) => seq_elem_range(&elem.ty, value).is_some(),
         Type::Tuple(ty) => ty
             .elems
@@ -1911,6 +1947,12 @@ pub enum Type<T> {
     /// (subtraction without overflow checks, an integer that becomes an unsigned value, and in
     /// [`IntRange::All`] the arithmetic operations).
     UInt(Option<u32>),
+    /// A `char`, modelled as its code point. Every value of it is a Unicode scalar value
+    /// ([`char_code_point_formula`]), in every [`int_range_mode`], as every value of a
+    /// [`Type::UInt`] is non-negative: no arithmetic makes a `char`, and the only cast to it is
+    /// from `u8`. The fact is assumed wherever such a value is in the environment and checked of a
+    /// value made from a logical term ([`type_fact_checks`]).
+    Char,
     BitVec(BitVecType),
     Bool,
     String,
@@ -1985,6 +2027,7 @@ where
             Type::Int(Some(width)) => allocator.text(format!("i{width}")),
             Type::UInt(None) => allocator.text("uint"),
             Type::UInt(Some(width)) => allocator.text(format!("u{width}")),
+            Type::Char => allocator.text("char"),
             Type::BitVec(ty) => ty.pretty(allocator),
             Type::Bool => allocator.text("bool"),
             Type::String => allocator.text("string"),
@@ -2110,6 +2153,11 @@ impl<T> Type<T> {
     /// The type of a Rust unsigned integer of `width` bits.
     pub fn uint_of_width(width: u32) -> Self {
         Type::UInt(Some(width))
+    }
+
+    /// The type of a Rust `char`.
+    pub fn char() -> Self {
+        Type::Char
     }
 
     pub fn bool() -> Self {
@@ -2271,7 +2319,7 @@ impl<T> Type<T> {
 
     pub fn to_sort(&self) -> chc::Sort {
         match self {
-            Type::Int(_) | Type::UInt(_) => chc::Sort::int(),
+            Type::Int(_) | Type::UInt(_) | Type::Char => chc::Sort::int(),
             Type::BitVec(ty) => chc::Sort::bit_vec(ty.width),
             Type::Bool => chc::Sort::bool(),
             // TODO: enable string reasoning
@@ -2316,6 +2364,7 @@ impl<T> Type<T> {
         match self {
             Type::Int(width) => Type::Int(width),
             Type::UInt(width) => Type::UInt(width),
+            Type::Char => Type::Char,
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
@@ -2339,6 +2388,7 @@ impl<T> Type<T> {
         match self {
             Type::Int(width) => Type::Int(width),
             Type::UInt(width) => Type::UInt(width),
+            Type::Char => Type::Char,
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
@@ -2364,6 +2414,7 @@ impl<T> Type<T> {
         match self {
             Type::Int(_)
             | Type::UInt(_)
+            | Type::Char
             | Type::BitVec(_)
             | Type::Bool
             | Type::String
@@ -2386,6 +2437,7 @@ impl<T> Type<T> {
         match self {
             Type::Int(width) => Type::Int(width),
             Type::UInt(width) => Type::UInt(width),
+            Type::Char => Type::Char,
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
@@ -2950,6 +3002,11 @@ impl<FV> RefinedType<FV> {
                     formula.push_conj(atom.into());
                 }
             }
+            Type::Char => {
+                formula.push_conj(
+                    char_code_point_formula(chc::Term::var(RefinedTypeVar::Value)).into(),
+                );
+            }
             Type::Seq(elem) => {
                 if let Some(range) = seq_elem_range(&elem.ty, chc::Term::var(RefinedTypeVar::Value))
                 {
@@ -3131,6 +3188,7 @@ impl<FV> RefinedType<FV> {
         match &mut self.ty {
             Type::Int(_)
             | Type::UInt(_)
+            | Type::Char
             | Type::BitVec(_)
             | Type::Bool
             | Type::String
@@ -3200,6 +3258,7 @@ impl<FV> RefinedType<FV> {
             || match &self.ty {
                 Type::Int(_)
                 | Type::UInt(_)
+                | Type::Char
                 | Type::BitVec(_)
                 | Type::Bool
                 | Type::String

@@ -128,6 +128,7 @@ where
     let mut clauses = Vec::new();
     match (got, expected) {
         (Type::Int(_) | Type::UInt(_), Type::Int(_) | Type::UInt(_))
+        | (Type::Char, Type::Char)
         | (Type::Bool, Type::Bool)
         | (Type::String, Type::String)
         | (Type::Opaque, Type::Opaque)
