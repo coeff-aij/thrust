@@ -90,6 +90,18 @@ pub enum FormulaMarker {
 }
 
 impl FormulaMarker {
+    /// How the marker's formula is read: an `assume!` is assumed without a proof.
+    pub fn formula_use(self) -> analyze::annot_fn::FormulaUse {
+        match self {
+            FormulaMarker::Assume => analyze::annot_fn::FormulaUse::Trusted,
+            FormulaMarker::Ghost
+            | FormulaMarker::Choose
+            | FormulaMarker::Assert
+            | FormulaMarker::BlockRequires
+            | FormulaMarker::BlockEnsures => analyze::annot_fn::FormulaUse::Checked,
+        }
+    }
+
     /// The first parameter of the formula function that names a live variable: the one after
     /// the value of a ghost term, the first otherwise.
     pub fn first_named_param(self) -> usize {
@@ -2849,6 +2861,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 formula_def_id,
                 generic_args,
                 self.type_builder.owner_fn_id(),
+                analyze::annot_fn::FormulaUse::Checked,
             )
             .expect("block_ensures! formula function is not registered");
         let named: Vec<Local> = formula_fn
@@ -3768,7 +3781,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 );
                 let formula_fn = self
                     .ctx
-                    .formula_fn_with_args(def_id, args, self.type_builder.owner_fn_id())
+                    .formula_fn_with_args(
+                        def_id,
+                        args,
+                        self.type_builder.owner_fn_id(),
+                        marker.formula_use(),
+                    )
                     .expect("marker formula function is not registered");
                 self.type_formula_statement(
                     marker,
@@ -3790,6 +3808,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         formula_def_id,
                         generic_args,
                         self.type_builder.owner_fn_id(),
+                        analyze::annot_fn::FormulaUse::Checked,
                     )
                     .expect("choose! formula function is not registered");
                 let rty = self.type_chosen_value(
@@ -3851,6 +3870,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         formula_def_id,
                         generic_args,
                         self.type_builder.owner_fn_id(),
+                        analyze::annot_fn::FormulaUse::Checked,
                     )
                     .expect("ghost formula function is not registered");
                 self.type_ghost_value(
