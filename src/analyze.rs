@@ -750,6 +750,8 @@ pub struct Analyzer<'tcx> {
     handover_counts: Vec<unanalyzed_entry::HandoverCount<'tcx>>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
+    /// The functions each body calls, for the report.
+    called_fns: CalledFns,
 }
 
 /// An `assume!` the analysis took: where it is written, the body it is in, and its formula
@@ -793,6 +795,26 @@ impl BodyChecks {
             .filter(|(_, check)| **check == BodyCheck::Checked)
             .map(|(def, _)| *def)
             .collect()
+    }
+}
+
+/// The functions each body calls, by the caller's own def (a closure's calls are its own).
+/// A callee is the function the analysis resolves the call to, or, of a call through a type
+/// parameter or one the caller's types leave open, the trait method called.
+#[derive(Debug, Clone, Default)]
+pub struct CalledFns(Rc<RefCell<HashMap<LocalDefId, HashSet<DefId>>>>);
+
+impl CalledFns {
+    pub fn record(&self, caller: LocalDefId, callee: DefId) {
+        self.0
+            .borrow_mut()
+            .entry(caller)
+            .or_default()
+            .insert(callee);
+    }
+
+    pub fn snapshot(&self) -> HashMap<LocalDefId, HashSet<DefId>> {
+        self.0.borrow().clone()
     }
 }
 
@@ -1065,6 +1087,7 @@ impl<'tcx> Analyzer<'tcx> {
             handovers: Default::default(),
             handover_counts: Default::default(),
             body_checks: Default::default(),
+            called_fns: Default::default(),
         }
     }
 
@@ -3389,6 +3412,7 @@ impl<'tcx> Analyzer<'tcx> {
             })
             .collect();
         let body_checks = self.body_checks.snapshot();
+        let called_fns = self.called_fns.snapshot();
         let input = crate::report::Input {
             system,
             contracts,
@@ -3401,6 +3425,7 @@ impl<'tcx> Analyzer<'tcx> {
             invariant_annotations: &self.invariant_annotations,
             assumptions: &self.assumptions,
             body_checks: &body_checks,
+            called_fns: &called_fns,
             parts,
         };
         crate::report::emit(self.tcx, config, &input)
@@ -3730,6 +3755,11 @@ impl<'tcx> Analyzer<'tcx> {
     /// See [`BodyChecks`].
     pub fn body_checks(&self) -> BodyChecks {
         self.body_checks.clone()
+    }
+
+    /// See [`CalledFns`].
+    pub fn called_fns(&self) -> CalledFns {
+        self.called_fns.clone()
     }
 
     /// Keeps where the written invariant of the loop at `header` of `def` is annotated, from the

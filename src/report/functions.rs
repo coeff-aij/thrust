@@ -2,8 +2,10 @@
 //! ([`crate::analyze::BodyChecks`]): checked, and in which query or parts, or why not. A body is
 //! verified only when it was checked and the queries holding its clauses are `sat`.
 
+use std::collections::HashSet;
+
 use rustc_middle::ty::TyCtxt;
-use rustc_span::def_id::LocalDefId;
+use rustc_span::def_id::{DefId, LocalDefId};
 use rustc_span::Span;
 
 use crate::analyze::{AssumeSite, BodyCheck};
@@ -24,6 +26,15 @@ pub struct Function {
     pub verdict: Option<&'static str>,
     /// Of a checked body, the `assume!`s in it and in the closures it holds.
     pub assumptions: Vec<AssumeSite>,
+    /// The functions its body calls, by path then span.
+    pub calls: Vec<Callee>,
+}
+
+/// A function a body calls.
+pub struct Callee {
+    pub name: String,
+    /// Where it is defined, unless it is outside the crate.
+    pub span: Option<Span>,
 }
 
 /// Each function of the crate the report shows, but the specification functions, in the order
@@ -80,9 +91,7 @@ fn function(
     } else {
         verdict
     };
-    let span = tcx
-        .hir_span_with_body(tcx.local_def_id_to_hir_id(def))
-        .source_callsite();
+    let span = whole_span(tcx, def);
     // Those of the body and of its closures, not those of a nested `fn` item, a body of its own.
     let root = tcx.typeck_root_def_id(def.to_def_id());
     let assumptions = if checked {
@@ -107,7 +116,26 @@ fn function(
         parts: (checked && split).then(|| in_parts.iter().map(|p| p.id).collect()),
         verdict: checked.then_some(verdict),
         assumptions,
+        calls: callees(tcx, input.called_fns.get(&def)),
     }
+}
+
+fn whole_span(tcx: TyCtxt<'_>, def: LocalDefId) -> Span {
+    tcx.hir_span_with_body(tcx.local_def_id_to_hir_id(def))
+        .source_callsite()
+}
+
+fn callees(tcx: TyCtxt<'_>, called: Option<&HashSet<DefId>>) -> Vec<Callee> {
+    let mut callees: Vec<Callee> = called
+        .into_iter()
+        .flatten()
+        .map(|callee| Callee {
+            name: tcx.def_path_str(*callee),
+            span: callee.as_local().map(|def| whole_span(tcx, def)),
+        })
+        .collect();
+    callees.sort_by_key(|c| (c.name.clone(), c.span.map(|s| (s.lo(), s.hi()))));
+    callees
 }
 
 impl Function {

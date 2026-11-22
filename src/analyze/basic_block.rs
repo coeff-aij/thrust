@@ -2247,6 +2247,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .any(|ty| analyze::model_eq::compares_ghost(self.tcx, ty))
     }
 
+    /// Keeps the function a call of `def_id` reaches, for the report: the one the call resolves to,
+    /// or the trait method itself when the callee depends on the caller's type parameters.
+    fn record_called_fn(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) {
+        let callee = match self.resolve_callable(def_id, args) {
+            ResolvedCallable::Concrete(resolved_def_id, _) => resolved_def_id,
+            ResolvedCallable::Generic(_) | ResolvedCallable::Unresolved => def_id,
+        };
+        self.ctx.called_fns().record(self.local_def_id, callee);
+    }
+
     fn callable_ty(
         &mut self,
         def_id: DefId,
@@ -2662,6 +2672,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     {
         // TODO: handle const_fn_def on Env side
         let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
+            self.record_called_fn(def_id, args);
             let ty = self.callable_ty(def_id, args);
             if analyze::candidate_atoms_enabled() {
                 self.record_called_fn_ty(&ty);

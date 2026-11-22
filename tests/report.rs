@@ -648,9 +648,26 @@ fn function_lines(fixture: &str, env: &[(&str, &str)]) -> Vec<(String, String)> 
     let mut env = env.to_vec();
     env.push(("THRUST_REPORT_FORMAT", "json"));
     let output = report_with(fixture, "1", &env);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(output.status.success(), "{stdout}");
-    stdout
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let lines = function_lines_of(&output);
+    lines
+        .into_iter()
+        .map(|(name, line)| (name, without_calls(&line)))
+        .collect()
+}
+
+/// The line without its `calls`, the last field, for the tests of the other fields.
+fn without_calls(line: &str) -> String {
+    let at = line.find(r#","calls":"#).unwrap();
+    format!("{}}}", &line[..at])
+}
+
+fn function_lines_of(output: &Output) -> Vec<(String, String)> {
+    String::from_utf8_lossy(&output.stdout)
         .lines()
         .filter(|line| line.starts_with(r#"{"kind":"function","#))
         .map(|line| {
@@ -828,4 +845,59 @@ fn the_functions_report_lists_a_macro_written_function_with_an_assumption() {
         stderr.contains("`get`: checked under 1 assumption (sat)"),
         "{stderr}"
     );
+}
+
+/// A `function` line lists the functions its body calls: a direct call, a trait method called
+/// through a type parameter (the trait's method, and the impl's where the body is analyzed at an
+/// instance), a closure called through `Fn` (the closure; the calls in its body are its own), a
+/// lemma applied in `proof!`, and none for a function nothing calls.
+#[test]
+fn a_function_line_lists_the_functions_its_body_calls() {
+    // The solver cannot read the query over the type parameter, which does not matter here: the
+    // calls are those of the analysis, whatever the verdict.
+    let output = report_with(
+        "function_calls.rs",
+        "1",
+        &[("THRUST_REPORT_FORMAT", "json")],
+    );
+    let lines = function_lines_of(&output);
+    let at = |line, column, end_line, end_column| {
+        format!(
+            r#"{{"file":"tests/report/function_calls.rs","line":{line},"column":{column},"end_line":{end_line},"end_column":{end_column}}}"#
+        )
+    };
+    let callee = |name: &str, span: String| format!(r#"{{"fn":"{name}","span":{span}}}"#);
+    let calls = |callees: Vec<String>| format!(r#""calls":[{}]}}"#, callees.join(","));
+    let helper = callee("helper", at(17, 1, 19, 2));
+    let area = callee("Shape::area", at(2, 5, 2, 27));
+    let impl_area = callee("<Square as Shape>::area", at(8, 5, 10, 6));
+    let expected = [
+        ("through_parameter", calls(vec![impl_area, area])),
+        (
+            "through_closure",
+            calls(vec![callee(
+                "through_closure::{closure#0}",
+                at(26, 15, 26, 33),
+            )]),
+        ),
+        ("through_closure::{closure#0}", calls(vec![helper.clone()])),
+        (
+            "through_lemma",
+            calls(vec![callee("trivial", at(15, 1, 15, 16))]),
+        ),
+        ("uncalled", calls(vec![])),
+        (
+            "main",
+            calls(vec![
+                helper,
+                callee("through_closure", at(25, 1, 28, 2)),
+                callee("through_lemma", at(30, 1, 32, 2)),
+                callee("through_parameter", at(21, 1, 23, 2)),
+            ]),
+        ),
+    ];
+    for (name, calls) in expected {
+        let line = function_line(&lines, name);
+        assert!(line.ends_with(&calls), "{name}: {line}");
+    }
 }
