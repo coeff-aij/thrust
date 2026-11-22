@@ -542,7 +542,12 @@ impl<'tcx> Analyzer<'tcx> {
         let generic_args = self.closure_spec_args(path_args, *def_id, closure_args);
         let owner_fn_id = self.tcx.typeck_root_def_id(*def_id);
         let formula_fn = self
-            .formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
+            .formula_fn_with_args(
+                formula_def_id,
+                generic_args,
+                owner_fn_id,
+                analyze::annot_fn::FormulaUse::Checked,
+            )
             .expect("hist_inv clause is not a formula function");
         let apply = |from: chc::Term<V>, to: chc::Term<V>| {
             let pair = chc::Term::mut_(from, to);

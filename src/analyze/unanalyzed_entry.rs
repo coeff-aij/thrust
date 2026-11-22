@@ -235,7 +235,12 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             })
             .and_then(DefId::as_local)
             .and_then(|formula_def_id| {
-                self.formula_fn_with_args(formula_def_id, contract_args, owner_fn_id)
+                self.formula_fn_with_args(
+                    formula_def_id,
+                    contract_args,
+                    owner_fn_id,
+                    analyze::annot_fn::FormulaUse::Checked,
+                )
             });
         StatedPres {
             receivers: formula_fn

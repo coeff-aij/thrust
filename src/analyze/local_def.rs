@@ -240,6 +240,31 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         )
     }
 
+    /// How the def's contract is read: [`annot_fn::FormulaUse::Trusted`] when the model does not
+    /// check a body against it, so that callers assume its `ensures` and the unchecked code relies
+    /// on its `requires`: a `#[thrust::trusted]` function, and the specification of a function of
+    /// another crate or of a trusted one. The specification of a trait's method is the contract
+    /// each impl of the crate is checked against, so it is read as checked.
+    fn contract_formula_use(&self) -> analyze::annot_fn::FormulaUse {
+        let unchecked = self.is_annotated_as_trusted()
+            || (self.is_annotated_as_extern_spec_fn() && {
+                let target = self.extern_spec_fn_target_def_id();
+                let of_trait =
+                    self.tcx.def_kind(self.tcx.parent(target)) == rustc_hir::def::DefKind::Trait;
+                (!target.is_local() && !of_trait)
+                    || analyze::annot::has_thrust_attr(
+                        self.tcx,
+                        target,
+                        &analyze::annot::trusted_path(),
+                    )
+            });
+        if unchecked {
+            analyze::annot_fn::FormulaUse::Trusted
+        } else {
+            analyze::annot_fn::FormulaUse::Checked
+        }
+    }
+
     pub fn is_annotated_as_callable(&self) -> bool {
         analyze::annot::has_thrust_attr(
             self.tcx,
@@ -660,23 +685,36 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.precompute_callable_param_contracts(&sig);
         self.precompute_named_fn_contracts();
 
-        let mut require_annot =
-            self.ctx
-                .extract_require_annot(self.local_def_id, self.generic_args, self.owner_fn_id);
-        let mut ensure_annot =
-            self.ctx
-                .extract_ensure_annot(self.local_def_id, self.generic_args, self.owner_fn_id);
+        let contract_use = self.contract_formula_use();
+        let mut require_annot = self.ctx.extract_require_annot(
+            self.local_def_id,
+            self.generic_args,
+            self.owner_fn_id,
+            contract_use,
+        );
+        let mut ensure_annot = self.ctx.extract_ensure_annot(
+            self.local_def_id,
+            self.generic_args,
+            self.owner_fn_id,
+            contract_use,
+        );
 
         if let Some((trait_item_id, trait_item_args)) =
             self.local_trait_item_id().zip(self.trait_item_args())
         {
             tracing::info!("trait item found: {:?}", trait_item_id);
-            let trait_require_annot =
-                self.ctx
-                    .extract_require_annot(trait_item_id, trait_item_args, self.owner_fn_id);
-            let trait_ensure_annot =
-                self.ctx
-                    .extract_ensure_annot(trait_item_id, trait_item_args, self.owner_fn_id);
+            let trait_require_annot = self.ctx.extract_require_annot(
+                trait_item_id,
+                trait_item_args,
+                self.owner_fn_id,
+                contract_use,
+            );
+            let trait_ensure_annot = self.ctx.extract_ensure_annot(
+                trait_item_id,
+                trait_item_args,
+                self.owner_fn_id,
+                contract_use,
+            );
 
             assert!(require_annot.is_none() || trait_require_annot.is_none());
             require_annot = require_annot.or(trait_require_annot);
@@ -689,6 +727,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.local_def_id,
             self.generic_args,
             self.owner_fn_id,
+            contract_use,
         );
         let annotations = self.ctx.contract_annotations(
             require_annot.as_ref().map(|(def_id, _)| *def_id),
@@ -1953,6 +1992,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 invariant.formula_def_id,
                 invariant.generic_args,
                 self.owner_fn_id,
+                analyze::annot_fn::FormulaUse::Checked,
             )
             .expect("invariant formula function is not registered");
         formula_fn.param_idents().iter().all(|ident| {
@@ -2097,7 +2137,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         } = *site;
         let formula_fn = self
             .ctx
-            .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
+            .formula_fn_with_args(
+                formula_def_id,
+                generic_args,
+                self.owner_fn_id,
+                analyze::annot_fn::FormulaUse::Checked,
+            )
             .expect("written precondition formula function is not registered");
         let idents = formula_fn.param_idents();
         let sig = self
@@ -2378,7 +2423,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .any(analyze::basic_block::is_closure_local_param)
         {
             self.ctx
-                .formula_fn_with_args(formula_def_id, generic_args, self.owner_fn_id)
+                .formula_fn_with_args(
+                    formula_def_id,
+                    generic_args,
+                    self.owner_fn_id,
+                    analyze::annot_fn::FormulaUse::Checked,
+                )
                 .expect("marker formula function is not registered");
         }
         let inputs = self
