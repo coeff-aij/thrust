@@ -2,7 +2,7 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// A predicate a trusted `ensures` calls is read over Rust values there, through its own instance:
+// A predicate is read over Rust values, so the one a trusted `ensures` calls assumes nothing false:
 // its variable at an unsigned type ranges over the values of the type.
 use thrust_models::forall;
 
