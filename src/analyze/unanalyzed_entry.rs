@@ -239,7 +239,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                     formula_def_id,
                     contract_args,
                     owner_fn_id,
-                    analyze::annot_fn::FormulaUse::Checked,
+                    analyze::annot_fn::FormulaReading::Model,
                 )
             });
         StatedPres {

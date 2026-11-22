@@ -546,7 +546,7 @@ impl<'tcx> Analyzer<'tcx> {
                 formula_def_id,
                 generic_args,
                 owner_fn_id,
-                analyze::annot_fn::FormulaUse::Checked,
+                analyze::annot_fn::FormulaReading::Model,
             )
             .expect("hist_inv clause is not a formula function");
         let apply = |from: chc::Term<V>, to: chc::Term<V>| {

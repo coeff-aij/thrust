@@ -416,19 +416,6 @@ struct InstantiationKey<'tcx> {
 /// arguments, and the calling function when those arguments mention its type parameters.
 type PredicateInstanceKey<'tcx> = (DefId, mir_ty::GenericArgsRef<'tcx>, Option<DefId>);
 
-/// The instance a [`annot_fn::FormulaUse::Trusted`] formula reads of a predicate or logic
-/// function; see [`Analyzer::trusted_predicate_with_args`].
-#[derive(Debug, Clone)]
-pub enum TrustedInstance {
-    /// Its body reads the same in both uses: the checked instance.
-    SameAsChecked,
-    /// Its body is being translated: the symbol of its trusted instance, for a recursive call.
-    Defining(chc::UserDefinedPred),
-    /// An instance whose quantified variables range over Rust values, where the checked
-    /// instance's range over more.
-    Narrower(chc::UserDefinedPred),
-}
-
 /// The arguments `def_id`'s body is instantiated at, given those Thrust analyzes it at. Thrust
 /// analyzes a closure at its parent's arguments, but its body may also name the parameters rustc
 /// adds after the parent's (the kind, the signature and the upvars), as a promoted constant such
@@ -636,7 +623,9 @@ struct DeferredFormulaFnDef<'tcx> {
     // `GenericArgsRef` alone, so dropping the owner hands one function's translation --
     // its forall sorts, and the trait predicate instances named after them -- to the other.
     cache: Rc<
-        RefCell<HashMap<(InstantiationKey<'tcx>, annot_fn::FormulaUse), annot_fn::FormulaFn<'tcx>>>,
+        RefCell<
+            HashMap<(InstantiationKey<'tcx>, annot_fn::FormulaReading), annot_fn::FormulaFn<'tcx>>,
+        >,
     >,
 }
 
@@ -655,9 +644,6 @@ pub struct Analyzer<'tcx> {
     formula_fns: HashMap<LocalDefId, DeferredFormulaFnDef<'tcx>>,
     /// Instances of predicates with a Rust body; see [`Analyzer::predicate_with_args`].
     predicate_instances: Rc<RefCell<HashMap<PredicateInstanceKey<'tcx>, chc::UserDefinedPred>>>,
-    /// The instances [`annot_fn::FormulaUse::Trusted`] formulas read; see
-    /// [`Analyzer::trusted_predicate_with_args`].
-    trusted_predicate_instances: Rc<RefCell<HashMap<PredicateInstanceKey<'tcx>, TrustedInstance>>>,
     /// The predicate instances whose bodies are being translated, innermost last.
     defining_predicates: Rc<RefCell<Vec<PredicateInstanceKey<'tcx>>>>,
     /// The instances of `#[thrust::opaque]` predicates and logic functions, each with its item;
@@ -1041,7 +1027,6 @@ impl<'tcx> Analyzer<'tcx> {
             defs,
             formula_fns,
             predicate_instances: Default::default(),
-            trusted_predicate_instances: Default::default(),
             defining_predicates: Default::default(),
             opaque_predicates: Default::default(),
             body_stack: Default::default(),
@@ -1970,83 +1955,19 @@ impl<'tcx> Analyzer<'tcx> {
         }
 
         self.defining_predicates.borrow_mut().push(key);
+        // A predicate means the same wherever it is read, and a formula assumed without a proof
+        // reads it over Rust values, so its body is read over Rust values everywhere.
         let formula_fn = self
             .formula_fn_with_args(
                 local_def_id,
                 generic_args,
                 owner_fn_id,
-                annot_fn::FormulaUse::Checked,
+                annot_fn::FormulaReading::Rust,
             )
             .unwrap();
         self.define_predicate_instance(&pred, local_def_id, generic_args, owner_fn_id, &formula_fn);
         self.defining_predicates.borrow_mut().pop();
         pred
-    }
-
-    /// The instance a [`annot_fn::FormulaUse::Trusted`] formula reads of the predicate or logic
-    /// function `def_id` at `generic_args`, made from `owner_fn_id`. Its body is translated in
-    /// that use, after the checked instance ([`Self::predicate_with_args`]) is defined, so the
-    /// checked instances are numbered as when no formula is trusted. When a quantified variable
-    /// in it ranges over fewer values than in the checked instance, it is defined as its own
-    /// symbol (`<checked symbol>_rust`); otherwise the checked instance is read.
-    pub fn trusted_predicate_with_args(
-        &self,
-        def_id: DefId,
-        generic_args: mir_ty::GenericArgsRef<'tcx>,
-        owner_fn_id: DefId,
-    ) -> TrustedInstance {
-        let Some(local_def_id) = def_id
-            .as_local()
-            .filter(|id| self.formula_fns.contains_key(id))
-        else {
-            return TrustedInstance::SameAsChecked;
-        };
-        let checked = self.predicate_with_args(def_id, generic_args, owner_fn_id);
-        use mir_ty::TypeVisitableExt as _;
-        let key = (
-            def_id,
-            generic_args,
-            generic_args.has_param().then_some(owner_fn_id),
-        );
-        if let Some(instance) = self.trusted_predicate_instances.borrow().get(&key) {
-            return instance.clone();
-        }
-        let pred = checked.for_rust_values();
-        self.trusted_predicate_instances
-            .borrow_mut()
-            .insert(key, TrustedInstance::Defining(pred.clone()));
-        self.defining_predicates.borrow_mut().push(key);
-        let formula_fn = rustc_data_structures::stack::ensure_sufficient_stack(|| {
-            self.formula_fn_with_args(
-                local_def_id,
-                generic_args,
-                owner_fn_id,
-                annot_fn::FormulaUse::Trusted,
-            )
-            .unwrap()
-        });
-        let instance = if formula_fn.narrower_than_checked() {
-            if analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::opaque_path()) {
-                self.opaque_predicates
-                    .borrow_mut()
-                    .push((pred.clone(), local_def_id));
-            }
-            self.define_predicate_instance(
-                &pred,
-                local_def_id,
-                generic_args,
-                owner_fn_id,
-                &formula_fn,
-            );
-            TrustedInstance::Narrower(pred)
-        } else {
-            TrustedInstance::SameAsChecked
-        };
-        self.defining_predicates.borrow_mut().pop();
-        self.trusted_predicate_instances
-            .borrow_mut()
-            .insert(key, instance.clone());
-        instance
     }
 
     /// Defines `pred`, an instance of the predicate or logic function `local_def_id` at
@@ -2326,7 +2247,7 @@ impl<'tcx> Analyzer<'tcx> {
                 variant_def_id.expect_local(),
                 generic_args,
                 owner_fn_id,
-                annot_fn::FormulaUse::Checked,
+                annot_fn::FormulaReading::Model,
             )
             .expect("a variant is a formula function");
         self.defining_predicates.borrow_mut().pop();
@@ -2404,7 +2325,7 @@ impl<'tcx> Analyzer<'tcx> {
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
-        formula_use: annot_fn::FormulaUse,
+        reading: annot_fn::FormulaReading,
     ) -> Option<annot_fn::FormulaFn<'tcx>> {
         let deferred_formula_fn = self.formula_fns.get(&local_def_id)?;
 
@@ -2413,7 +2334,7 @@ impl<'tcx> Analyzer<'tcx> {
                 generic_args,
                 caller_def_id: owner_fn_id,
             },
-            formula_use,
+            reading,
         );
         let deferred_formula_fn_cache = Rc::clone(&deferred_formula_fn.cache);
         if let Some(formula_fn) = deferred_formula_fn_cache.borrow().get(&key) {
@@ -2425,7 +2346,7 @@ impl<'tcx> Analyzer<'tcx> {
             local_def_id,
             generic_args,
             owner_fn_id,
-            formula_use,
+            reading,
         )
         .with_def_id_cache(self.def_ids());
         let formula_fn = translator.into_formula_fn();
@@ -2433,7 +2354,7 @@ impl<'tcx> Analyzer<'tcx> {
             .borrow_mut()
             .insert(key, formula_fn.clone());
 
-        tracing::info!(?local_def_id, formula_fn = %formula_fn.display(), ?generic_args, ?formula_use, "formula_fn_with_args");
+        tracing::info!(?local_def_id, formula_fn = %formula_fn.display(), ?generic_args, ?reading, "formula_fn_with_args");
         Some(formula_fn)
     }
 
@@ -3722,7 +3643,7 @@ impl<'tcx> Analyzer<'tcx> {
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
-        formula_use: annot_fn::FormulaUse,
+        reading: annot_fn::FormulaReading,
     ) -> Option<(DefId, chc::Formula<rty::FunctionParamIdx>)> {
         let (formula_def_id, path_args) = self
             .extract_path_and_args_with_attr(local_def_id, &analyze::annot::requires_path_path())?;
@@ -3738,7 +3659,7 @@ impl<'tcx> Analyzer<'tcx> {
             generic_args
         };
         let Some(formula_fn) =
-            self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id, formula_use)
+            self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id, reading)
         else {
             panic!(
                 "require annotation {:?} is not a formula function",
@@ -3753,7 +3674,7 @@ impl<'tcx> Analyzer<'tcx> {
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
-        formula_use: annot_fn::FormulaUse,
+        reading: annot_fn::FormulaReading,
     ) -> Option<(
         DefId,
         chc::Formula<rty::RefinedTypeVar<rty::FunctionParamIdx>>,
@@ -3772,7 +3693,7 @@ impl<'tcx> Analyzer<'tcx> {
             generic_args
         };
         let Some(formula_fn) =
-            self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id, formula_use)
+            self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id, reading)
         else {
             panic!(
                 "ensure annotation {:?} is not a formula function",
@@ -3929,7 +3850,7 @@ impl<'tcx> Analyzer<'tcx> {
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
-        formula_use: annot_fn::FormulaUse,
+        reading: annot_fn::FormulaReading,
     ) -> Vec<(
         rty::TypePosition,
         DefId,
@@ -3944,7 +3865,7 @@ impl<'tcx> Analyzer<'tcx> {
                 );
             };
             let Some(formula_fn) =
-                self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id, formula_use)
+                self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id, reading)
             else {
                 panic!(
                     "refinement_path annotation {:?} is not a formula function",

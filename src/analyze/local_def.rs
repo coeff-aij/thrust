@@ -240,18 +240,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         )
     }
 
-    /// How the def's contract is read: [`annot_fn::FormulaUse::Trusted`] when the model does not
-    /// check a body against it, so that callers assume its `ensures` and the unchecked code relies
-    /// on its `requires`: a `#[thrust::trusted]` function, and the specification of a function of
-    /// another crate or of a trusted one. The specification of a trait's method is the contract
-    /// each impl of the crate is checked against, so it is read as checked.
-    fn contract_formula_use(&self) -> analyze::annot_fn::FormulaUse {
+    /// How the def's contract is read: [`annot_fn::FormulaReading::Rust`] when code the model
+    /// does not check stands on one side of it, so that its truth is decided over Rust values:
+    /// a `#[thrust::trusted]` function, the specification of a function of another crate (a
+    /// trait's method included, whose impls in the standard library are not checked) or of a
+    /// trusted one, and the contract of a trait's method that a trusted impl of the crate
+    /// implements ([`trait_item_reading`]).
+    fn contract_reading(&self) -> analyze::annot_fn::FormulaReading {
         let unchecked = self.is_annotated_as_trusted()
             || (self.is_annotated_as_extern_spec_fn() && {
                 let target = self.extern_spec_fn_target_def_id();
-                let of_trait =
-                    self.tcx.def_kind(self.tcx.parent(target)) == rustc_hir::def::DefKind::Trait;
-                (!target.is_local() && !of_trait)
+                !target.is_local()
                     || analyze::annot::has_thrust_attr(
                         self.tcx,
                         target,
@@ -259,10 +258,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     )
             });
         if unchecked {
-            analyze::annot_fn::FormulaUse::Trusted
-        } else {
-            analyze::annot_fn::FormulaUse::Checked
+            return analyze::annot_fn::FormulaReading::Rust;
         }
+        trait_item_reading(self.tcx, self.local_def_id.to_def_id())
     }
 
     pub fn is_annotated_as_callable(&self) -> bool {
@@ -685,35 +683,37 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.precompute_callable_param_contracts(&sig);
         self.precompute_named_fn_contracts();
 
-        let contract_use = self.contract_formula_use();
+        let contract_reading = self.contract_reading();
         let mut require_annot = self.ctx.extract_require_annot(
             self.local_def_id,
             self.generic_args,
             self.owner_fn_id,
-            contract_use,
+            contract_reading,
         );
         let mut ensure_annot = self.ctx.extract_ensure_annot(
             self.local_def_id,
             self.generic_args,
             self.owner_fn_id,
-            contract_use,
+            contract_reading,
         );
 
         if let Some((trait_item_id, trait_item_args)) =
             self.local_trait_item_id().zip(self.trait_item_args())
         {
             tracing::info!("trait item found: {:?}", trait_item_id);
+            // The trait's contract has one reading for every impl and caller.
+            let trait_reading = trait_item_reading(self.tcx, trait_item_id.to_def_id());
             let trait_require_annot = self.ctx.extract_require_annot(
                 trait_item_id,
                 trait_item_args,
                 self.owner_fn_id,
-                contract_use,
+                trait_reading,
             );
             let trait_ensure_annot = self.ctx.extract_ensure_annot(
                 trait_item_id,
                 trait_item_args,
                 self.owner_fn_id,
-                contract_use,
+                trait_reading,
             );
 
             assert!(require_annot.is_none() || trait_require_annot.is_none());
@@ -727,7 +727,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.local_def_id,
             self.generic_args,
             self.owner_fn_id,
-            contract_use,
+            contract_reading,
         );
         let annotations = self.ctx.contract_annotations(
             require_annot.as_ref().map(|(def_id, _)| *def_id),
@@ -1992,7 +1992,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 invariant.formula_def_id,
                 invariant.generic_args,
                 self.owner_fn_id,
-                analyze::annot_fn::FormulaUse::Checked,
+                analyze::annot_fn::FormulaReading::Model,
             )
             .expect("invariant formula function is not registered");
         formula_fn.param_idents().iter().all(|ident| {
@@ -2141,7 +2141,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 formula_def_id,
                 generic_args,
                 self.owner_fn_id,
-                analyze::annot_fn::FormulaUse::Checked,
+                analyze::annot_fn::FormulaReading::Model,
             )
             .expect("written precondition formula function is not registered");
         let idents = formula_fn.param_idents();
@@ -2427,7 +2427,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     formula_def_id,
                     generic_args,
                     self.owner_fn_id,
-                    analyze::annot_fn::FormulaUse::Checked,
+                    analyze::annot_fn::FormulaReading::Model,
                 )
                 .expect("marker formula function is not registered");
         }
@@ -3513,3 +3513,31 @@ type FnItems<'tcx> = (
     Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>,
     Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>,
 );
+
+/// How the contract of `def_id` is read when it is a trait's method:
+/// [`annot_fn::FormulaReading::Rust`] when an impl of the crate implements it with a
+/// `#[thrust::trusted]` body, since a caller through a type parameter may reach that body;
+/// [`annot_fn::FormulaReading::Model`] otherwise, and for any other def.
+fn trait_item_reading(tcx: TyCtxt<'_>, def_id: DefId) -> analyze::annot_fn::FormulaReading {
+    let trusted_impl = tcx
+        .all_local_trait_impls(())
+        .values()
+        .flatten()
+        .flat_map(|impl_def_id| {
+            tcx.associated_items(impl_def_id.to_def_id())
+                .in_definition_order()
+        })
+        .any(|item| {
+            item.trait_item_def_id == Some(def_id)
+                && analyze::annot::has_thrust_attr(
+                    tcx,
+                    item.def_id,
+                    &analyze::annot::trusted_path(),
+                )
+        });
+    if trusted_impl {
+        analyze::annot_fn::FormulaReading::Rust
+    } else {
+        analyze::annot_fn::FormulaReading::Model
+    }
+}

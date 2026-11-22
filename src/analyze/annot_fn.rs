@@ -1,4 +1,4 @@
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -16,25 +16,26 @@ use crate::chc;
 use crate::refine::{self, TypeBuilder};
 use crate::rty;
 
-/// Where the truth of a formula is decided, which fixes what its quantified variables range over.
+/// What a formula's own quantified variables range over, fixed by where its truth is decided.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum FormulaUse {
-    /// Proved and assumed within the model: a checked function's contract, a loop invariant,
-    /// a `proof_assert!`. One meaning on both sides is enough, so a variable without
-    /// `THRUST_INT_RANGE` ranges over every integer (`rty::IntDomain::Range`).
-    Checked,
-    /// Assumed without a proof in the model (`assume!`, the `ensures` of a trusted or extern
-    /// function) or relied on by code the model does not check (their `requires`). Its truth is
-    /// decided over Rust values, so a variable ranges over the values of its type, `0 <=` of an
-    /// unsigned integer included (`rty::IntDomain::AssumedBounds`), as in Verus or Creusot.
-    Trusted,
+pub enum FormulaReading {
+    /// The model's values: a formula proved and assumed within the model (a checked function's
+    /// contract, a loop invariant, a `proof_assert!`). One meaning on both sides is enough, so a
+    /// variable without `THRUST_INT_RANGE` ranges over every integer (`rty::IntDomain::Range`).
+    Model,
+    /// The values of the variables' Rust types, `0 <=` of an unsigned integer included
+    /// (`rty::IntDomain::AssumedBounds`), as in Verus or Creusot: a formula assumed without a
+    /// proof in the model (`assume!`, the `ensures` of a trusted or extern function) or relied on
+    /// by code the model does not check (their `requires`), and the body of every predicate and
+    /// logic function, which such a formula may call and which means the same wherever it is read.
+    Rust,
 }
 
-impl FormulaUse {
+impl FormulaReading {
     fn int_domain(self) -> rty::IntDomain {
         match self {
-            FormulaUse::Checked => rty::IntDomain::Range,
-            FormulaUse::Trusted => rty::IntDomain::AssumedBounds,
+            FormulaReading::Model => rty::IntDomain::Range,
+            FormulaReading::Rust => rty::IntDomain::AssumedBounds,
         }
     }
 }
@@ -60,9 +61,6 @@ pub struct FormulaFn<'tcx> {
     /// (`Formula::exists_over_payload`); a `witness` instantiates this form.
     exists: Option<ExistsParts>,
     pre_receivers: Vec<mir_ty::Ty<'tcx>>,
-    /// Whether a variable of a quantifier in the formula, or in a predicate it calls, ranges over
-    /// fewer values than it does in the [`FormulaUse::Checked`] translation.
-    narrower_than_checked: bool,
 }
 
 /// The binders of an `exists` and its body.
@@ -165,13 +163,6 @@ impl<'tcx> FormulaFn<'tcx> {
 
     pub fn params(&self) -> &IndexVec<rty::FunctionParamIdx, mir_ty::Ty<'tcx>> {
         &self.params
-    }
-
-    /// Whether a variable of a quantifier in the formula, or in a predicate it calls, ranges over
-    /// fewer values than in the [`FormulaUse::Checked`] translation; when not, the two
-    /// translations are the same.
-    pub fn narrower_than_checked(&self) -> bool {
-        self.narrower_than_checked
     }
 
     pub fn param_idents(
@@ -565,9 +556,7 @@ pub struct AnnotFnTranslator<'a, 'tcx> {
     env: HashMap<HirId, chc::Term<rty::FunctionParamIdx>>,
     /// [`FormulaFn::pre_receivers`], shared with the translators of quantifier bodies.
     pre_receivers: Rc<RefCell<Vec<mir_ty::Ty<'tcx>>>>,
-    formula_use: FormulaUse,
-    /// [`FormulaFn::narrower_than_checked`], shared with the translators of quantifier bodies.
-    narrower_than_checked: Rc<Cell<bool>>,
+    reading: FormulaReading,
 }
 
 impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
@@ -576,7 +565,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         local_def_id: LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
-        formula_use: FormulaUse,
+        reading: FormulaReading,
     ) -> Self {
         let tcx = analyzer.tcx();
         let body = tcx.hir_body_owned_by(local_def_id);
@@ -602,8 +591,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             type_builder,
             env: HashMap::default(),
             pre_receivers: Rc::default(),
-            formula_use,
-            narrower_than_checked: Rc::default(),
+            reading,
         };
         translator.build_env_from_params();
         translator
@@ -1186,7 +1174,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             witnessed,
             exists,
             pre_receivers: self.pre_receivers.borrow().clone(),
-            narrower_than_checked: self.narrower_than_checked.get(),
         }
     }
 
@@ -1408,7 +1395,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 local,
                 instance_args,
                 self.type_builder.owner_fn_id(),
-                self.formula_use,
+                FormulaReading::Rust,
             )
             .expect("predicate formula function is not registered");
         let Some((vars, body)) = definition.exists_parts().cloned() else {
@@ -2139,35 +2126,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     /// Records that the formula reads the precondition of `ty` ([`FormulaFn::pre_receivers`]).
-    /// The symbol a call of the predicate or logic function `def_id` at `args` reads, given
-    /// `checked`, its [`FormulaUse::Checked`] instance: in a [`FormulaUse::Trusted`] formula, the
-    /// instance whose variables range over Rust values when that one differs
-    /// (`Analyzer::trusted_predicate_with_args`).
-    fn symbol_for_use(
-        &self,
-        checked: chc::UserDefinedPred,
-        def_id: DefId,
-        args: mir_ty::GenericArgsRef<'tcx>,
-    ) -> chc::UserDefinedPred {
-        match self.formula_use {
-            FormulaUse::Checked => checked,
-            FormulaUse::Trusted => {
-                let owner_fn_id = self.type_builder.owner_fn_id();
-                match self
-                    .analyzer
-                    .trusted_predicate_with_args(def_id, args, owner_fn_id)
-                {
-                    analyze::TrustedInstance::SameAsChecked => checked,
-                    analyze::TrustedInstance::Defining(pred) => pred,
-                    analyze::TrustedInstance::Narrower(pred) => {
-                        self.narrower_than_checked.set(true);
-                        pred
-                    }
-                }
-            }
-        }
-    }
-
     fn record_pre_receiver(&self, ty: mir_ty::Ty<'tcx>) {
         let ty = self.tcx.erase_regions(ty);
         let mut receivers = self.pre_receivers.borrow_mut();
@@ -2570,31 +2528,27 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         (vars, range, body_formula)
     }
 
-    /// The domain a quantified variable `var` of type `ty` ranges over, for
-    /// [`Self::formula_use`]; records whether it is narrower than the domain of the
-    /// [`FormulaUse::Checked`] translation. A variable `pinned` to a part of a program value
-    /// ([`pins_to_value`]) keeps the domain of the checked translation: where it lies outside
-    /// its type's values, the premise that pins it is false of every Rust state, so the formula
-    /// reads the same over the model's values as over Rust's.
+    /// The domain a quantified variable `var` of type `ty` ranges over in [`Self::reading`]. A
+    /// variable `pinned` to a part of a program value ([`pins_to_value`]) keeps the model's
+    /// domain: where it lies outside its type's values, the premise that pins it is false of
+    /// every Rust state, so the formula reads the same over the model's values as over Rust's.
     fn quantified_var_domain(
         &self,
         ty: &rty::Type<rty::Closed>,
         var: chc::Term<rty::FunctionParamIdx>,
         pinned: bool,
     ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
-        let domain = |ints| {
-            rty::domain_guard::<_, chc::Formula<_>>(ty, var.clone(), &self.analyzer.enum_defs, ints)
-        };
-        let formula_use = if pinned {
-            FormulaUse::Checked
+        let reading = if pinned {
+            FormulaReading::Model
         } else {
-            self.formula_use
+            self.reading
         };
-        let guard = domain(formula_use.int_domain());
-        if formula_use != FormulaUse::Checked && guard != domain(FormulaUse::Checked.int_domain()) {
-            self.narrower_than_checked.set(true);
-        }
-        guard
+        rty::domain_guard::<_, chc::Formula<_>>(
+            ty,
+            var,
+            &self.analyzer.enum_defs,
+            reading.int_domain(),
+        )
     }
 
     /// The body of a one-parameter closure as a term, with the parameter bound to a fresh
@@ -3451,8 +3405,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 instance.args,
                                 self.type_builder.owner_fn_id(),
                             );
-                            let symbol =
-                                self.symbol_for_use(symbol, instance.def_id(), instance.args);
                             let arg_terms = args.iter().map(|e| self.to_term(e)).collect();
                             return FormulaOrTerm::Term(chc::Term::user_defined_fn(
                                 symbol, sort, arg_terms,
@@ -3516,8 +3468,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                         instance.args,
                                         owner_fn_id,
                                     );
-                                    let pred =
-                                        self.symbol_for_use(pred, instance.def_id(), instance.args);
                                     // The `pre!`s its body reads are read here too.
                                     // `formula_fn_with_args` returns the translation the
                                     // definition just made, or makes one for this owner.
@@ -3526,7 +3476,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                             local,
                                             instance.args,
                                             owner_fn_id,
-                                            self.formula_use,
+                                            FormulaReading::Rust,
                                         )
                                     });
                                     for ty in body.iter().flat_map(|body| body.pre_receivers()) {

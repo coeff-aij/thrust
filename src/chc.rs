@@ -1940,20 +1940,6 @@ impl UserDefinedPred {
         &self.instance
     }
 
-    /// The symbol of the instance whose quantified variables range over the values of their Rust
-    /// types (`analyze::Analyzer::trusted_predicate_with_args`): `<symbol>_rust`, shown as
-    /// `<name> (Rust values)`.
-    pub fn for_rust_values(&self) -> Self {
-        Self {
-            inner: format!("{}_rust", self.inner),
-            name: self
-                .name
-                .as_ref()
-                .map(|name| format!("{name} (Rust values)")),
-            ..self.clone()
-        }
-    }
-
     /// The symbol of a defined copy ([`System::reveal_in`]) for the revealed set `tag` names:
     /// `<symbol>_def_<tag>`, shown as `<name> (revealed)` so that a report tells it from the
     /// universal symbol.
