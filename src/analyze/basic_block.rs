@@ -103,14 +103,22 @@ impl FormulaMarker {
     }
 }
 
-/// The marker and the formula function a marker call carries, or `None` for any other call.
+/// The marker and the formula function a marker call carries, or `None` for any other call. A
+/// `for` loop ghost marker takes no formula-function argument: it is a `ghost!` whose term is a
+/// formula of `std.rs` (`DefIdCache::for_loop_ghost_formula`) at the marker's generic arguments.
 pub fn formula_marker_call<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     local_decls: &mir::LocalDecls<'tcx>,
     func: &Operand<'tcx>,
     args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
 ) -> Option<(FormulaMarker, LocalDefId, mir_ty::GenericArgsRef<'tcx>)> {
-    let (def_id, _) = func.const_fn_def()?;
+    let (def_id, marker_args) = func.const_fn_def()?;
+    if let Some(formula_def_id) = ctx.def_ids().for_loop_ghost_formula(def_id) {
+        let formula_def_id = formula_def_id
+            .as_local()
+            .expect("`for` loop ghost formula must be local");
+        return Some((FormulaMarker::Ghost, formula_def_id, marker_args));
+    }
     let marker = if Some(def_id) == ctx.def_ids().ghost_marker() {
         FormulaMarker::Ghost
     } else if Some(def_id) == ctx.def_ids().choose_marker() {
@@ -181,13 +189,13 @@ pub fn resolve_closure_local_args<'tcx>(
         .skip_binder()
         .inputs();
     for (ident, &input) in tcx.fn_arg_idents(def_id).iter().zip(inputs) {
-        let Some(var) = ident.map(|ident| ident.name) else {
+        let Some(var) = *ident else {
             continue;
         };
         if !matcher.has_hole(input) {
             continue;
         }
-        let local_ty = closure_local_ty(body, var, scope).unwrap_or_else(|why| {
+        let local_ty = closure_local_ty(tcx, body, var, scope).unwrap_or_else(|why| {
             tcx.dcx().span_fatal(
                 span,
                 format!("`{var}` has a type left to its local (`_` or a type parameter of the formula), but `{var}` is {why}"),
@@ -240,11 +248,12 @@ pub fn register_closure_local_types<'tcx>(
 
 /// The type of the local `var` names in `scope`, or why it names none.
 fn closure_local_ty<'tcx>(
+    tcx: TyCtxt<'tcx>,
     body: &mir::Body<'tcx>,
-    var: rustc_span::Symbol,
+    var: rustc_span::symbol::Ident,
     scope: mir::SourceScope,
 ) -> Result<mir_ty::Ty<'tcx>, &'static str> {
-    let bindings = bindings_in_scope(body, var, scope);
+    let bindings = bindings_in_scope(tcx, body, var, scope);
     let tys: Vec<mir_ty::Ty<'tcx>> = bindings
         .iter()
         .filter_map(|vdi| match &vdi.value {
@@ -427,19 +436,24 @@ impl<'tcx> ClosureLocalMatcher<'tcx> {
     }
 }
 
-/// The debug entries of the variables the name `name` can stand for in `scope`: those of the
-/// innermost enclosing scope that binds the name, as Rust's shadowing resolves it.
+/// The debug entries of the variables the identifier `name` can stand for in `scope`: those of
+/// the innermost enclosing scope that binds it, as Rust's shadowing resolves it.
 pub fn bindings_in_scope<'a, 'tcx>(
+    tcx: TyCtxt<'tcx>,
     body: &'a mir::Body<'tcx>,
-    name: rustc_span::Symbol,
+    name: rustc_span::symbol::Ident,
     scope: mir::SourceScope,
 ) -> Vec<&'a mir::VarDebugInfo<'tcx>> {
+    if !body.var_debug_info.iter().any(|vdi| vdi.name == name.name) {
+        return Vec::new();
+    }
+    let idents = binding_idents(tcx, body);
     let mut scope = Some(scope);
     while let Some(current) = scope {
         let bound: Vec<_> = body
             .var_debug_info
             .iter()
-            .filter(|vdi| vdi.name == name && vdi.source_info.scope == current)
+            .filter(|vdi| vdi.source_info.scope == current && names_binding(&idents, name, vdi))
             .collect();
         if !bound.is_empty() {
             return bound;
@@ -447,6 +461,66 @@ pub fn bindings_in_scope<'a, 'tcx>(
         scope = body.source_scopes[current].parent_scope;
     }
     Vec::new()
+}
+
+/// The identifiers the patterns of `body`'s typeck root bind, its closures' included, keyed by
+/// the span of the pattern and by their own span, with their name: a debug entry carries the
+/// pattern's span (`mut $x` in a macro has the macro's context) or, for a capture, the
+/// identifier's, while hygiene is the identifier's (`$x` keeps the caller's context).
+pub fn binding_idents(
+    tcx: TyCtxt<'_>,
+    body: &mir::Body<'_>,
+) -> HashMap<(rustc_span::Span, rustc_span::Symbol), rustc_span::symbol::Ident> {
+    struct Bindings<'tcx> {
+        tcx: TyCtxt<'tcx>,
+        idents: HashMap<(rustc_span::Span, rustc_span::Symbol), rustc_span::symbol::Ident>,
+    }
+    impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for Bindings<'tcx> {
+        type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
+
+        fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
+            self.tcx
+        }
+
+        fn visit_pat(&mut self, pat: &'tcx rustc_hir::Pat<'tcx>) {
+            if let rustc_hir::PatKind::Binding(_, _, ident, _) = pat.kind {
+                self.idents.insert((pat.span, ident.name), ident);
+                self.idents.insert((ident.span, ident.name), ident);
+            }
+            rustc_hir::intravisit::walk_pat(self, pat);
+        }
+    }
+    let def_id = body.source.def_id().expect_local();
+    let root = tcx.typeck_root_def_id(def_id.to_def_id()).expect_local();
+    let mut bindings = Bindings {
+        tcx,
+        idents: HashMap::new(),
+    };
+    rustc_hir::intravisit::Visitor::visit_body(&mut bindings, tcx.hir_body_owned_by(root));
+    bindings.idents
+}
+
+/// Whether the identifier `name` names the variable of `vdi` where both are in scope, as rustc
+/// resolves a local: by the name and by the syntax context of the binding identifier's span and
+/// of `name`'s, normalized as for `macro_rules!` hygiene, so a variable a `macro_rules!` macro
+/// binds is not named from outside it, and one it binds through a `$x` it is passed is named as
+/// the caller writes it. The binding identifier is found in `idents` ([`binding_idents`]); a
+/// variable no pattern binds is named by no identifier, and neither is one a desugaring binds,
+/// which lowering binds after resolution: its pattern or its identifier has a desugared span (the
+/// iterator of a `for` loop has the head's span and an identifier with none). That includes a
+/// parameter of an `async fn`, rebound with an `Async`-desugared span, which Thrust does not
+/// support.
+pub fn names_binding(
+    idents: &HashMap<(rustc_span::Span, rustc_span::Symbol), rustc_span::symbol::Ident>,
+    name: rustc_span::symbol::Ident,
+    vdi: &mir::VarDebugInfo<'_>,
+) -> bool {
+    let Some(binding) = idents.get(&(vdi.source_info.span, vdi.name)) else {
+        return false;
+    };
+    vdi.source_info.span.desugaring_kind().is_none()
+        && binding.span.desugaring_kind().is_none()
+        && binding.normalize_to_macro_rules() == name.normalize_to_macro_rules()
 }
 
 /// Whether `elem` takes an element or a subslice out of a slice or an array by its position, as a
@@ -669,11 +743,18 @@ enum ResolvedCallable<'tcx> {
     Unresolved,
 }
 
+/// The value of the condition of a `proof!` branch: `true`.
+fn proof_branch_value() -> rty::RefinedType<Var> {
+    rty::RefinedType::refined_with_term(rty::Type::bool(), chc::Term::bool(true))
+}
+
 /// A call typed by a rule of its own rather than by the callee's type.
 enum BuiltinCall {
     BoxNew,
     Forget,
     ManuallyDropNew,
+    /// The condition of a `proof!` branch, `true` in the analysis.
+    ProofBranch,
 }
 
 pub struct Analyzer<'tcx, 'ctx> {
@@ -2496,6 +2577,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.type_manually_drop_new(value, &expected_ret);
                 return expected_ret;
             }
+            Some(BuiltinCall::ProofBranch) => {
+                self.type_proof_branch(&expected_ret);
+                return expected_ret;
+            }
             None => {}
         }
 
@@ -2555,6 +2640,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             Some(BuiltinCall::Forget)
         } else if self.is_manually_drop_new(def_id) {
             Some(BuiltinCall::ManuallyDropNew)
+        } else if Some(def_id) == self.ctx.def_ids().proof_branch() {
+            Some(BuiltinCall::ProofBranch)
         } else {
             None
         }
@@ -2619,6 +2706,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx.extend_clauses(clauses);
     }
 
+    fn type_proof_branch(&mut self, expected: &rty::RefinedType<Var>) {
+        let clauses = self
+            .env
+            .relate_sub_refined_type(&proof_branch_value(), expected);
+        self.ctx.extend_clauses(clauses);
+    }
+
     fn is_manually_drop_new(&self, def_id: DefId) -> bool {
         let Some(impl_def_id) = self.tcx.inherent_impl_of_assoc(def_id) else {
             return false;
@@ -2655,7 +2749,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// parameters come from resolves it), when it holds a value here. A variable a closure body
     /// reads from its captures is a place of the closure's environment (`*((*_1).0)`), which is
     /// read as such.
-    fn operand_of_name(&self, name: rustc_span::Symbol) -> Option<Operand<'tcx>> {
+    fn operand_of_name(&self, name: rustc_span::symbol::Ident) -> Option<Operand<'tcx>> {
         let scope = self.body.basic_blocks[self.basic_block]
             .terminator()
             .source_info
@@ -2666,11 +2760,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The value here of the variable `name` stands for in `scope`.
     fn operand_of_name_in(
         &self,
-        name: rustc_span::Symbol,
+        name: rustc_span::symbol::Ident,
         scope: mir::SourceScope,
     ) -> Option<Operand<'tcx>> {
         let mut found: Option<Operand<'tcx>> = None;
-        for vdi in bindings_in_scope(&self.body, name, scope) {
+        for vdi in bindings_in_scope(self.tcx, &self.body, name, scope) {
             let operand = match &vdi.value {
                 mir::VarDebugInfoContents::Place(place) => {
                     if !self.is_defined(place.local) {
@@ -2775,7 +2869,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         format!("{what} refers to `{name}`, which is not a live variable here"),
                     )
                 });
-                self.check_spec_param_ty(what, span, name, *written_input_ty, &operand);
+                self.check_spec_param_ty(what, span, name.name, *written_input_ty, &operand);
                 let arg = self.operand_refined_type(operand);
                 self.env.immut_bind_tmp(arg)
             })
@@ -2830,7 +2924,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 let name = analyze::annot_fn::lifted_param_source_name(
                     ident.expect("formula parameters must be named"),
                 );
-                bindings_in_scope(&self.body, name, closing.source_info.scope)
+                bindings_in_scope(self.tcx, &self.body, name, closing.source_info.scope)
                     .into_iter()
                     .find_map(|vdi| match &vdi.value {
                         mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
@@ -3037,7 +3131,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         "{what} refers to `{name}`, which is not a live variable here"
                     ))
                 });
-                self.check_spec_param_ty(what, span, name, *written_input_ty, &operand);
+                self.check_spec_param_ty(what, span, name.name, *written_input_ty, &operand);
                 self.operand_refined_type(operand)
             })
             .collect()
@@ -3158,11 +3252,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The type of `place`, which is the one value of its sort if it lies in a field that the
     /// model lowering leaves out of a transparent struct.
     fn place_type(&self, place: &mir::Place<'tcx>) -> PlaceType {
-        if let Some((base, elem)) = place.as_ref().last_projection() {
-            if is_slice_pattern_elem(elem) {
-                return self.sequence_part_type(&base.to_place(self.tcx), elem);
-            }
-        }
         let mut base = mir::PlaceTy::from_ty(self.local_decls[place.local].ty);
         for elem in place.projection {
             let is_omitted_field = matches!(elem, mir::PlaceElem::Field(idx, _)
@@ -3182,46 +3271,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             base = base.projection_ty(self.tcx, elem);
         }
         self.env.place_type(self.elaborate_place(place))
-    }
-
-    /// The type of the element or the subslice that a slice pattern takes out of the slice or
-    /// the array at `base`, read off the sequence that models it. The pattern's length test
-    /// guards the access.
-    fn sequence_part_type(&self, base: &mir::Place<'tcx>, elem: mir::PlaceElem<'tcx>) -> PlaceType {
-        let mut builder = PlaceTypeBuilder::default();
-        let (seq_ty, seq) = builder.subsume(self.place_type(base));
-        match elem {
-            mir::PlaceElem::ConstantIndex {
-                offset, from_end, ..
-            } => {
-                let rty::Type::Seq(elem_rty) = seq_ty else {
-                    panic!("slice pattern on a value that is not a sequence: {seq_ty:?}")
-                };
-                let offset = chc::Term::int(offset);
-                let index = if from_end {
-                    seq.clone().seq_len().sub(offset)
-                } else {
-                    offset
-                };
-                let (ty, value_var) = builder.subsume_rty(*elem_rty);
-                let value = chc::Term::var(value_var.into());
-                builder.push_formula(value.clone().equal_to(seq.seq_nth(index)));
-                builder.build(ty, value)
-            }
-            mir::PlaceElem::Subslice { from, to, from_end } => {
-                let start = chc::Term::int(from);
-                let length = if from_end {
-                    seq.clone()
-                        .seq_len()
-                        .sub(start.clone())
-                        .sub(chc::Term::int(to))
-                } else {
-                    chc::Term::int(to - from)
-                };
-                builder.build(seq_ty, seq.seq_extract(start, length))
-            }
-            _ => unreachable!("not a slice pattern projection: {elem:?}"),
-        }
     }
 
     /// Stops at a statement that would read the value of a raw pointer or a trait object, whose
@@ -3776,16 +3825,27 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
             if call_result_direct()
                 && destination != mir::RETURN_PLACE
+                && matches!(self.builtin_call(func), Some(BuiltinCall::ProofBranch))
+            {
+                // Bound as a callee's return type is in this mode, without a template.
+                self.bind_local(destination, proof_branch_value());
+                return;
+            }
+
+            if call_result_direct()
+                && destination != mir::RETURN_PLACE
                 && formula_marker_call(self.ctx, &self.local_decls, func, args).is_none()
                 && self.builtin_call(func).is_none()
             {
                 let rty = self.type_call_direct(func.clone(), args.iter().map(|a| a.node.clone()));
-                debug_assert_eq!(
+                let destination_sort = self
+                    .type_builder
+                    .build(self.local_decls[destination].ty)
+                    .ty
+                    .to_sort();
+                assert_eq!(
                     rty.ty.to_sort(),
-                    self.type_builder
-                        .build(self.local_decls[destination].ty)
-                        .ty
-                        .to_sort(),
+                    destination_sort,
                     "the callee's return type has the shape of the destination",
                 );
                 self.bind_local(destination, rty);

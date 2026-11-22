@@ -27,18 +27,23 @@ pub struct Function {
 }
 
 /// Each function of the crate the report shows, but the specification functions, in the order
-/// of their code. `verdict` is the whole query's, without `THRUST_SPLIT`.
+/// of their code, and each one a macro writes that holds an `assume!`, so that every assumption
+/// is listed. `verdict` is the whole query's, without `THRUST_SPLIT`.
 pub fn functions(
     tcx: TyCtxt<'_>,
     config: &Config,
     input: &Input<'_>,
     verdict: &'static str,
 ) -> Vec<Function> {
+    let holds_assume = |def: LocalDefId| input.assumptions.iter().any(|a| a.owner == def);
     let mut functions: Vec<Function> = tcx
         .mir_keys(())
         .iter()
         .copied()
-        .filter(|def| tcx.def_kind(*def).is_fn_like() && config.reports(tcx, *def))
+        .filter(|def| {
+            tcx.def_kind(*def).is_fn_like()
+                && (config.reports(tcx, *def) || holds_assume(*def) && config.selects(tcx, *def))
+        })
         .filter_map(|def| {
             let check = input
                 .body_checks

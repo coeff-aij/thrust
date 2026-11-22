@@ -1346,9 +1346,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             for ident in idents.iter().skip(first_named_param).flatten() {
                 let name = analyze::annot_fn::lifted_param_source_name(*ident);
                 let scope = terminator.source_info.scope;
-                for info in analyze::basic_block::bindings_in_scope(body, name, scope) {
+                for info in analyze::basic_block::bindings_in_scope(self.tcx, body, name, scope) {
                     if let mir::VarDebugInfoContents::Place(place) = info.value {
-                        reads.push((place.local, location, name));
+                        reads.push((place.local, location, name.name));
                     }
                 }
             }
@@ -1956,15 +1956,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             )
             .expect("invariant formula function is not registered");
         formula_fn.param_idents().iter().all(|ident| {
-            let name = ident.expect("invariant parameters must be named").name;
+            let name = ident.expect("invariant parameters must be named");
             self.local_in_scope(name, invariant.scope)
                 .is_some_and(|local| bty.param_of_local(local).is_some())
         })
     }
 
     /// The local the name `name` stands for in `scope`, as Rust's shadowing resolves it.
-    fn local_in_scope(&self, name: rustc_span::Symbol, scope: mir::SourceScope) -> Option<Local> {
-        analyze::basic_block::bindings_in_scope(&self.body, name, scope)
+    fn local_in_scope(
+        &self,
+        name: rustc_span::symbol::Ident,
+        scope: mir::SourceScope,
+    ) -> Option<Local> {
+        analyze::basic_block::bindings_in_scope(self.tcx, &self.body, name, scope)
             .into_iter()
             .find_map(|vdi| match &vdi.value {
                 mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
@@ -1974,12 +1978,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             })
     }
 
-    fn function_param_local_of_name(&self, name: rustc_span::Symbol) -> Option<Local> {
+    /// The argument local the identifier `name` names
+    /// ([`analyze::basic_block::names_binding`]).
+    fn function_param_local_of_name(&self, name: rustc_span::symbol::Ident) -> Option<Local> {
+        let idents = analyze::basic_block::binding_idents(self.tcx, &self.body);
         let mut found: Option<Local> = None;
         for vdi in &self.body.var_debug_info {
             tracing::debug!("comparing {name:?} with {vdi:?}...");
-            if vdi.name != name {
-                tracing::debug!("different name, skip.");
+            if !analyze::basic_block::names_binding(&idents, name, vdi) {
+                tracing::debug!("another name or another hygiene, skip.");
                 continue;
             }
             let mir::VarDebugInfoContents::Place(place) = vdi.value else {
@@ -2190,7 +2197,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.check_invariant_param_ty(
                     site.kind.what(),
                     ident.span,
-                    name,
+                    name.name,
                     fn_param_args.type_at(0),
                     written_text,
                     local,
@@ -2206,11 +2213,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let local = self
             .local_in_scope(name, site.scope)
             .filter(|&local| bty.param_of_local(local).is_some())
-            .unwrap_or_else(|| site.kind.fatal_unresolved_name(self.tcx, name));
+            .unwrap_or_else(|| site.kind.fatal_unresolved_name(self.tcx, name.name));
         self.check_invariant_param_ty(
             site.kind.what(),
             ident.span,
-            name,
+            name.name,
             written_ty,
             written_text,
             local,
@@ -2278,7 +2285,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             };
             let mut operands = args.to_vec();
             for name in names {
-                let bindings = analyze::basic_block::bindings_in_scope(&self.body, name, scope);
+                let bindings =
+                    analyze::basic_block::bindings_in_scope(self.tcx, &self.body, name, scope);
                 let places = bindings.into_iter().filter_map(|vdi| match &vdi.value {
                     mir::VarDebugInfoContents::Place(place) => Some(*place),
                     _ => None,
@@ -2296,9 +2304,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// The formula function of a call whose formula reads live variables by name, with its
     /// generic arguments and the first parameter that names one: a formula marker (`ghost!`,
-    /// `proof_assert!`, `assume!`) or a written loop invariant (`invariant!`,
-    /// `partial_invariant!`); `None` for any other call, the history of a `for` loop included,
-    /// whose ghosts its desugaring keeps live.
+    /// `proof_assert!`, `assume!`, and the ghost markers of a `for` loop's `iter_old` and
+    /// `produced`) or a written loop invariant (`invariant!`, `partial_invariant!`); `None` for
+    /// any other call, the history marker of a `for` loop included, whose ghosts its desugaring
+    /// keeps live.
     fn formula_read_call(
         &self,
         func: &mir::Operand<'tcx>,
@@ -2354,7 +2363,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
         scope: mir::SourceScope,
         span: rustc_span::Span,
-    ) -> Option<Vec<rustc_span::Symbol>> {
+    ) -> Option<Vec<rustc_span::symbol::Ident>> {
         let (formula_def_id, generic_args, first_named_param) =
             self.formula_read_call(func, args)?;
         let generic_args = analyze::basic_block::resolve_closure_local_args(
@@ -3367,11 +3376,11 @@ pub(crate) fn spec_param_written_ty<'tcx>(
             alias.args.type_at(0)
         }
         mir_ty::TyKind::Adt(adt, _)
-            if ctx
-                .tcx()
-                .get_attrs_by_path(adt.did(), &analyze::annot::no_model_path())
-                .next()
-                .is_some() =>
+            if analyze::annot::has_thrust_attr(
+                ctx.tcx(),
+                adt.did(),
+                &analyze::annot::no_model_path(),
+            ) =>
         {
             mir_ty::Ty::new_imm_ref(
                 ctx.tcx(),

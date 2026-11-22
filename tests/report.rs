@@ -813,3 +813,19 @@ fn the_functions_report_lists_the_assumptions() {
     );
     assert!(!stderr.contains("`with_closure` assumes"), "{stderr}");
 }
+
+/// A function a `macro_rules!` macro writes is listed when it holds an `assume!`, so that the
+/// assumption is counted.
+#[test]
+fn the_functions_report_lists_a_macro_written_function_with_an_assumption() {
+    let output = report("assume_in_macro.rs", "functions");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("note: thrust: 2 functions: 2 checked; 1 `assume!`"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("`get`: checked under 1 assumption (sat)"),
+        "{stderr}"
+    );
+}

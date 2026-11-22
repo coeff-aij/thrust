@@ -272,6 +272,22 @@ fn address_places<'tcx>(place: Place<'tcx>) -> Vec<PlaceRef<'tcx>> {
     places
 }
 
+/// Whether two projection elements may name the same part of a place. Elements of one sequence
+/// (an index, a constant index, a subslice) may overlap whatever the index values, as in rustc's
+/// `places_conflict` with `PlaceConflictBias::Overlap`; every other element names a fixed part.
+fn elems_may_overlap<'tcx>(a: PlaceElem<'tcx>, b: PlaceElem<'tcx>) -> bool {
+    let is_sequence_element = |elem: &PlaceElem<'tcx>| {
+        matches!(
+            elem,
+            PlaceElem::Index(_) | PlaceElem::ConstantIndex { .. } | PlaceElem::Subslice { .. }
+        )
+    };
+    if is_sequence_element(&a) && is_sequence_element(&b) {
+        return true;
+    }
+    a == b
+}
+
 /// What the code on a path from a reservation to its activation does with the borrowed place.
 struct Between<'tcx> {
     lender: Local,
@@ -297,10 +313,16 @@ impl<'tcx> Between<'tcx> {
 
 impl<'tcx> mir::visit::Visitor<'tcx> for Between<'tcx> {
     fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, location: Location) {
-        let is_prefix = |address: &PlaceRef<'tcx>| {
-            place.local == address.local && address.projection.starts_with(place.projection)
+        let may_name_address = |address: &PlaceRef<'tcx>| {
+            place.local == address.local
+                && place.projection.len() <= address.projection.len()
+                && place
+                    .projection
+                    .iter()
+                    .zip(address.projection)
+                    .all(|(written, addressed)| elems_may_overlap(written, *addressed))
         };
-        if context.is_mutating_use() && self.address_places.iter().any(is_prefix) {
+        if context.is_mutating_use() && self.address_places.iter().any(may_name_address) {
             self.address_writes.push(location);
         }
         self.super_place(place, context, location);
