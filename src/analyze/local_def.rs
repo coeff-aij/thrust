@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 
 use rustc_index::bit_set::DenseBitSet;
+use rustc_index::IndexVec;
 use rustc_middle::mir::{self, BasicBlock, Body, Local};
 use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeAndMut};
 use rustc_mir_dataflow::impls::{
@@ -1736,7 +1737,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         zst_locals
     }
 
-    fn reassign_local_mutabilities(&mut self, move_data: &MoveData<'tcx>) {
+    fn reassign_local_mutabilities(
+        &mut self,
+        move_data: &MoveData<'tcx>,
+        block_params: &IndexVec<BasicBlock, Vec<Local>>,
+    ) {
         for local_decl in &mut self.body.local_decls {
             local_decl.mutability = mir::Mutability::Not;
         }
@@ -1785,7 +1790,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
         marked.extend(self.assigned_params().iter());
-        marked.extend(self.reinitialized_under_contracts(move_data));
+        marked.extend(self.reinitialized_under_contracts(block_params));
         for local in marked {
             self.body.local_decls[local].mutability = mir::Mutability::Mut;
         }
@@ -1795,45 +1800,24 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// holds a binding of: a local moved out before the code or in it and set again by it, which
     /// the check above misses where the move is in another block, since the local is
     /// uninitialized at the assignment. The analysis goes past the code from the bindings of the
-    /// opening block, which keep such a local after a move out of it (a drop on an unwind path
-    /// can keep it live), so the code replaces a binding, as an assignment after a move in the
-    /// same block does, and the local takes a fresh value after the contract. Binding an
-    /// immutable local again would change the value its variable stands for in the facts
-    /// already known.
-    fn reinitialized_under_contracts(&self, move_data: &MoveData<'tcx>) -> Vec<Local> {
-        if self.block_contracts.is_empty() {
-            return Vec::new();
-        }
-        // The liveness `refine_basic_blocks` gives the parameters of a block outside the code
-        // under a contract, as the opening block is.
-        let ghost_read_body = self.body_with_ghost_reads();
-        let live_body = ghost_read_body.as_ref().unwrap_or(&self.body);
-        let mut live = MaybeLiveLocals
-            .iterate_to_fixpoint(self.tcx, live_body, None)
-            .into_results_cursor(live_body);
-        let mut ever_init = EverInitializedPlaces::new(&self.body, move_data)
-            .iterate_to_fixpoint(self.tcx, &self.body, None)
-            .into_results_cursor(&self.body);
+    /// opening block, its parameters (`block_params`) and the locals it assigns, which keep such
+    /// a local after a move out of it (a drop on an unwind path can keep it live), so the code
+    /// replaces a binding, as an assignment after a move in the same block does, and the local
+    /// takes a fresh value after the contract. Binding an immutable local again would change the
+    /// value its variable stands for in the facts already known.
+    fn reinitialized_under_contracts(
+        &self,
+        block_params: &IndexVec<BasicBlock, Vec<Local>>,
+    ) -> Vec<Local> {
         let mut reinitialized = Vec::new();
         for contract in &self.block_contracts {
             let opening = contract.opening;
-            live.seek_to_block_start(opening);
-            ever_init.seek_to_block_start(opening);
-            let ever_set = locals_of(
-                ever_init
-                    .get()
-                    .iter()
-                    .map(|init| move_data.inits[init].path),
-                move_data,
-            );
             let data = &self.body.basic_blocks[opening];
             let assigned: HashSet<Local> = (0..data.statements.len())
                 .filter_map(|statement_index| assigned_local(data, statement_index))
                 .collect();
-            let bound = |local: Local| {
-                (live.get().contains(local) && ever_set.contains(&local))
-                    || assigned.contains(&local)
-            };
+            let bound =
+                |local: Local| block_params[opening].contains(&local) || assigned.contains(&local);
             reinitialized.extend(
                 contract
                     .changed
@@ -2466,7 +2450,76 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         Some(names)
     }
 
-    fn refine_basic_blocks(&mut self, move_data: &MoveData<'tcx>) {
+    /// The locals each block starts with as its parameters, in order. A local live at the
+    /// block's start is one: by the liveness of the code and its formulas alone in a block under
+    /// a block contract (`body_ending_at_closings`), by the liveness with ghost reads elsewhere.
+    /// A local never set on any path there is live only for a drop that its drop flag skips,
+    /// and holds no value, so it is no parameter of the block; an edge into a block where it may
+    /// be set passes it as any value. A ZST's one value needs no setting. The arguments
+    /// `START_BLOCK` adds are not here (`refine_basic_blocks`).
+    fn block_params(&self, move_data: &MoveData<'tcx>) -> IndexVec<BasicBlock, Vec<Local>> {
+        let zst_locals = self.zst_locals();
+        // Ghost terms read locals the MIR does not use, so a local a ghost term reads is a
+        // parameter of every block up to the read, while its drops, and so the resolution of a
+        // `&mut`, stay where the runtime liveness puts them.
+        let ghost_read_body = self.body_with_ghost_reads();
+        let live_body = ghost_read_body.as_ref().unwrap_or(&self.body);
+        let mut live = MaybeLiveLocals
+            .iterate_to_fixpoint(self.tcx, live_body, None)
+            .into_results_cursor(live_body);
+        let contract_body = (!self.block_contracts.is_empty()).then(|| {
+            analyze::block_contract::body_ending_at_closings(
+                live_body.clone(),
+                &self.block_contracts,
+            )
+        });
+        let mut contract_live = contract_body.as_ref().map(|body| {
+            MaybeLiveLocals
+                .iterate_to_fixpoint(self.tcx, body, None)
+                .into_results_cursor(body)
+        });
+        let mut ever_init = EverInitializedPlaces::new(&self.body, move_data)
+            .iterate_to_fixpoint(self.tcx, &self.body, None)
+            .into_results_cursor(&self.body);
+        self.body
+            .basic_blocks
+            .indices()
+            .map(|bb| {
+                ever_init.seek_to_block_start(bb);
+                let ever_set = locals_of(
+                    ever_init
+                        .get()
+                        .iter()
+                        .map(|init| move_data.inits[init].path),
+                    move_data,
+                );
+                let under_contract = self
+                    .block_contracts
+                    .iter()
+                    .any(|contract| contract.blocks.contains(&bb));
+                let carried = match &mut contract_live {
+                    Some(contract_live) if under_contract => {
+                        contract_live.seek_to_block_start(bb);
+                        contract_live.get()
+                    }
+                    _ => {
+                        live.seek_to_block_start(bb);
+                        live.get()
+                    }
+                };
+                carried
+                    .iter()
+                    .filter(|local| zst_locals.contains(*local) || ever_set.contains(local))
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn refine_basic_blocks(
+        &mut self,
+        move_data: &MoveData<'tcx>,
+        block_params: &IndexVec<BasicBlock, Vec<Local>>,
+    ) {
         let loop_invariants = self.collect_loop_invariant_annotations();
         for (header, invariants) in &loop_invariants {
             let formulas = invariants
@@ -2479,31 +2532,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.ctx
                 .record_invariant_annotations(self.local_def_id, *header, formulas);
         }
-        let zst_locals = self.zst_locals();
+        // The runtime liveness, which places the drops.
         let mut results = MaybeLiveLocals
-            .iterate_to_fixpoint(self.tcx, &self.body, None)
-            .into_results_cursor(&self.body);
-        // Ghost terms read locals the MIR does not use, so a local a ghost term reads is a
-        // parameter of every block up to the read, while its drops, and so the resolution of a
-        // `&mut`, stay where the runtime liveness puts them.
-        let ghost_read_body = self.body_with_ghost_reads();
-        let mut ghost_live = ghost_read_body.as_ref().map(|body| {
-            MaybeLiveLocals
-                .iterate_to_fixpoint(self.tcx, body, None)
-                .into_results_cursor(body)
-        });
-        let contract_body = (!self.block_contracts.is_empty()).then(|| {
-            analyze::block_contract::body_ending_at_closings(
-                ghost_read_body.clone().unwrap_or_else(|| self.body.clone()),
-                &self.block_contracts,
-            )
-        });
-        let mut contract_live = contract_body.as_ref().map(|body| {
-            MaybeLiveLocals
-                .iterate_to_fixpoint(self.tcx, body, None)
-                .into_results_cursor(body)
-        });
-        let mut ever_init = EverInitializedPlaces::new(&self.body, move_data)
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
         let mut uninit = MaybeUninitializedPlaces::new(self.tcx, &self.body, move_data)
@@ -2524,36 +2554,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.drop_points
                 .insert(bb, builder.build(&mut results, &mut moves, bb));
             results.seek_to_block_start(bb);
-            // A local never set on any path here is live only for a drop that its drop flag
-            // skips, and holds no value, so it is no parameter of the block; an edge into a block
-            // where it may be set passes it as any value. A ZST's one value needs no setting.
-            ever_init.seek_to_block_start(bb);
-            let ever_set = locals_of(
-                ever_init
-                    .get()
-                    .iter()
-                    .map(|init| move_data.inits[init].path),
-                move_data,
-            );
-            let under_contract = self
-                .block_contracts
+            let mut live_locals: Vec<_> = block_params[bb]
                 .iter()
-                .any(|contract| contract.blocks.contains(&bb));
-            let carried = match (&mut contract_live, &mut ghost_live) {
-                (Some(contract_live), _) if under_contract => {
-                    contract_live.seek_to_block_start(bb);
-                    contract_live.get().clone()
-                }
-                (_, Some(ghost_live)) => {
-                    ghost_live.seek_to_block_start(bb);
-                    ghost_live.get().clone()
-                }
-                _ => results.get().clone(),
-            };
-            let mut live_locals: Vec<_> = carried
-                .iter()
-                .filter(|local| zst_locals.contains(*local) || ever_set.contains(local))
-                .map(|in_local| {
+                .map(|&in_local| {
                     let decl = &self.body.local_decls[in_local];
                     let type_and_mut = TypeAndMut {
                         ty: decl.ty,
@@ -3077,8 +3080,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyze::block_contract::separate_entries(self.ctx, &mut self.body);
         self.block_contracts = analyze::block_contract::collect(self.ctx, &self.body);
         let move_data = self.move_data();
-        self.reassign_local_mutabilities(&move_data);
-        self.refine_basic_blocks(&move_data);
+        let block_params = self.block_params(&move_data);
+        self.reassign_local_mutabilities(&move_data, &block_params);
+        self.refine_basic_blocks(&move_data, &block_params);
         let checked = self.contract_checked_by_body(expected);
         self.analyze_basic_blocks(&checked);
         self.assert_entry(expected);
