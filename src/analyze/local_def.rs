@@ -247,20 +247,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// trusted one, and the contract of a trait's method that a trusted impl of the crate
     /// implements ([`trait_item_reading`]).
     fn contract_reading(&self) -> analyze::annot_fn::FormulaReading {
-        let unchecked = self.is_annotated_as_trusted()
-            || (self.is_annotated_as_extern_spec_fn() && {
-                let target = self.extern_spec_fn_target_def_id();
-                !target.is_local()
-                    || analyze::annot::has_thrust_attr(
-                        self.tcx,
-                        target,
-                        &analyze::annot::trusted_path(),
-                    )
-            });
-        if unchecked {
+        // An extern spec, also one `#[thrust_macros::context]` writes for a contract in a trait or
+        // impl, is the contract of its target.
+        let owner = if self.is_annotated_as_extern_spec_fn() {
+            self.extern_spec_fn_target_def_id()
+        } else {
+            self.local_def_id.to_def_id()
+        };
+        if !owner.is_local()
+            || analyze::annot::has_thrust_attr(self.tcx, owner, &analyze::annot::trusted_path())
+        {
             return analyze::annot_fn::FormulaReading::Rust;
         }
-        trait_item_reading(self.tcx, self.local_def_id.to_def_id())
+        trait_item_reading(self.tcx, owner)
     }
 
     pub fn is_annotated_as_callable(&self) -> bool {
