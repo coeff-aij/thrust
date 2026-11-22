@@ -447,6 +447,97 @@ impl Quantifier {
     }
 }
 
+/// How a formula reads a quantified variable: only through the payload fields it selects (by
+/// constructor and index), its discriminant and its testers, or also as a whole value (an argument,
+/// a side of `==`).
+enum FieldReads {
+    Fields(std::collections::HashSet<(chc::DatatypeSymbol, usize)>),
+    Whole,
+}
+
+impl FieldReads {
+    fn of<V>(formula: &chc::Formula<V>, var: chc::UserQuantifiedVarId) -> Self {
+        let mut fields = std::collections::HashSet::new();
+        if reads_in_formula(formula, var, &mut fields) {
+            FieldReads::Fields(fields)
+        } else {
+            FieldReads::Whole
+        }
+    }
+}
+
+/// Adds to `fields` the payload fields of `var` that `formula` selects; `false` when it reads
+/// `var` otherwise than through a selector, its discriminant or a tester.
+fn reads_in_formula<V>(
+    formula: &chc::Formula<V>,
+    var: chc::UserQuantifiedVarId,
+    fields: &mut std::collections::HashSet<(chc::DatatypeSymbol, usize)>,
+) -> bool {
+    match formula {
+        chc::Formula::Atom(atom) => {
+            let guard_ok = atom
+                .guard
+                .as_deref()
+                .is_none_or(|guard| reads_in_formula(guard, var, fields));
+            let tested = matches!(atom.pred, chc::Pred::Tester(_))
+                && matches!(atom.args.as_slice(), [chc::Term::UserQuantifiedVar(_, v)] if *v == var);
+            guard_ok && (tested || atom.args.iter().all(|t| reads_in_term(t, var, fields)))
+        }
+        chc::Formula::Not(f) => reads_in_formula(f, var, fields),
+        chc::Formula::And(fs) | chc::Formula::Or(fs) => {
+            fs.iter().all(|f| reads_in_formula(f, var, fields))
+        }
+        chc::Formula::Implies(a, b) => {
+            reads_in_formula(a, var, fields) && reads_in_formula(b, var, fields)
+        }
+        chc::Formula::Exists(_, f) | chc::Formula::Forall(_, f) => reads_in_formula(f, var, fields),
+    }
+}
+
+fn reads_in_term<V>(
+    term: &chc::Term<V>,
+    var: chc::UserQuantifiedVarId,
+    fields: &mut std::collections::HashSet<(chc::DatatypeSymbol, usize)>,
+) -> bool {
+    match term {
+        chc::Term::DatatypeSelector(selector, inner) if matches!(&**inner, chc::Term::UserQuantifiedVar(_, v) if *v == var) =>
+        {
+            fields.insert((selector.ctor.clone(), selector.index));
+            true
+        }
+        chc::Term::DatatypeDiscr(_, inner) if matches!(&**inner, chc::Term::UserQuantifiedVar(_, v) if *v == var) => {
+            true
+        }
+        chc::Term::UserQuantifiedVar(_, v) => *v != var,
+        chc::Term::Null
+        | chc::Term::ForallDefault(_)
+        | chc::Term::Var(_)
+        | chc::Term::Bool(_)
+        | chc::Term::Int(_)
+        | chc::Term::String(_)
+        | chc::Term::Box(_)
+        | chc::Term::Mut(..)
+        | chc::Term::BoxCurrent(_)
+        | chc::Term::MutCurrent(_)
+        | chc::Term::MutFinal(_)
+        | chc::Term::App(..)
+        | chc::Term::ArrayEmpty(..)
+        | chc::Term::SeqEmpty(_)
+        | chc::Term::Tuple(_)
+        | chc::Term::TupleProj(..)
+        | chc::Term::DatatypeCtor(..)
+        | chc::Term::DatatypeDiscr(..)
+        | chc::Term::DatatypeSelector(..)
+        | chc::Term::UserDefinedFn(..)
+        | chc::Term::ForallFn(..)
+        | chc::Term::IntToBitVec { .. }
+        | chc::Term::ArrayLambda(..) => term
+            .subterms()
+            .into_iter()
+            .all(|t| reads_in_term(t, var, fields)),
+    }
+}
+
 fn conjuncts<'f, V>(formula: &'f chc::Formula<V>, out: &mut Vec<&'f chc::Formula<V>>) {
     match formula {
         chc::Formula::And(fs) => fs.iter().for_each(|f| conjuncts(f, out)),
@@ -2521,8 +2612,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 if uninhabited {
                     return Some(chc::Formula::bottom());
                 }
-                let pinned = premises.iter().any(|p| pins_to_value(p, var));
-                self.quantified_var_domain(&ty, term, pinned)
+                let pinned = self.parameters_are_program_values()
+                    && premises.iter().any(|p| pins_to_value(p, var));
+                let reads = FieldReads::of(&body_formula, var);
+                self.quantified_var_domain(&ty, term, pinned, &reads)
             })
             .reduce(chc::Formula::and);
         (vars, range, body_formula)
@@ -2531,24 +2624,43 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// The domain a quantified variable `var` of type `ty` ranges over in [`Self::reading`]. A
     /// variable `pinned` to a part of a program value ([`pins_to_value`]) keeps the model's
     /// domain: where it lies outside its type's values, the premise that pins it is false of
-    /// every Rust state, so the formula reads the same over the model's values as over Rust's.
+    /// every Rust state, so the formula reads the same over the model's values as over Rust's. A
+    /// variable of an enum type that the body `reads` only through some payload fields gets the
+    /// facts of those fields only ([`rty::domain_guard_of_read_fields`]), which is equivalent.
     fn quantified_var_domain(
         &self,
         ty: &rty::Type<rty::Closed>,
         var: chc::Term<rty::FunctionParamIdx>,
         pinned: bool,
+        reads: &FieldReads,
     ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
         let reading = if pinned {
             FormulaReading::Model
         } else {
             self.reading
         };
-        rty::domain_guard::<_, chc::Formula<_>>(
-            ty,
-            var,
-            &self.analyzer.enum_defs,
-            reading.int_domain(),
-        )
+        let defs = &self.analyzer.enum_defs;
+        match (ty, reads) {
+            (rty::Type::Enum(_), FieldReads::Fields(fields)) => {
+                rty::domain_guard_of_read_fields::<_, chc::Formula<_>>(
+                    ty,
+                    var,
+                    defs,
+                    reading.int_domain(),
+                    &|ctor, index| fields.contains(&(ctor.clone(), index)),
+                )
+            }
+            _ => rty::domain_guard::<_, chc::Formula<_>>(ty, var, defs, reading.int_domain()),
+        }
+    }
+
+    /// Whether the formula's parameters are program values (a contract's, a statement's), so that
+    /// a part of one is a value of its type in every Rust state ([`pins_to_value`]). Those of a
+    /// predicate or logic function are the arguments of its calls, any terms of their sorts.
+    fn parameters_are_program_values(&self) -> bool {
+        let def_id = self.local_def_id.to_def_id();
+        !self.is_logic(def_id)
+            && !analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::predicate_path())
     }
 
     /// The body of a one-parameter closure as a term, with the parameter bound to a fresh

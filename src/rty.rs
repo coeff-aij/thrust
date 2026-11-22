@@ -1691,7 +1691,13 @@ struct DomainCx<'a> {
     ints: IntDomain,
     enclosing: Vec<EnumType<Closed>>,
     seq_depth: usize,
+    /// The payload fields of the outermost enum whose facts are stated, by constructor and
+    /// index; every field when `None` ([`domain_guard_of_read_fields`]).
+    top_fields: Option<ReadFields<'a>>,
 }
+
+/// Whether a payload field, by constructor and index, is read ([`domain_guard_of_read_fields`]).
+type ReadFields<'a> = &'a dyn Fn(&chc::DatatypeSymbol, usize) -> bool;
 
 /// The index variable of the guard of a sequence's elements at nesting `depth`
 /// ([`DomainGuard::every_elem`]). The identifiers are reserved, as [`seq_elem_var`]'s is.
@@ -1728,6 +1734,35 @@ where
         ints,
         enclosing: Vec::new(),
         seq_depth: 0,
+        top_fields: None,
+    };
+    domain_guard_within(ty, value, &mut cx)
+}
+
+/// [`domain_guard`] of a value of the enum type `ty` that a formula reads only through the
+/// payload fields `read` accepts (by constructor and index), its discriminant and its testers:
+/// the facts of the other fields are left out; the exclusion of each variant no value is of is
+/// kept. The formula then holds at every value with the guard iff it holds at every value with the
+/// full guard (and has a witness with one iff it has one with the other), since a value with the
+/// guard becomes one with the full guard by replacing the unread fields, which the formula does
+/// not see, with values that have their facts.
+pub fn domain_guard_of_read_fields<V, G>(
+    ty: &Type<Closed>,
+    value: chc::Term<V>,
+    defs: &dyn EnumDefProvider,
+    ints: IntDomain,
+    read: ReadFields<'_>,
+) -> Option<G>
+where
+    V: Clone,
+    G: DomainGuard<V>,
+{
+    let mut cx = DomainCx {
+        defs,
+        ints,
+        enclosing: Vec::new(),
+        seq_depth: 0,
+        top_fields: Some(read),
     };
     domain_guard_within(ty, value, &mut cx)
 }
@@ -1801,6 +1836,11 @@ where
     if cx.enclosing.contains(enum_ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
         return None;
     }
+    let top_fields = if cx.enclosing.is_empty() {
+        cx.top_fields.take()
+    } else {
+        None
+    };
     cx.enclosing.push(enum_ty.clone());
     let sort = chc::DatatypeSort::new(enum_ty.symbol.clone(), enum_ty.arg_sorts());
     let variants = enum_ty.variants(cx.defs);
@@ -1815,6 +1855,9 @@ where
         }
         let mut fields = None;
         for (index, field_ty) in variant.field_tys.iter().enumerate() {
+            if top_fields.is_some_and(|read| !read(&variant.ctor, index)) {
+                continue;
+            }
             let field = chc::Term::datatype_selector(
                 sort.clone(),
                 variant.ctor.clone(),
