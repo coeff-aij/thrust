@@ -243,12 +243,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// How the def's contract is read: [`annot_fn::FormulaUse::Trusted`] when the model does not
     /// check a body against it, so that callers assume its `ensures` and the unchecked code relies
     /// on its `requires`: a `#[thrust::trusted]` function, and the specification of a function of
-    /// another crate or of a trusted one.
+    /// another crate or of a trusted one. The specification of a trait's method is the contract
+    /// each impl of the crate is checked against, so it is read as checked.
     fn contract_formula_use(&self) -> analyze::annot_fn::FormulaUse {
         let unchecked = self.is_annotated_as_trusted()
             || (self.is_annotated_as_extern_spec_fn() && {
                 let target = self.extern_spec_fn_target_def_id();
-                !target.is_local()
+                let of_trait =
+                    self.tcx.def_kind(self.tcx.parent(target)) == rustc_hir::def::DefKind::Trait;
+                (!target.is_local() && !of_trait)
                     || analyze::annot::has_thrust_attr(
                         self.tcx,
                         target,
