@@ -91,6 +91,14 @@ annotated_defs! {
     for_loop_history_marker => for_loop_history_marker_path;
     /// The formula `for_loop_history_marker` conjoins.
     for_loop_history => for_loop_history_path;
+    /// The ghosts of a `for` loop whose body starts with no invariant: each marker is typed as a
+    /// `ghost!` whose term is the formula after it.
+    for_loop_iter_old_marker => for_loop_iter_old_marker_path;
+    for_loop_iter_old => for_loop_iter_old_path;
+    for_loop_produced_marker => for_loop_produced_marker_path;
+    for_loop_produced => for_loop_produced_path;
+    for_loop_produced_push_marker => for_loop_produced_push_marker_path;
+    for_loop_produced_push => for_loop_produced_push_path;
     ghost_marker => ghost_marker_path;
     choose_marker => choose_marker_path;
     witness => witness_path;
@@ -241,6 +249,20 @@ impl<'tcx> DefIdCache<'tcx> {
             }
         }
         None
+    }
+
+    /// The formula of the `for` loop ghost the marker `def_id` makes, if it is one.
+    pub fn for_loop_ghost_formula(&self, def_id: DefId) -> Option<DefId> {
+        let formula = if Some(def_id) == self.for_loop_iter_old_marker() {
+            self.for_loop_iter_old()
+        } else if Some(def_id) == self.for_loop_produced_marker() {
+            self.for_loop_produced()
+        } else if Some(def_id) == self.for_loop_produced_push_marker() {
+            self.for_loop_produced_push()
+        } else {
+            return None;
+        };
+        Some(formula.expect("a `for` loop ghost marker has its formula"))
     }
 
     /// The loop-invariant marker `def_id` is, if it is one.
