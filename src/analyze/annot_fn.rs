@@ -13,6 +13,7 @@ use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeFoldable};
 
 use crate::analyze::{self, did_cache::DefIdCache};
 use crate::chc;
+use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{self, TypeBuilder};
 use crate::rty;
 
@@ -2318,7 +2319,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// The parameters of an `exists` / `forall` closure as quantified variables, the range of
     /// those of an integer type whose range is in use ([`rty::int_range`]) and the code points of
-    /// the `char`s they hold ([`rty::char_type_formula`]), over which they range, and the body.
+    /// the `char`s they hold ([`rty::char_domain_formula`]), over which they range, and the body.
     fn to_formula_with_quantified_vars(&self, closure: &rustc_hir::Body<'tcx>) -> QuantifiedBody {
         let mut inner_translator = self.clone();
         let mut vars = Vec::new();
@@ -2342,20 +2343,20 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
             let int_range = rty::int_range_formula(&param_rty.ty, term.clone());
-            let payload = || {
-                self.analyzer
-                    .generate_user_quantified_var(format!("payload of {ident}"))
-            };
-            let char_facts = rty::char_type_formula(
-                &param_rty.ty,
-                term.clone(),
-                payload,
-                &self.analyzer.enum_defs,
-            );
-            let char_facts = char_facts.map(|(payloads, facts)| {
-                vars.extend(payloads);
-                facts
-            });
+            let closed_ty = param_rty.ty.clone().strip_refinement();
+            let char_facts =
+                rty::char_domain_formula(&closed_ty, term.clone(), &self.analyzer.enum_defs)
+                    .unwrap_or_else(|enum_ty| {
+                        self.tcx.dcx().span_fatal(
+                            param.pat.span,
+                            format!(
+                                "thrust: the `char`s of a variable of type `{param_ty}` cannot \
+                                 all be given their code points: `{}` recurs in its own \
+                                 payload or is nested too deep",
+                                enum_ty.display()
+                            ),
+                        )
+                    });
             for fact in int_range.into_iter().chain(char_facts) {
                 range = Some(match range {
                     Some(range) => range.and(fact),

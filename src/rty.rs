@@ -1428,43 +1428,260 @@ where
     Some(bounds.lower.into_iter().chain(bounds.upper).collect())
 }
 
-/// The surrogate code points `[start, end)`, which no `char` is.
+/// The code points of a `char`, the Unicode scalar values: `[0, CHAR_END)` without the
+/// surrogates `[CHAR_SURROGATES.0, CHAR_SURROGATES.1)`.
+const CHAR_END: u32 = char::MAX as u32 + 1;
 const CHAR_SURROGATES: (u32, u32) = (0xD800, 0xE000);
 
 /// That the code point `x` is a Unicode scalar value, as that of every `char` is:
-/// `0 <= x < 0x110000` and `x` is not a surrogate (`0xD800..0xE000`).
+/// `0 <= x < 0x110000` and `x` is not a surrogate, built from `x >= n` and `x < n` by `ge` and `lt`.
+fn char_code_point<V, R>(
+    x: chc::Term<V>,
+    ge: impl Fn(chc::Term<V>, u32) -> R,
+    lt: impl Fn(chc::Term<V>, u32) -> R,
+    and: impl Fn(R, R) -> R,
+    or: impl Fn(R, R) -> R,
+) -> R
+where
+    V: Clone,
+{
+    let (surrogate_start, surrogate_end) = CHAR_SURROGATES;
+    let not_surrogate = or(lt(x.clone(), surrogate_start), ge(x.clone(), surrogate_end));
+    and(and(ge(x.clone(), 0), lt(x, CHAR_END)), not_surrogate)
+}
+
+/// [`char_code_point`] as a formula.
 pub fn char_code_point_formula<V>(x: chc::Term<V>) -> chc::Formula<V>
 where
     V: Clone,
 {
-    let atom = |pred: chc::KnownPred, x: chc::Term<V>, bound: u32| {
-        chc::Formula::Atom(chc::Atom::new(pred.into(), vec![x, chc::Term::int(bound)]))
+    let atom = |pred: chc::KnownPred| {
+        move |x: chc::Term<V>, bound: u32| {
+            chc::Formula::Atom(chc::Atom::new(pred.into(), vec![x, chc::Term::int(bound)]))
+        }
     };
-    let (surrogate_start, surrogate_end) = CHAR_SURROGATES;
-    let not_surrogate = atom(chc::KnownPred::LESS_THAN, x.clone(), surrogate_start).or(atom(
-        chc::KnownPred::GREATER_THAN_OR_EQUAL,
-        x.clone(),
-        surrogate_end,
-    ));
-    atom(chc::KnownPred::GREATER_THAN_OR_EQUAL, x.clone(), 0)
-        .and(atom(chc::KnownPred::LESS_THAN, x, u32::from(char::MAX) + 1))
-        .and(not_surrogate)
+    char_code_point(
+        x,
+        atom(chc::KnownPred::GREATER_THAN_OR_EQUAL),
+        atom(chc::KnownPred::LESS_THAN),
+        chc::Formula::and,
+        chc::Formula::or,
+    )
 }
 
-/// [`char_code_point_formula`] as a Boolean term.
+/// [`char_code_point`] as a Boolean term.
 fn char_code_point_term<V>(x: chc::Term<V>) -> chc::Term<V>
 where
     V: Clone,
 {
-    let (surrogate_start, surrogate_end) = CHAR_SURROGATES;
-    let not_surrogate = x
-        .clone()
-        .lt(chc::Term::int(surrogate_start))
-        .or(x.clone().ge(chc::Term::int(surrogate_end)));
-    x.clone()
-        .ge(chc::Term::int(0))
-        .and(x.lt(chc::Term::int(u32::from(char::MAX) + 1)))
-        .and(not_surrogate)
+    char_code_point(
+        x,
+        |x, bound| x.ge(chc::Term::int(bound)),
+        |x, bound| x.lt(chc::Term::int(bound)),
+        chc::Term::and,
+        chc::Term::or,
+    )
+}
+
+/// The index variable of the formula over the elements of a sequence at nesting `depth`
+/// ([`char_domain_formula`]). The identifiers are reserved, as [`seq_elem_var`]'s is.
+fn char_seq_elem_var(depth: usize) -> chc::UserQuantifiedVarId {
+    assert!(depth < 0x1_0000, "sequence nested too deep");
+    chc::UserQuantifiedVarId::from_usize(0xFFFC_0000 + depth)
+}
+
+/// The code points of the `char`s a value of `ty` holds, as a quantifier-free formula about
+/// `value` but for the elements of a sequence: through tuples, pointers (the current and final
+/// values of a `&mut`), the payloads of enums, each variant's as `is_C(v) => facts(sel_C(v))`, and
+/// the elements of sequences, as `forall k. 0 <= k < len(v) => facts(v[k])`. `Ok(None)` when it
+/// holds none. A variable an annotation's `forall` or `exists` binds ranges over them in every
+/// mode, as every value of `ty` has them; the enums of `ty` are registered (`defs`).
+///
+/// An enum met again inside its own payload, or nested past [`ENUM_NESTING_LIMIT`], cannot be
+/// followed by a finite formula: when a `char` is in it, the error names it, as
+/// [`type_fact_checks`] names a recursive enum it cannot check.
+pub fn char_domain_formula<V>(
+    ty: &Type<Closed>,
+    value: chc::Term<V>,
+    defs: &dyn EnumDefProvider,
+) -> Result<Option<chc::Formula<V>>, Type<Closed>>
+where
+    V: Clone,
+{
+    char_domain_within(ty, value, defs, &mut Vec::new(), 0)
+}
+
+fn char_domain_within<V>(
+    ty: &Type<Closed>,
+    value: chc::Term<V>,
+    defs: &dyn EnumDefProvider,
+    enclosing: &mut Vec<EnumType<Closed>>,
+    seq_depth: usize,
+) -> Result<Option<chc::Formula<V>>, Type<Closed>>
+where
+    V: Clone,
+{
+    let conj = |a: Option<chc::Formula<V>>, b: Option<chc::Formula<V>>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.and(b)),
+        (a, b) => a.or(b),
+    };
+    match ty {
+        Type::Char => Ok(Some(char_code_point_formula(value))),
+        Type::Tuple(tuple) => {
+            let mut facts = None;
+            for (index, elem) in tuple.elems.iter().enumerate() {
+                let part = value.clone().tuple_proj(index);
+                facts = conj(
+                    facts,
+                    char_domain_within(&elem.ty, part, defs, enclosing, seq_depth)?,
+                );
+            }
+            Ok(facts)
+        }
+        Type::Pointer(pointer) => {
+            let current = pointer.kind.deref_term(value.clone());
+            let current =
+                char_domain_within(&pointer.elem.ty, current, defs, enclosing, seq_depth)?;
+            if !pointer.is_mut() {
+                return Ok(current);
+            }
+            let final_ = value.mut_final();
+            let final_ = char_domain_within(&pointer.elem.ty, final_, defs, enclosing, seq_depth)?;
+            Ok(conj(current, final_))
+        }
+        Type::Seq(elem) => {
+            let var = char_seq_elem_var(seq_depth);
+            let k = chc::Term::UserQuantifiedVar(chc::Sort::int(), var);
+            let nth = value.clone().seq_nth(k.clone());
+            let Some(elem) = char_domain_within(&elem.ty, nth, defs, enclosing, seq_depth + 1)?
+            else {
+                return Ok(None);
+            };
+            let in_bounds = chc::Formula::Atom(chc::Atom::new(
+                chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+                vec![k.clone(), chc::Term::int(0)],
+            ))
+            .and(chc::Formula::Atom(chc::Atom::new(
+                chc::KnownPred::LESS_THAN.into(),
+                vec![k, value.seq_len()],
+            )));
+            Ok(Some(chc::Formula::forall(
+                vec![(var, chc::Sort::int())],
+                in_bounds.implies(elem),
+            )))
+        }
+        Type::Enum(enum_ty) => enum_char_domain(enum_ty, value, defs, enclosing, seq_depth),
+        Type::Int(_)
+        | Type::UInt(_)
+        | Type::BitVec(_)
+        | Type::Bool
+        | Type::String
+        | Type::Opaque
+        | Type::Never
+        | Type::Param(_)
+        | Type::Alias(_)
+        | Type::Function(_)
+        | Type::Array(_) => Ok(None),
+    }
+}
+
+/// [`char_domain_formula`] of a value of the enum type `enum_ty`: `is_C(v) => facts(sel_C(v))` of
+/// each variant whose fields hold `char`s.
+fn enum_char_domain<V>(
+    enum_ty: &EnumType<Closed>,
+    value: chc::Term<V>,
+    defs: &dyn EnumDefProvider,
+    enclosing: &mut Vec<EnumType<Closed>>,
+    seq_depth: usize,
+) -> Result<Option<chc::Formula<V>>, Type<Closed>>
+where
+    V: Clone,
+{
+    if enclosing.contains(enum_ty) || enclosing.len() >= ENUM_NESTING_LIMIT {
+        let ty = Type::Enum(enum_ty.clone());
+        return if holds_char(&ty, defs, &mut Vec::new()) {
+            Err(ty)
+        } else {
+            Ok(None)
+        };
+    }
+    enclosing.push(enum_ty.clone());
+    let sort = chc::DatatypeSort::new(enum_ty.symbol.clone(), enum_ty.arg_sorts());
+    let mut facts = None;
+    for variant in enum_ty.variants(defs) {
+        let mut fields = None;
+        for (index, field_ty) in variant.field_tys.iter().enumerate() {
+            let field = chc::Term::datatype_selector(
+                sort.clone(),
+                variant.ctor.clone(),
+                index,
+                field_ty.to_sort(),
+                value.clone(),
+            );
+            let field = char_domain_within(field_ty, field, defs, enclosing, seq_depth)?;
+            fields = match (fields, field) {
+                (Some(a), Some(b)) => Some(chc::Formula::and(a, b)),
+                (a, b) => a.or(b),
+            };
+        }
+        let Some(fields) = fields else {
+            continue;
+        };
+        let is_variant = chc::Formula::Atom(chc::Atom::new(
+            chc::Pred::Tester(variant.ctor.clone()),
+            vec![value.clone()],
+        ));
+        let variant_facts = is_variant.implies(fields);
+        facts = Some(match facts {
+            Some(facts) => chc::Formula::and(facts, variant_facts),
+            None => variant_facts,
+        });
+    }
+    enclosing.pop();
+    Ok(facts)
+}
+
+/// Whether a value of `ty` holds a `char`, through tuples, pointers, sequences and enum payloads.
+fn holds_char(
+    ty: &Type<Closed>,
+    defs: &dyn EnumDefProvider,
+    visited: &mut Vec<chc::DatatypeSymbol>,
+) -> bool {
+    match ty {
+        Type::Char => true,
+        Type::Tuple(tuple) => tuple
+            .elems
+            .iter()
+            .any(|elem| holds_char(&elem.ty, defs, visited)),
+        Type::Pointer(pointer) => holds_char(&pointer.elem.ty, defs, visited),
+        Type::Seq(elem) => holds_char(&elem.ty, defs, visited),
+        Type::Enum(enum_ty) if visited.contains(&enum_ty.symbol) => enum_ty
+            .args
+            .iter()
+            .any(|arg| holds_char(&arg.ty, defs, visited)),
+        Type::Enum(enum_ty) => {
+            visited.push(enum_ty.symbol.clone());
+            let found = enum_ty.variants(defs).iter().any(|variant| {
+                variant
+                    .field_tys
+                    .iter()
+                    .any(|field_ty| holds_char(field_ty, defs, visited))
+            });
+            visited.pop();
+            found
+        }
+        Type::Int(_)
+        | Type::UInt(_)
+        | Type::BitVec(_)
+        | Type::Bool
+        | Type::String
+        | Type::Opaque
+        | Type::Never
+        | Type::Param(_)
+        | Type::Alias(_)
+        | Type::Function(_)
+        | Type::Array(_) => false,
+    }
 }
 
 /// The range of a value `x` of the integer type `ty` as a formula, when [`int_range`] is in use for
@@ -1519,7 +1736,7 @@ pub type QuantifiedVars = Vec<(chc::UserQuantifiedVarId, chc::Sort)>;
 pub fn int_range_type_formula<FV, W>(
     ty: &Type<FV>,
     value: chc::Term<W>,
-    fresh: impl FnMut() -> chc::UserQuantifiedVarId,
+    mut fresh: impl FnMut() -> chc::UserQuantifiedVarId,
     defs: &dyn EnumDefProvider,
 ) -> Option<(QuantifiedVars, chc::Formula<W>)>
 where
@@ -1527,39 +1744,6 @@ where
     W: chc::Var,
 {
     let facts = RefinedType::unrefined(ty.clone()).formula_with(Some(defs));
-    facts_formula(facts, value, fresh)
-}
-
-/// The code points of the `char`s a value of `ty` holds, through tuples, pointers, sequences and
-/// enum payloads, as a formula about `value` with its existentials as in
-/// [`int_range_type_formula`]; `None` when it holds none. A variable an annotation's `forall` or
-/// `exists` binds ranges over them in every mode, as every value of `ty` has them.
-pub fn char_type_formula<FV, W>(
-    ty: &Type<FV>,
-    value: chc::Term<W>,
-    fresh: impl FnMut() -> chc::UserQuantifiedVarId,
-    defs: &dyn EnumDefProvider,
-) -> Option<(QuantifiedVars, chc::Formula<W>)>
-where
-    FV: chc::Var,
-    W: chc::Var,
-{
-    let mut cx = FactsCx::new(FactsUse::Assumed, Some(defs));
-    cx.chars_only = true;
-    let facts = RefinedType::unrefined(ty.clone()).facts(&mut cx);
-    facts_formula(facts, value, fresh)
-}
-
-/// `facts` of a value as a formula about `value`, each existential a variable `fresh` makes.
-fn facts_formula<FV, W>(
-    facts: Refinement<FV>,
-    value: chc::Term<W>,
-    mut fresh: impl FnMut() -> chc::UserQuantifiedVarId,
-) -> Option<(QuantifiedVars, chc::Formula<W>)>
-where
-    FV: chc::Var,
-    W: chc::Var,
-{
     if facts.is_top() {
         return None;
     }
@@ -1602,7 +1786,20 @@ where
     )));
     let range = match elem {
         Type::Char => char_code_point_formula(seq.seq_nth(i)),
-        _ => int_range_formula(elem, seq.seq_nth(i))?,
+        Type::Int(_) | Type::UInt(_) => int_range_formula(elem, seq.seq_nth(i))?,
+        Type::BitVec(_)
+        | Type::Bool
+        | Type::String
+        | Type::Opaque
+        | Type::Never
+        | Type::Param(_)
+        | Type::Alias(_)
+        | Type::Pointer(_)
+        | Type::Function(_)
+        | Type::Tuple(_)
+        | Type::Array(_)
+        | Type::Seq(_)
+        | Type::Enum(_) => return None,
     };
     Some(chc::Formula::forall(
         vec![(seq_elem_var(), chc::Sort::int())],

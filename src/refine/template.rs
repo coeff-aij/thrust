@@ -1033,6 +1033,8 @@ impl<'tcx> TypeBuilder<'tcx> {
 
                 self.translate_alias_type(ty).vacuous()
             }
+            // The model of a `char` is itself (`impl Model for char`).
+            mir_ty::TyKind::Char => rty::Type::char(),
             kind => unimplemented!("unsupported type: {:?}", kind),
         }
     }
