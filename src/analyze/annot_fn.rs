@@ -421,6 +421,135 @@ type QuantifiedBody = (
     chc::Formula<rty::FunctionParamIdx>,
 );
 
+/// Which quantifier a closure's parameters are bound by.
+#[derive(Debug, Clone, Copy)]
+enum Quantifier {
+    Forall,
+    Exists,
+}
+
+impl Quantifier {
+    /// The conjuncts that hold wherever the body's truth can depend on the variables: those of
+    /// the left side of a `forall`'s `==>` (also written `!p || q`), and those of an `exists`.
+    fn premises<V>(self, body: &chc::Formula<V>) -> Vec<&chc::Formula<V>> {
+        let mut out = Vec::new();
+        match (self, body) {
+            (Quantifier::Forall, chc::Formula::Implies(premise, _)) => conjuncts(premise, &mut out),
+            (Quantifier::Forall, chc::Formula::Or(disjuncts)) => {
+                for disjunct in disjuncts {
+                    if let chc::Formula::Not(premise) = disjunct {
+                        conjuncts(premise, &mut out);
+                    }
+                }
+            }
+            (Quantifier::Exists, body) => conjuncts(body, &mut out),
+            (
+                Quantifier::Forall,
+                chc::Formula::Atom(_)
+                | chc::Formula::Not(_)
+                | chc::Formula::And(_)
+                | chc::Formula::Exists(..)
+                | chc::Formula::Forall(..),
+            ) => {}
+        }
+        out
+    }
+}
+
+fn conjuncts<'f, V>(formula: &'f chc::Formula<V>, out: &mut Vec<&'f chc::Formula<V>>) {
+    match formula {
+        chc::Formula::And(fs) => fs.iter().for_each(|f| conjuncts(f, out)),
+        chc::Formula::Atom(_)
+        | chc::Formula::Not(_)
+        | chc::Formula::Or(_)
+        | chc::Formula::Implies(..)
+        | chc::Formula::Exists(..)
+        | chc::Formula::Forall(..) => out.push(formula),
+    }
+}
+
+/// Whether `premise` is `t == C(.., var, ..)` or `t == var`, with `t` a part of a program value
+/// ([`is_value_part`]) and `var` at a constructor's field, at any depth. In a Rust state such a
+/// part is a value of its type, so where `var` lies outside its type's values the premise is
+/// false.
+fn pins_to_value<V>(premise: &chc::Formula<V>, var: chc::UserQuantifiedVarId) -> bool {
+    let chc::Formula::Atom(atom) = premise else {
+        return false;
+    };
+    if atom.guard.is_some() || atom.pred != chc::Pred::Known(chc::KnownPred::EQUAL) {
+        return false;
+    }
+    let [a, b] = atom.args.as_slice() else {
+        return false;
+    };
+    (is_value_part(a) && holds_as_field(b, var)) || (is_value_part(b) && holds_as_field(a, var))
+}
+
+/// Whether `term` is a parameter of the formula read through projections, dereferences and
+/// selectors: a part of a program value.
+fn is_value_part<V>(term: &chc::Term<V>) -> bool {
+    match term {
+        chc::Term::Var(_) => true,
+        chc::Term::BoxCurrent(t)
+        | chc::Term::MutCurrent(t)
+        | chc::Term::MutFinal(t)
+        | chc::Term::TupleProj(t, _)
+        | chc::Term::DatatypeSelector(_, t) => is_value_part(t),
+        chc::Term::Null
+        | chc::Term::ForallDefault(_)
+        | chc::Term::Bool(_)
+        | chc::Term::Int(_)
+        | chc::Term::String(_)
+        | chc::Term::Box(_)
+        | chc::Term::Mut(..)
+        | chc::Term::App(..)
+        | chc::Term::ArrayEmpty(..)
+        | chc::Term::SeqEmpty(_)
+        | chc::Term::Tuple(_)
+        | chc::Term::DatatypeCtor(..)
+        | chc::Term::DatatypeDiscr(..)
+        | chc::Term::UserDefinedFn(..)
+        | chc::Term::ForallFn(..)
+        | chc::Term::IntToBitVec { .. }
+        | chc::Term::UserQuantifiedVar(..)
+        | chc::Term::ArrayLambda(..) => false,
+    }
+}
+
+/// Whether `term` is `var`, or a constructor application that holds it at a field, at any
+/// depth.
+fn holds_as_field<V>(term: &chc::Term<V>, var: chc::UserQuantifiedVarId) -> bool {
+    match term {
+        chc::Term::UserQuantifiedVar(_, v) => *v == var,
+        chc::Term::Box(t) => holds_as_field(t, var),
+        chc::Term::Mut(current, final_) => {
+            holds_as_field(current, var) || holds_as_field(final_, var)
+        }
+        chc::Term::Tuple(ts) | chc::Term::DatatypeCtor(_, _, ts) => {
+            ts.iter().any(|t| holds_as_field(t, var))
+        }
+        chc::Term::Null
+        | chc::Term::ForallDefault(_)
+        | chc::Term::Var(_)
+        | chc::Term::Bool(_)
+        | chc::Term::Int(_)
+        | chc::Term::String(_)
+        | chc::Term::BoxCurrent(_)
+        | chc::Term::MutCurrent(_)
+        | chc::Term::MutFinal(_)
+        | chc::Term::App(..)
+        | chc::Term::ArrayEmpty(..)
+        | chc::Term::SeqEmpty(_)
+        | chc::Term::TupleProj(..)
+        | chc::Term::DatatypeDiscr(..)
+        | chc::Term::DatatypeSelector(..)
+        | chc::Term::UserDefinedFn(..)
+        | chc::Term::ForallFn(..)
+        | chc::Term::IntToBitVec { .. }
+        | chc::Term::ArrayLambda(..) => false,
+    }
+}
+
 #[derive(Clone)]
 pub struct AnnotFnTranslator<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
@@ -1234,8 +1363,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let rustc_hir::ExprKind::Closure(closure) = closure.kind else {
             panic!("exists argument must be a closure");
         };
-        let (vars, range, body) =
-            self.to_formula_with_quantified_vars(self.tcx.hir_body(closure.body));
+        let (vars, range, body) = self
+            .to_formula_with_quantified_vars(self.tcx.hir_body(closure.body), Quantifier::Exists);
         let body = match range {
             Some(range) => range.and(body),
             None => body,
@@ -2388,12 +2517,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     /// The parameters of an `exists` / `forall` closure as quantified variables, the domain of
-    /// their types ([`rty::domain_guard`], and `false` at a type without values), over which they
-    /// range, and the body.
-    fn to_formula_with_quantified_vars(&self, closure: &rustc_hir::Body<'tcx>) -> QuantifiedBody {
+    /// their types ([`Self::quantified_var_domain`], and `false` at a type without values), over
+    /// which they range, and the body. `quantifier` says where the body's premises are, which
+    /// may pin a variable to a part of a program value.
+    fn to_formula_with_quantified_vars(
+        &self,
+        closure: &rustc_hir::Body<'tcx>,
+        quantifier: Quantifier,
+    ) -> QuantifiedBody {
         let mut inner_translator = self.clone();
         let mut vars = Vec::new();
-        let mut range: Option<chc::Formula<rty::FunctionParamIdx>> = None;
+        let mut domains = Vec::new();
         for param in closure.params {
             let rustc_hir::PatKind::Binding(_, hir_id, ident, None) = param.pat.kind else {
                 panic!(
@@ -2412,39 +2546,52 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
-            let fact = if self.type_builder.is_uninhabited(param_ty) {
-                Some(chc::Formula::bottom())
-            } else {
-                self.quantified_var_domain(&param_rty.ty, term.clone())
-            };
-            if let Some(fact) = fact {
-                range = Some(match range {
-                    Some(range) => range.and(fact),
-                    None => fact,
-                });
-            }
+            domains.push((
+                var,
+                self.type_builder.is_uninhabited(param_ty),
+                param_rty.ty,
+                term.clone(),
+            ));
             inner_translator.env.insert(hir_id, term);
             vars.push((var, sort));
         }
         let body_formula = inner_translator.to_formula(closure.value);
+        let premises = quantifier.premises(&body_formula);
+        let range = domains
+            .into_iter()
+            .filter_map(|(var, uninhabited, ty, term)| {
+                if uninhabited {
+                    return Some(chc::Formula::bottom());
+                }
+                let pinned = premises.iter().any(|p| pins_to_value(p, var));
+                self.quantified_var_domain(&ty, term, pinned)
+            })
+            .reduce(chc::Formula::and);
         (vars, range, body_formula)
     }
 
     /// The domain a quantified variable `var` of type `ty` ranges over, for
     /// [`Self::formula_use`]; records whether it is narrower than the domain of the
-    /// [`FormulaUse::Checked`] translation.
+    /// [`FormulaUse::Checked`] translation. A variable `pinned` to a part of a program value
+    /// ([`pins_to_value`]) keeps the domain of the checked translation: where it lies outside
+    /// its type's values, the premise that pins it is false of every Rust state, so the formula
+    /// reads the same over the model's values as over Rust's.
     fn quantified_var_domain(
         &self,
         ty: &rty::Type<rty::Closed>,
         var: chc::Term<rty::FunctionParamIdx>,
+        pinned: bool,
     ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
         let domain = |ints| {
             rty::domain_guard::<_, chc::Formula<_>>(ty, var.clone(), &self.analyzer.enum_defs, ints)
         };
-        let guard = domain(self.formula_use.int_domain());
-        if self.formula_use != FormulaUse::Checked
-            && guard != domain(FormulaUse::Checked.int_domain())
-        {
+        let formula_use = if pinned {
+            FormulaUse::Checked
+        } else {
+            self.formula_use
+        };
+        let guard = domain(formula_use.int_domain());
+        if formula_use != FormulaUse::Checked && guard != domain(FormulaUse::Checked.int_domain()) {
             self.narrower_than_checked.set(true);
         }
         guard
@@ -3185,8 +3332,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                             };
                             let closure_body = self.tcx.hir_body(closure.body);
 
-                            let (vars, range, body_formula) =
-                                self.to_formula_with_quantified_vars(closure_body);
+                            let (vars, range, body_formula) = self
+                                .to_formula_with_quantified_vars(closure_body, Quantifier::Forall);
                             let body_formula = match range {
                                 Some(range) => range.implies(body_formula),
                                 None => body_formula,
