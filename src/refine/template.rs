@@ -594,14 +594,17 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// those arguments, which keeps the search finite: a part of its fields is a part that its
     /// definition, or that of an ADT it reaches, writes, which the enclosing instance enters, or a
     /// part of its arguments. That holds unless such a definition writes a projection, whose value
-    /// depends on the arguments, which is not supported there.
+    /// depends on the arguments: such a type is rejected with an error at `span`, where it is
+    /// written.
     pub fn uninhabited_type_inside(
         &self,
         ty: mir_ty::Ty<'tcx>,
         typing_env: mir_ty::TypingEnv<'tcx>,
+        span: rustc_span::Span,
     ) -> Option<mir_ty::Ty<'tcx>> {
         let mut search = UninhabitedTypeSearch {
             typing_env,
+            span,
             adts_with_model_impl: self.adts_with_model_impl(),
             entered: HashSet::new(),
             enclosing: Vec::new(),
@@ -628,8 +631,11 @@ impl<'tcx> TypeBuilder<'tcx> {
                 }
                 if search.enclosing.contains(&adt.did()) {
                     if self.definition_reaches_projection(*adt, search, &mut HashSet::new()) {
-                        unimplemented!(
-                            "searching `{ty}` for a type without values: it holds itself at other type arguments, through a projection"
+                        self.tcx.dcx().span_fatal(
+                            search.span,
+                            format!(
+                                "`{ty}` is not supported here: its definition holds itself at other type arguments through a projection, so Thrust cannot search it for a type without values"
+                            ),
                         );
                     }
                     return None;
@@ -1880,6 +1886,8 @@ where
 struct UninhabitedTypeSearch<'tcx> {
     /// Where the searched type is written, in which the field types of the ADTs it reaches are read.
     typing_env: mir_ty::TypingEnv<'tcx>,
+    /// Where the searched type is written, where a type the search does not support is reported.
+    span: rustc_span::Span,
     adts_with_model_impl: HashSet<DefId>,
     /// The ADT instances entered so far.
     entered: HashSet<mir_ty::Ty<'tcx>>,
