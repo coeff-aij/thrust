@@ -1019,10 +1019,12 @@ impl EnumDatatypeDef {
 pub trait EnumDefProvider {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> EnumDatatypeDef;
 
-    /// A predicate defined as `facts`, the facts of the payloads of a value of `ty` (its argument,
-    /// variable 0), so that the clauses that assume them of a binding state them by one atom
-    /// rather than each repeating them; `None` where they are stated in place.
-    fn payload_facts_pred(
+    /// Registers, on first use, a predicate defined as `facts`, the facts of the payloads of a
+    /// value of `ty` (its argument, variable 0), so that the clauses that assume them of a binding
+    /// state them by one atom rather than each repeating them; `None` where they are stated in
+    /// place. This is the one method of the provider with an effect: the definition goes into the
+    /// query.
+    fn register_payload_facts_pred(
         &self,
         _ty: &EnumType<Closed>,
         _facts: &dyn Fn() -> chc::Formula<chc::TermVarIdx>,
@@ -1030,11 +1032,12 @@ pub trait EnumDefProvider {
         None
     }
 
-    /// A predicate defined as `guard`, the domain guard of a value of `ty` (its argument, variable
-    /// 0; [`domain_guard`]), so that the quantified variables of the type are guarded by one atom
-    /// rather than each repeating it; `None` where it is stated in place, and where `guard` gives
-    /// none.
-    fn domain_guard_pred(
+    /// Registers, on first use, a predicate defined as `guard`, the domain guard of a value of
+    /// `ty` (its argument, variable 0; [`domain_guard`]), so that the quantified variables of the
+    /// type are guarded by one atom rather than each repeating it; `None` where it is stated in
+    /// place, and where `guard` gives none. Like [`Self::register_payload_facts_pred`], the
+    /// definition goes into the query.
+    fn register_domain_guard_pred(
         &self,
         _ty: &EnumType<Closed>,
         _guard: &dyn Fn() -> Option<chc::Formula<chc::TermVarIdx>>,
@@ -1048,20 +1051,20 @@ impl<T: EnumDefProvider> EnumDefProvider for &T {
         <T as EnumDefProvider>::enum_def(self, name)
     }
 
-    fn payload_facts_pred(
+    fn register_payload_facts_pred(
         &self,
         ty: &EnumType<Closed>,
         facts: &dyn Fn() -> chc::Formula<chc::TermVarIdx>,
     ) -> Option<chc::UserDefinedPred> {
-        <T as EnumDefProvider>::payload_facts_pred(self, ty, facts)
+        <T as EnumDefProvider>::register_payload_facts_pred(self, ty, facts)
     }
 
-    fn domain_guard_pred(
+    fn register_domain_guard_pred(
         &self,
         ty: &EnumType<Closed>,
         guard: &dyn Fn() -> Option<chc::Formula<chc::TermVarIdx>>,
     ) -> Option<chc::UserDefinedPred> {
-        <T as EnumDefProvider>::domain_guard_pred(self, ty, guard)
+        <T as EnumDefProvider>::register_domain_guard_pred(self, ty, guard)
     }
 }
 
@@ -1952,7 +1955,7 @@ where
                 &mut cx,
             )
         };
-        if let Some(pred) = defs.domain_guard_pred(enum_ty, &guard) {
+        if let Some(pred) = defs.register_domain_guard_pred(enum_ty, &guard) {
             if let Some(atom) = G::by_pred(pred, value.clone()) {
                 return Some(atom);
             }
@@ -2168,7 +2171,7 @@ fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Clo
 }
 
 /// The assumed payload facts of a value of the outermost enum type `ty` as one atom of the
-/// predicate `defs` defines for them ([`EnumDefProvider::payload_facts_pred`]): its definition is
+/// predicate `defs` defines for them ([`EnumDefProvider::register_payload_facts_pred`]): its definition is
 /// their checked form, `is_C(v) => facts(sel_C(v))` for each variant, which says the same as the
 /// assumed form `exists f. discr(v) = d => v = C(f) && facts(f)`, since `discr(v) = d` is `is_C(v)`
 /// and `v = C(f)` makes `f` the payload `sel_C(v)`. `None` where `defs` defines none; top when the
@@ -2191,7 +2194,7 @@ fn payload_facts_atom(
                 RefinedTypeVar::Free(v) => match v {},
             })
     };
-    let pred = defs.payload_facts_pred(ty, &facts)?;
+    let pred = defs.register_payload_facts_pred(ty, &facts)?;
     let atom = chc::Atom::new(pred.into(), vec![chc::Term::var(RefinedTypeVar::Value)]);
     Some(atom.into())
 }
@@ -2300,7 +2303,15 @@ pub(super) fn has_range_facts(
             visited.pop();
             found
         }
-        _ => false,
+        Type::BitVec(_)
+        | Type::Bool
+        | Type::String
+        | Type::Opaque
+        | Type::Never
+        | Type::Param(_)
+        | Type::Alias(_)
+        | Type::Function(_)
+        | Type::Array(_) => false,
     }
 }
 
@@ -3357,7 +3368,7 @@ impl<FV> RefinedType<FV> {
 
     /// [`Self::formula_with`] as the facts of a binding in a clause: the payload facts of each
     /// outermost enum are the atom of the predicate `defs` defines for them, where it defines one
-    /// ([`EnumDefProvider::payload_facts_pred`]), which says the same once per enum type rather
+    /// ([`EnumDefProvider::register_payload_facts_pred`]), which says the same once per enum type rather
     /// than once per clause and binding.
     pub fn binding_facts(&self, defs: &dyn EnumDefProvider) -> Refinement<FV>
     where
