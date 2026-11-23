@@ -1018,11 +1018,30 @@ impl EnumDatatypeDef {
 /// [`type_fact_checks`]) are read from a provider.
 pub trait EnumDefProvider {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> EnumDatatypeDef;
+
+    /// A predicate defined as `facts`, the facts of the payloads of a value of `ty` (its argument,
+    /// variable 0), so that the clauses that assume them of a binding state them by one atom
+    /// rather than each repeating them; `None` where they are stated in place.
+    fn payload_facts_pred(
+        &self,
+        _ty: &EnumType<Closed>,
+        _facts: &dyn Fn() -> chc::Formula<chc::TermVarIdx>,
+    ) -> Option<chc::UserDefinedPred> {
+        None
+    }
 }
 
 impl<T: EnumDefProvider> EnumDefProvider for &T {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> EnumDatatypeDef {
         <T as EnumDefProvider>::enum_def(self, name)
+    }
+
+    fn payload_facts_pred(
+        &self,
+        ty: &EnumType<Closed>,
+        facts: &dyn Fn() -> chc::Formula<chc::TermVarIdx>,
+    ) -> Option<chc::UserDefinedPred> {
+        <T as EnumDefProvider>::payload_facts_pred(self, ty, facts)
     }
 }
 
@@ -1500,6 +1519,7 @@ where
         enclosing: cx.enclosing.clone(),
         unsupported: None,
         seq_depth: cx.seq_depth + 1,
+        payload_facts_by_pred: false,
     };
     let facts = RefinedType::unrefined(elem.clone()).facts(&mut elem_cx);
     if cx.use_ == FactsUse::Checked {
@@ -1568,6 +1588,9 @@ struct FactsCx<'a> {
     unsupported: Option<Type<Closed>>,
     /// The number of sequences whose elements enclose the position ([`seq_elem_facts`]).
     seq_depth: usize,
+    /// Whether the assumed payload facts of an outermost enum are stated by the atom of the
+    /// predicate defining them ([`payload_facts_atom`]), as a binding's are in a clause.
+    payload_facts_by_pred: bool,
 }
 
 impl<'a> FactsCx<'a> {
@@ -1578,6 +1601,7 @@ impl<'a> FactsCx<'a> {
             enclosing: Vec::new(),
             unsupported: None,
             seq_depth: 0,
+            payload_facts_by_pred: false,
         }
     }
 }
@@ -2022,6 +2046,11 @@ fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Clo
         }
         return Refinement::top();
     }
+    if cx.use_ == FactsUse::Assumed && cx.payload_facts_by_pred && cx.enclosing.is_empty() {
+        if let Some(atom) = payload_facts_atom(ty, defs) {
+            return atom;
+        }
+    }
     cx.enclosing.push(ty.clone());
     let mut facts = Refinement::top();
     for variant in ty.variants(defs) {
@@ -2033,6 +2062,35 @@ fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Clo
     }
     cx.enclosing.pop();
     facts
+}
+
+/// The assumed payload facts of a value of the outermost enum type `ty` as one atom of the
+/// predicate `defs` defines for them ([`EnumDefProvider::payload_facts_pred`]): its definition is
+/// their checked form, `is_C(v) => facts(sel_C(v))` for each variant, which says the same as the
+/// assumed form `exists f. discr(v) = d => v = C(f) && facts(f)`, since `discr(v) = d` is `is_C(v)`
+/// and `v = C(f)` makes `f` the payload `sel_C(v)`. `None` where `defs` defines none; top when the
+/// payloads have no facts.
+fn payload_facts_atom(
+    ty: &EnumType<Closed>,
+    defs: &dyn EnumDefProvider,
+) -> Option<Refinement<Closed>> {
+    if !has_range_facts(&Type::Enum(ty.clone()), defs, &mut Vec::new()) {
+        return Some(Refinement::top());
+    }
+    let facts = || {
+        let mut cx = FactsCx::new(FactsUse::Checked, Some(defs));
+        enum_payload_facts(ty, &mut cx)
+            .body
+            .into_formula()
+            .map_var(|v| match v {
+                RefinedTypeVar::Value => chc::TermVarIdx::from(0usize),
+                RefinedTypeVar::Existential(_) => unreachable!("a check states no existential"),
+                RefinedTypeVar::Free(v) => match v {},
+            })
+    };
+    let pred = defs.payload_facts_pred(ty, &facts)?;
+    let atom = chc::Atom::new(pred.into(), vec![chc::Term::var(RefinedTypeVar::Value)]);
+    Some(atom.into())
 }
 
 /// `exists f. discr(v) = d => v = C(f) && facts(f)` of `variant` of `ty`; top when its fields have
@@ -3192,6 +3250,19 @@ impl<FV> RefinedType<FV> {
         FV: chc::Var,
     {
         self.facts(&mut FactsCx::new(FactsUse::Assumed, defs))
+    }
+
+    /// [`Self::formula_with`] as the facts of a binding in a clause: the payload facts of each
+    /// outermost enum are the atom of the predicate `defs` defines for them, where it defines one
+    /// ([`EnumDefProvider::payload_facts_pred`]), which says the same once per enum type rather
+    /// than once per clause and binding.
+    pub fn binding_facts(&self, defs: &dyn EnumDefProvider) -> Refinement<FV>
+    where
+        FV: chc::Var,
+    {
+        let mut cx = FactsCx::new(FactsUse::Assumed, Some(defs));
+        cx.payload_facts_by_pred = true;
+        self.facts(&mut cx)
     }
 
     /// The facts of a value of this type as `cx` states them. Both uses traverse the type alike and

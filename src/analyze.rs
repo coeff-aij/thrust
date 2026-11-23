@@ -565,6 +565,12 @@ pub struct EnumDefs {
     declared: HashSet<DefId>,
     /// The enums whose definitions are being built: a field of a recursive enum names it again.
     building: HashSet<DefId>,
+    /// The predicate stating the payload facts of each enum type a clause assumes them of
+    /// ([`rty::EnumDefProvider::payload_facts_pred`]).
+    payload_facts_preds: HashMap<rty::EnumType<rty::Closed>, chc::UserDefinedPred>,
+    /// The definitions of those predicates not yet in the system: each predicate, the sort of
+    /// its argument and its body ([`Analyzer::define_payload_facts_preds`]).
+    pending_payload_facts: Vec<(chc::UserDefinedPred, chc::Sort, chc::Formula)>,
 }
 
 impl EnumDefs {
@@ -596,6 +602,26 @@ impl EnumDefs {
 impl refine::EnumDefProvider for Rc<RefCell<EnumDefs>> {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> rty::EnumDatatypeDef {
         self.borrow().find_by_name(name).unwrap().clone()
+    }
+
+    fn payload_facts_pred(
+        &self,
+        ty: &rty::EnumType<rty::Closed>,
+        facts: &dyn Fn() -> chc::Formula,
+    ) -> Option<chc::UserDefinedPred> {
+        if let Some(pred) = self.borrow().payload_facts_preds.get(ty) {
+            return Some(pred.clone());
+        }
+        // Built before the registry is borrowed mutably: the facts read the enums' definitions.
+        let body = facts();
+        let mut defs = self.borrow_mut();
+        let pred =
+            chc::UserDefinedPred::new(format!("payload_facts_{}", defs.payload_facts_preds.len()))
+                .named(format!("payload facts of {}", ty.symbol));
+        let sort = rty::Type::Enum(ty.clone()).to_sort();
+        defs.payload_facts_preds.insert(ty.clone(), pred.clone());
+        defs.pending_payload_facts.push((pred.clone(), sort, body));
+        Some(pred)
     }
 }
 
@@ -2816,6 +2842,16 @@ impl<'tcx> Analyzer<'tcx> {
         )
     }
 
+    /// Puts the definitions of the payload-facts predicates the clauses use into the system
+    /// ([`rty::EnumDefProvider::payload_facts_pred`]).
+    fn define_payload_facts_preds(&self) {
+        let pending = std::mem::take(&mut self.enum_defs.borrow_mut().pending_payload_facts);
+        let mut system = self.system.borrow_mut();
+        for (pred, sort, body) in pending {
+            system.push_pred_define_formula(pred, IndexVec::from_raw(vec![sort]), body);
+        }
+    }
+
     pub fn solve(&mut self) {
         let mut reverse = HashMap::new();
         for (tp, &idx) in self.type_params.borrow().iter() {
@@ -2824,6 +2860,7 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         self.system.borrow_mut().type_params_reverse = reverse;
+        self.define_payload_facts_preds();
         self.mark_opaque_predicates();
         self.check_split_goals_attributes();
         let config = crate::report::Config::from_env(self.tcx);
