@@ -396,30 +396,34 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             let assignments_before = thrust_macros::ghost!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>| -> IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>> {
                 assignments
             });
-            thrust_macros::block_requires!(
-                |ineligible_locals: DenseBitSet<LocalIdx>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, remove: LocalIdx,
-                 ineligible_before: thrust_models::Ghost<DenseBitSet<LocalIdx>>, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                ineligible_before == ineligible_locals && assignments_before == assignments
-                && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
-                && forall(|i: USize| <LocalIdx as Idx>::index_is(remove, i) ==> i < ineligible_locals.0 && i < assignments.len())
-            );
-            ineligible_locals.insert(remove);
-            assignments[remove] = Ineligible(None);
-            thrust_macros::block_ensures!(
-                |ineligible_locals: DenseBitSet<LocalIdx>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, remove: LocalIdx,
-                 ineligible_before: thrust_models::Ghost<DenseBitSet<LocalIdx>>, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                ineligible_locals.0 == ineligible_before.0
-                && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
-                && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
-                && DenseBitSet::<LocalIdx>::card(ineligible_before) <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
-                && forall(|i: USize| <LocalIdx as Idx>::index_is(remove, i) ==> DenseBitSet::<LocalIdx>::mem(ineligible_locals, i))
-                && forall(|i: USize, j: USize| <LocalIdx as Idx>::index_is(remove, i) && 0 <= j && j < ineligible_before.0 && j != i
-                    ==> (DenseBitSet::<LocalIdx>::mem(ineligible_locals, j) == DenseBitSet::<LocalIdx>::mem(ineligible_before, j)))
-                && assignments.len() == assignments_before.len()
-                && forall(|l: USize| 0 <= l && l < assignments.len() && <LocalIdx as Idx>::index_is(remove, l)
-                    ==> assignments[l] == SavedLocalEligibility::Ineligible(None))
-                && forall(|l: USize| 0 <= l && l < assignments.len() && !<LocalIdx as Idx>::index_is(remove, l)
-                    ==> assignments[l] == assignments_before[l])
+            thrust_macros::block_contract!(
+                requires(
+                    |ineligible_locals: DenseBitSet<LocalIdx>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, remove: LocalIdx,
+                     ineligible_before: thrust_models::Ghost<DenseBitSet<LocalIdx>>, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
+                    ineligible_before == ineligible_locals && assignments_before == assignments
+                    && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
+                    && forall(|i: USize| <LocalIdx as Idx>::index_is(remove, i) ==> i < ineligible_locals.0 && i < assignments.len())
+                ),
+                ensures(
+                    |ineligible_locals: DenseBitSet<LocalIdx>, assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, remove: LocalIdx,
+                     ineligible_before: thrust_models::Ghost<DenseBitSet<LocalIdx>>, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
+                    ineligible_locals.0 == ineligible_before.0
+                    && DenseBitSet::<LocalIdx>::words_cover_domain(ineligible_locals)
+                    && DenseBitSet::<LocalIdx>::card(ineligible_locals) <= ineligible_locals.0
+                    && DenseBitSet::<LocalIdx>::card(ineligible_before) <= DenseBitSet::<LocalIdx>::card(ineligible_locals)
+                    && forall(|i: USize| <LocalIdx as Idx>::index_is(remove, i) ==> DenseBitSet::<LocalIdx>::mem(ineligible_locals, i))
+                    && forall(|i: USize, j: USize| <LocalIdx as Idx>::index_is(remove, i) && 0 <= j && j < ineligible_before.0 && j != i
+                        ==> (DenseBitSet::<LocalIdx>::mem(ineligible_locals, j) == DenseBitSet::<LocalIdx>::mem(ineligible_before, j)))
+                    && assignments.len() == assignments_before.len()
+                    && forall(|l: USize| 0 <= l && l < assignments.len() && <LocalIdx as Idx>::index_is(remove, l)
+                        ==> assignments[l] == SavedLocalEligibility::Ineligible(None))
+                    && forall(|l: USize| 0 <= l && l < assignments.len() && !<LocalIdx as Idx>::index_is(remove, l)
+                        ==> assignments[l] == assignments_before[l])
+                ),
+                {
+                    ineligible_locals.insert(remove);
+                    assignments[remove] = Ineligible(None);
+                }
             );
         }
     }
@@ -535,30 +539,44 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             let assignments_before = thrust_macros::ghost!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>| -> IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>> {
                 assignments
             });
-            thrust_macros::block_requires!(
-                |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                assignments_before == assignments
-                && forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < assignments.len())
-            );
-            assignments[local] = value;
             #[cfg(not(thrust_eligibility_fail))]
-            thrust_macros::block_ensures!(
-                |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, value: SavedLocalEligibility<VariantIdx, FieldIdx>,
-                 assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                assignments.len() == assignments_before.len()
-                && forall(|l: USize| 0 <= l && l < assignments.len() && <LocalIdx as Idx>::index_is(local, l)
-                    ==> assignments[l] == value)
-                && forall(|l: USize| 0 <= l && l < assignments.len() && !<LocalIdx as Idx>::index_is(local, l)
-                    ==> assignments[l] == assignments_before[l])
+            thrust_macros::block_contract!(
+                requires(
+                    |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
+                    assignments_before == assignments
+                    && forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < assignments.len())
+                ),
+                ensures(
+                    |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, value: SavedLocalEligibility<VariantIdx, FieldIdx>,
+                     assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
+                    assignments.len() == assignments_before.len()
+                    && forall(|l: USize| 0 <= l && l < assignments.len() && <LocalIdx as Idx>::index_is(local, l)
+                        ==> assignments[l] == value)
+                    && forall(|l: USize| 0 <= l && l < assignments.len() && !<LocalIdx as Idx>::index_is(local, l)
+                        ==> assignments[l] == assignments_before[l])
+                ),
+                {
+                    assignments[local] = value;
+                }
             );
             // The fail twin of the eligibility root sets this cfg: the write leaves the other
             // locals as they are, so a contract that every local gets `value` is refuted.
             #[cfg(thrust_eligibility_fail)]
-            thrust_macros::block_ensures!(
-                |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, value: SavedLocalEligibility<VariantIdx, FieldIdx>,
-                 assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                assignments.len() == assignments_before.len()
-                && forall(|l: USize| 0 <= l && l < assignments.len() ==> assignments[l] == value)
+            thrust_macros::block_contract!(
+                requires(
+                    |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
+                    assignments_before == assignments
+                    && forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < assignments.len())
+                ),
+                ensures(
+                    |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, value: SavedLocalEligibility<VariantIdx, FieldIdx>,
+                     assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
+                    assignments.len() == assignments_before.len()
+                    && forall(|l: USize| 0 <= l && l < assignments.len() ==> assignments[l] == value)
+                ),
+                {
+                    assignments[local] = value;
+                }
             );
         }
     }
@@ -1119,71 +1137,76 @@ fn split_prefix_fields<FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>>(
             // second part n - (P + 1) = c entries, each below c: `invert_bijective_mapping` needs
             // its entries below its length, and the variants need `promoted_memory_index` to have
             // c entries.
-            thrust_macros::block_requires!(
-                |in_memory_order: IndexVec<u32, FieldIdx>, b_start: FieldIdx, n: usize|
-                in_memory_order.len() == n
-                    && n <= 4294967295usize
-                    && <FieldIdx as Idx>::index_logic(b_start) <= n
-                    && forall(|k: USize| 0 <= k && k <= n ==> <FieldIdx as Idx>::can_new(k))
-                    && forall(|k: USize, i: USize|
-                        0 <= k && k < n && <FieldIdx as Idx>::index_is(in_memory_order[k], i) ==> i < n)
-                    && forall(|k: USize, k2: USize, i: USize|
-                        0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2) && <FieldIdx as Idx>::index_is(in_memory_order[k], i)
-                            ==> !<FieldIdx as Idx>::index_is(in_memory_order[k2], i))
-            );
-            // The loop is rustc's. Its invariant is that of probes/permutation_split.rs, which
-            // verifies the same loop over a `Vec`: the bounds of the `requires`, carried for
-            // `FieldIdx::new`, and the count of the split; and the items taken are at most
-            // n <= u32::MAX, so the two lengths stay within `u32`'s bound, which `IndexVec::push`
-            // requires (the parts are indexed by `u32`).
-            let order = thrust_macros::ghost!(|in_memory_order: IndexVec<u32, FieldIdx>| -> IndexVec<u32, FieldIdx> {
-                in_memory_order
-            });
-            thrust_macros::proof!(lemmas::distinct_of_injective(order, n));
-            let mut in_memory_order_a = IndexVec::<u32, FieldIdx>::new();
-            let mut in_memory_order_b = IndexVec::<u32, FieldIdx>::new();
-            for i in in_memory_order {
-                thrust_macros::invariant!(
-                    |iter: std::vec::IntoIter<FieldIdx>,
-                     iter_old: thrust_models::Ghost<std::vec::IntoIter<FieldIdx>>,
-                     produced: thrust_models::Ghost<thrust_models::model::Seq<<FieldIdx as thrust_models::Model>::Ty>>,
-                     order: thrust_models::Ghost<IndexVec<u32, FieldIdx>>,
-                     in_memory_order_a: IndexVec<u32, FieldIdx>,
-                     in_memory_order_b: IndexVec<u32, FieldIdx>,
-                     n: usize,
-                     b_start: FieldIdx| {
-                        iter_old.0 == order
-                            && iter_old.1 == 0
-                            && order.len() == n
-                            && <FieldIdx as Idx>::index_logic(b_start) <= n
-                            && forall(|k: USize| 0 <= k && k <= n ==> <FieldIdx as Idx>::can_new(k))
-                            && forall(|k: USize, i: USize|
-                                0 <= k && k < n && <FieldIdx as Idx>::index_is(order[k], i) ==> i < n)
-                            && lemmas::distinct::<FieldIdx>(order, n)
-                            && in_memory_order_a.len() + in_memory_order_b.len() == produced.len()
-                            && produced.len() <= n
-                            && n <= 4294967295usize
-                            && in_memory_order_b.len()
-                                == lemmas::cnt_ge::<FieldIdx>(order, produced.len(), <FieldIdx as Idx>::index_logic(b_start))
-                            && forall(|k: USize|
-                                0 <= k && k < in_memory_order_b.len() ==> <FieldIdx as Idx>::index_logic(in_memory_order_b[k])
-                                        < n - <FieldIdx as Idx>::index_logic(b_start))
+            let (in_memory_order_a, in_memory_order_b) = thrust_macros::block_contract!(
+                requires(
+                    |in_memory_order: IndexVec<u32, FieldIdx>, b_start: FieldIdx, n: usize|
+                    in_memory_order.len() == n
+                        && n <= 4294967295usize
+                        && <FieldIdx as Idx>::index_logic(b_start) <= n
+                        && forall(|k: USize| 0 <= k && k <= n ==> <FieldIdx as Idx>::can_new(k))
+                        && forall(|k: USize, i: USize|
+                            0 <= k && k < n && <FieldIdx as Idx>::index_is(in_memory_order[k], i) ==> i < n)
+                        && forall(|k: USize, k2: USize, i: USize|
+                            0 <= k && k < n && 0 <= k2 && k2 < n && !(k == k2) && <FieldIdx as Idx>::index_is(in_memory_order[k], i)
+                                ==> !<FieldIdx as Idx>::index_is(in_memory_order[k2], i))
+                ),
+                ensures(
+                    |result: (IndexVec<u32, FieldIdx>, IndexVec<u32, FieldIdx>), b_start: FieldIdx, n: usize|
+                    result.1.len() == n - <FieldIdx as Idx>::index_logic(b_start)
+                        && forall(|k: USize, i: USize|
+                            0 <= k && k < result.1.len() && <FieldIdx as Idx>::index_is(result.1[k], i)
+                                ==> i < result.1.len())
+                ),
+                {
+                    // The loop is rustc's. Its invariant is that of probes/permutation_split.rs, which
+                    // verifies the same loop over a `Vec`: the bounds of the `requires`, carried for
+                    // `FieldIdx::new`, and the count of the split; and the items taken are at most
+                    // n <= u32::MAX, so the two lengths stay within `u32`'s bound, which `IndexVec::push`
+                    // requires (the parts are indexed by `u32`).
+                    let order = thrust_macros::ghost!(|in_memory_order: IndexVec<u32, FieldIdx>| -> IndexVec<u32, FieldIdx> {
+                        in_memory_order
+                    });
+                    thrust_macros::proof!(lemmas::distinct_of_injective(order, n));
+                    let mut in_memory_order_a = IndexVec::<u32, FieldIdx>::new();
+                    let mut in_memory_order_b = IndexVec::<u32, FieldIdx>::new();
+                    for i in in_memory_order {
+                        thrust_macros::invariant!(
+                            |iter: std::vec::IntoIter<FieldIdx>,
+                             iter_old: thrust_models::Ghost<std::vec::IntoIter<FieldIdx>>,
+                             produced: thrust_models::Ghost<thrust_models::model::Seq<<FieldIdx as thrust_models::Model>::Ty>>,
+                             order: thrust_models::Ghost<IndexVec<u32, FieldIdx>>,
+                             in_memory_order_a: IndexVec<u32, FieldIdx>,
+                             in_memory_order_b: IndexVec<u32, FieldIdx>,
+                             n: usize,
+                             b_start: FieldIdx| {
+                                iter_old.0 == order
+                                    && iter_old.1 == 0
+                                    && order.len() == n
+                                    && <FieldIdx as Idx>::index_logic(b_start) <= n
+                                    && forall(|k: USize| 0 <= k && k <= n ==> <FieldIdx as Idx>::can_new(k))
+                                    && forall(|k: USize, i: USize|
+                                        0 <= k && k < n && <FieldIdx as Idx>::index_is(order[k], i) ==> i < n)
+                                    && lemmas::distinct::<FieldIdx>(order, n)
+                                    && in_memory_order_a.len() + in_memory_order_b.len() == produced.len()
+                                    && produced.len() <= n
+                                    && n <= 4294967295usize
+                                    && in_memory_order_b.len()
+                                        == lemmas::cnt_ge::<FieldIdx>(order, produced.len(), <FieldIdx as Idx>::index_logic(b_start))
+                                    && forall(|k: USize|
+                                        0 <= k && k < in_memory_order_b.len() ==> <FieldIdx as Idx>::index_logic(in_memory_order_b[k])
+                                                < n - <FieldIdx as Idx>::index_logic(b_start))
+                            }
+                        );
+                        if let Some(j) = i.index().checked_sub(b_start.index()) {
+                            in_memory_order_b.push(FieldIdx::new(j));
+                        } else {
+                            in_memory_order_a.push(i);
+                        }
                     }
-                );
-                if let Some(j) = i.index().checked_sub(b_start.index()) {
-                    in_memory_order_b.push(FieldIdx::new(j));
-                } else {
-                    in_memory_order_a.push(i);
+                    thrust_macros::proof!(lemmas::permutation_split(order, n, b_start.index()));
+                    thrust_macros::proof!(lemmas::permutation_split_le(order, n, b_start.index()));
+                    (in_memory_order_a, in_memory_order_b)
                 }
-            }
-            thrust_macros::proof!(lemmas::permutation_split(order, n, b_start.index()));
-            thrust_macros::proof!(lemmas::permutation_split_le(order, n, b_start.index()));
-            thrust_macros::block_ensures!(
-                |in_memory_order_b: IndexVec<u32, FieldIdx>, b_start: FieldIdx, n: usize|
-                in_memory_order_b.len() == n - <FieldIdx as Idx>::index_logic(b_start)
-                    && forall(|k: USize, i: USize|
-                        0 <= k && k < in_memory_order_b.len() && <FieldIdx as Idx>::index_is(in_memory_order_b[k], i)
-                            ==> i < in_memory_order_b.len())
             );
 
             let outer_fields = FieldsShape::Arbitrary {
@@ -1774,163 +1797,168 @@ fn variant_layout<
     // 1 and 3 need (with the `requires` on c): no more than the locals Assigned to the variant
     // (`class_cnt`), and that each field is a layout of `local_layouts`, which `univariant`'s
     // `layout_pre` reads.
-    thrust_macros::block_requires!(
-        |variant_fields: &IndexVec<FieldIdx, LocalIdx>, assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
-         index: VariantIdx, local_layouts: &IndexSlice<LocalIdx, F>|
-        (*assignments).len() == (*local_layouts).len()
-            && forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <FieldIdx as Idx>::can_new(k))
-            && forall(|f: usize, i: USize|
-                0 <= f && f < (*variant_fields).len() && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)
-                    ==> i < (*local_layouts).len())
-            && forall(|l: usize, f: usize|
-                !(0 <= l && l < (*assignments).len()
-                    && 0 <= f && f < (*variant_fields).len()
-                    && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)))
-                || (*assignments)[l] != SavedLocalEligibility::Unassigned)
-            && forall(|l: usize, f: usize, vi: <VariantIdx as thrust_models::Model>::Ty, w: USize|
-                !(0 <= l && l < (*assignments).len()
-                    && 0 <= f && f < (*variant_fields).len()
-                    && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i))
-                    && (*assignments)[l] == SavedLocalEligibility::Assigned(vi)
-                    && <VariantIdx as Idx>::index_is(index, w))
-                || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
-            && forall(|l: usize, f: usize, g: usize, vi: <VariantIdx as thrust_models::Model>::Ty|
-                !(0 <= l && l < (*assignments).len()
-                    && 0 <= f && f < (*variant_fields).len()
-                    && 0 <= g && g < (*variant_fields).len()
-                    && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i))
-                    && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[g], i))
-                    && (*assignments)[l] == SavedLocalEligibility::Assigned(vi))
-                || f == g)
-    );
     use SavedLocalEligibility::*;
-
-    // Rewrite (rewrites.md R8): the `Filter` is bound to a name, for the lemma below.
-    // `Filter` takes a `Fn` closure, whose clauses read a capture as the reference it is
-    // (`*assignments`); `Map` takes an `FnMut` one, whose clauses read it through the
-    // closure's state (`**local_layouts`). The other form panics (#152).
-    let accepted = Filter::new(variant_fields.iter(), thrust_macros::closure!(
-            captures(
-                assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
-                index: &VariantIdx,
-            ),
-            requires(
-                <LocalIdx as Idx>::index_logic(**local) < (*assignments).len()
-                    && (*assignments)[<LocalIdx as Idx>::index_logic(**local)] != SavedLocalEligibility::Unassigned
-                    && forall(|vi: <VariantIdx as thrust_models::Model>::Ty, w: USize|
-                        !((*assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(vi)
-                            && <VariantIdx as Idx>::index_is(*index, w))
-                        || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
-            ),
-            ensures(result == ((*assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(*index))),
-            |local: &&LocalIdx| -> bool {
-                match assignments[**local] {
-                    // Unreachable by eligibility.rs's stage-5 property 1 (an `Unassigned`
-                    // local never appears in any variant's field list).
-                    Unassigned => unreachable!(),
-                    Assigned(v) if v == index => true,
-                    // Unreachable by property 2b (a listed local is Assigned to its own
-                    // variant) and `Idx::index_is_injective` (`v == index`).
-                    Assigned(_) => unreachable!("assignment does not match variant"),
-                    Ineligible(_) => false,
-                }
-            },
-        ));
-    // The map closure's `requires` at every item the filter yields (`Map::new`'s
-    // `next_precondition`): the items are entries of the variant's field list.
-    thrust_macros::proof!(counts::filter_yields_below(&accepted, local_layouts.len()));
-    let variant_only_tys = Map::new(
-        accepted,
-        thrust_macros::closure!(
-            captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
-            requires(<LocalIdx as Idx>::index_logic(*local) < (**local_layouts).len()),
-            // The bound is the `requires`', restated for `Map::yields_entries_of`.
-            ensures(<LocalIdx as Idx>::index_logic(*local) < (**local_layouts).len()
-                && result == (**local_layouts)[<LocalIdx as Idx>::index_logic(*local)]),
-            |local: &LocalIdx| -> F { local_layouts[*local] },
+    let fields = thrust_macros::block_contract!(
+        requires(
+            |variant_fields: &IndexVec<FieldIdx, LocalIdx>, assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+             index: VariantIdx, local_layouts: &IndexSlice<LocalIdx, F>|
+            (*assignments).len() == (*local_layouts).len()
+                && forall(|k: USize| 0 <= k && k <= (*variant_fields).len() ==> <FieldIdx as Idx>::can_new(k))
+                && forall(|f: usize, i: USize|
+                    0 <= f && f < (*variant_fields).len() && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)
+                        ==> i < (*local_layouts).len())
+                && forall(|l: usize, f: usize|
+                    !(0 <= l && l < (*assignments).len()
+                        && 0 <= f && f < (*variant_fields).len()
+                        && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i)))
+                    || (*assignments)[l] != SavedLocalEligibility::Unassigned)
+                && forall(|l: usize, f: usize, vi: <VariantIdx as thrust_models::Model>::Ty, w: USize|
+                    !(0 <= l && l < (*assignments).len()
+                        && 0 <= f && f < (*variant_fields).len()
+                        && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i))
+                        && (*assignments)[l] == SavedLocalEligibility::Assigned(vi)
+                        && <VariantIdx as Idx>::index_is(index, w))
+                    || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
+                && forall(|l: usize, f: usize, g: usize, vi: <VariantIdx as thrust_models::Model>::Ty|
+                    !(0 <= l && l < (*assignments).len()
+                        && 0 <= f && f < (*variant_fields).len()
+                        && 0 <= g && g < (*variant_fields).len()
+                        && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[f], i))
+                        && exists(|i: USize| i == l && <LocalIdx as Idx>::index_is((*variant_fields)[g], i))
+                        && (*assignments)[l] == SavedLocalEligibility::Assigned(vi))
+                    || f == g)
         ),
-    );
-
-    // The fields collected below are no more than the locals Assigned to the variant: the
-    // filter accepts the entries Assigned to it, which name distinct locals (property
-    // 2c). With the `requires` on c, the count sites 1 and 3 need.
-    thrust_macros::proof!(counts::filter_count(
-        &variant_only_tys,
-        variant_fields,
-        &assignments,
-        &Assigned(index),
-        variant_fields.len(),
-        assignments.len(),
-    ));
-
-    // The fields collected below are exactly the entries Assigned to the variant: the filter
-    // accepts those, and `collect` runs the map to its end. The lemma's proof is open: its
-    // `ensures`, the body of `filter_selects_all` and the count at `collect`'s witness below get
-    // no answer from the solver.
-    thrust_macros::proof!(counts::map_count_exact(
-        &variant_only_tys,
-        variant_fields,
-        &assignments,
-        &Assigned(index),
-        variant_fields.len(),
-    ));
-
-    // The fields collected below are, in order, the layouts of a selection of the entries Assigned
-    // to the variant, which `variant_layout` reads `variant_fits_wf` at: the filter accepts those
-    // entries, and the map closure returns the layout of the local it is given.
-    thrust_macros::proof!(counts::map_selected_entries(
-        &variant_only_tys,
-        variant_fields,
-        &assignments,
-        &Assigned(index),
-        local_layouts,
-    ));
-    // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
-    thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
-    // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
-    // for the `assume!`. Its precondition, the map's `inv`, is `Map::new`'s `ensures`.
-    let fields = collect_index_vec(variant_only_tys);
-    // The fields are as many as the variant's entries Assigned to it, which `combine_offsets`
-    // requires: `map_count_exact` at `collect`'s witness.
-    thrust_macros::proof_assert!(
-        |fields: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>,
-            assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
-            fields.len() == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-                *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
-    );
-    thrust_macros::proof!(assigned_count_of(variant_fields, &assignments, index, fields.len()));
-    // The `ensures`' selection, at `collect`'s witness.
-    thrust_macros::proof_assert!(
-        |fields: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>, local_layouts: &IndexSlice<LocalIdx, F>,
-            assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
-            counts::selection_of::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>, F>(
-                &fields, *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), local_layouts)
-    );
-    // The `ensures`' count and entries, one `proof_assert!` each, before the return.
-    thrust_macros::proof_assert!(
-        |fields: IndexVec<FieldIdx, F>, assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
-            fields.len()
+        ensures(
+            |result: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+             assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx,
+             local_layouts: &IndexSlice<LocalIdx, F>|
+            result.len()
                 <= counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
                     *assignments, (*assignments).len(), SavedLocalEligibility::Assigned(index))
-    );
-    thrust_macros::proof_assert!(|fields: IndexVec<FieldIdx, F>, local_layouts: &IndexSlice<LocalIdx, F>|
-        forall(|k: USize|
-            !(0 <= k && k < fields.len())
-            || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && fields[k] == (*local_layouts)[i]))
-    );
-    thrust_macros::block_ensures!(
-        |fields: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>,
-         assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx,
-         local_layouts: &IndexSlice<LocalIdx, F>|
-        fields.len()
-            <= counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
-                *assignments, (*assignments).len(), SavedLocalEligibility::Assigned(index))
-            && assigned_count::<FieldIdx, LocalIdx, VariantIdx>(variant_fields, assignments, index, fields.len())
-            && counts::selection_of::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>, F>(
-                &fields, *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), local_layouts)
-            && forall(|k: USize|
-                !(0 <= k && k < fields.len())
-                || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && fields[k] == (*local_layouts)[i]))
+                && assigned_count::<FieldIdx, LocalIdx, VariantIdx>(variant_fields, assignments, index, result.len())
+                && counts::selection_of::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>, F>(
+                    &result, *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), local_layouts)
+                && forall(|k: USize|
+                    !(0 <= k && k < result.len())
+                    || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && result[k] == (*local_layouts)[i]))
+        ),
+        {
+
+            // Rewrite (rewrites.md R8): the `Filter` is bound to a name, for the lemma below.
+            // `Filter` takes a `Fn` closure, whose clauses read a capture as the reference it is
+            // (`*assignments`); `Map` takes an `FnMut` one, whose clauses read it through the
+            // closure's state (`**local_layouts`). The other form panics (#152).
+            let accepted = Filter::new(variant_fields.iter(), thrust_macros::closure!(
+                    captures(
+                        assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+                        index: &VariantIdx,
+                    ),
+                    requires(
+                        <LocalIdx as Idx>::index_logic(**local) < (*assignments).len()
+                            && (*assignments)[<LocalIdx as Idx>::index_logic(**local)] != SavedLocalEligibility::Unassigned
+                            && forall(|vi: <VariantIdx as thrust_models::Model>::Ty, w: USize|
+                                !((*assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(vi)
+                                    && <VariantIdx as Idx>::index_is(*index, w))
+                                || forall(|vn: USize| !<VariantIdx as Idx>::index_is(vi, vn) || vn == w))
+                    ),
+                    ensures(result == ((*assignments)[<LocalIdx as Idx>::index_logic(**local)] == SavedLocalEligibility::Assigned(*index))),
+                    |local: &&LocalIdx| -> bool {
+                        match assignments[**local] {
+                            // Unreachable by eligibility.rs's stage-5 property 1 (an `Unassigned`
+                            // local never appears in any variant's field list).
+                            Unassigned => unreachable!(),
+                            Assigned(v) if v == index => true,
+                            // Unreachable by property 2b (a listed local is Assigned to its own
+                            // variant) and `Idx::index_is_injective` (`v == index`).
+                            Assigned(_) => unreachable!("assignment does not match variant"),
+                            Ineligible(_) => false,
+                        }
+                    },
+                ));
+            // The map closure's `requires` at every item the filter yields (`Map::new`'s
+            // `next_precondition`): the items are entries of the variant's field list.
+            thrust_macros::proof!(counts::filter_yields_below(&accepted, local_layouts.len()));
+            let variant_only_tys = Map::new(
+                accepted,
+                thrust_macros::closure!(
+                    captures(local_layouts: &mut &IndexSlice<LocalIdx, F>),
+                    requires(<LocalIdx as Idx>::index_logic(*local) < (**local_layouts).len()),
+                    // The bound is the `requires`', restated for `Map::yields_entries_of`.
+                    ensures(<LocalIdx as Idx>::index_logic(*local) < (**local_layouts).len()
+                        && result == (**local_layouts)[<LocalIdx as Idx>::index_logic(*local)]),
+                    |local: &LocalIdx| -> F { local_layouts[*local] },
+                ),
+            );
+
+            // The fields collected below are no more than the locals Assigned to the variant: the
+            // filter accepts the entries Assigned to it, which name distinct locals (property
+            // 2c). With the `requires` on c, the count sites 1 and 3 need.
+            thrust_macros::proof!(counts::filter_count(
+                &variant_only_tys,
+                variant_fields,
+                &assignments,
+                &Assigned(index),
+                variant_fields.len(),
+                assignments.len(),
+            ));
+
+            // The fields collected below are exactly the entries Assigned to the variant: the filter
+            // accepts those, and `collect` runs the map to its end. The lemma's proof is open: its
+            // `ensures`, the body of `filter_selects_all` and the count at `collect`'s witness below get
+            // no answer from the solver.
+            thrust_macros::proof!(counts::map_count_exact(
+                &variant_only_tys,
+                variant_fields,
+                &assignments,
+                &Assigned(index),
+                variant_fields.len(),
+            ));
+
+            // The fields collected below are, in order, the layouts of a selection of the entries Assigned
+            // to the variant, which `variant_layout` reads `variant_fits_wf` at: the filter accepts those
+            // entries, and the map closure returns the layout of the local it is given.
+            thrust_macros::proof!(counts::map_selected_entries(
+                &variant_only_tys,
+                variant_fields,
+                &assignments,
+                &Assigned(index),
+                local_layouts,
+            ));
+            // Each field collected is an entry of `local_layouts`: the map closure's `ensures`.
+            thrust_macros::proof!(Map::yields_entries_of(&variant_only_tys, local_layouts));
+            // Rewrite (rewrites.md R8): `collect_index_vec` for `collect`; the result is bound to a name,
+            // for the `assume!`. Its precondition, the map's `inv`, is `Map::new`'s `ensures`.
+            let fields = collect_index_vec(variant_only_tys);
+            // The fields are as many as the variant's entries Assigned to it, which `combine_offsets`
+            // requires: `map_count_exact` at `collect`'s witness.
+            thrust_macros::proof_assert!(
+                |fields: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>,
+                    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
+                    fields.len() == counts::acc_cnt::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
+                        *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), (*variant_fields).len())
+            );
+            thrust_macros::proof!(assigned_count_of(variant_fields, &assignments, index, fields.len()));
+            // The `ensures`' selection, at `collect`'s witness.
+            thrust_macros::proof_assert!(
+                |fields: IndexVec<FieldIdx, F>, variant_fields: &IndexVec<FieldIdx, LocalIdx>, local_layouts: &IndexSlice<LocalIdx, F>,
+                    assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
+                    counts::selection_of::<FieldIdx, LocalIdx, LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>, F>(
+                        &fields, *variant_fields, *assignments, SavedLocalEligibility::Assigned(index), local_layouts)
+            );
+            // The `ensures`' count and entries, one `proof_assert!` each, before the return.
+            thrust_macros::proof_assert!(
+                |fields: IndexVec<FieldIdx, F>, assignments: &IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, index: VariantIdx|
+                    fields.len()
+                        <= counts::class_cnt::<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>(
+                            *assignments, (*assignments).len(), SavedLocalEligibility::Assigned(index))
+            );
+            thrust_macros::proof_assert!(|fields: IndexVec<FieldIdx, F>, local_layouts: &IndexSlice<LocalIdx, F>|
+                forall(|k: USize|
+                    !(0 <= k && k < fields.len())
+                    || exists(|i: USize| 0 <= i && i < (*local_layouts).len() && fields[k] == (*local_layouts)[i]))
+            );
+            fields
+        }
     );
     // Rewrite (rewrites.md R13): the number m of the fields is bound to a name, for the cuts
     // below and `combine_offsets`.
