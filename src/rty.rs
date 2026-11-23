@@ -1478,41 +1478,71 @@ where
     Some((vars, formula.into_formula()))
 }
 
-/// The variable of the element facts of a sequence. They are stated only of a sequence of integers
-/// of a type with a width, so they never nest and one reserved identifier serves.
-fn seq_elem_var() -> chc::UserQuantifiedVarId {
-    chc::UserQuantifiedVarId::from_u32(0xFFFF_0000)
+/// The index variable of the element facts of a sequence nested in `depth` sequences
+/// ([`seq_elem_facts`]). The identifiers are reserved, as [`seq_guard_var`]'s are.
+fn seq_fact_var(depth: usize) -> chc::UserQuantifiedVarId {
+    assert!(depth < 0x1_0000, "sequence facts nested too deep");
+    chc::UserQuantifiedVarId::from_usize(0xFFFF_0000 + depth)
 }
 
-/// `forall i. 0 <= i < len(seq) => range(seq[i])` of a sequence whose element type `elem` is an
-/// integer type with a width whose range is in use ([`int_range`]); `None` otherwise.
-pub fn seq_elem_range<T, V>(elem: &Type<T>, seq: chc::Term<V>) -> Option<chc::Formula<V>>
+/// `forall k. 0 <= k < len(v) => facts(v[k])` of a value `v` of a sequence whose elements, of type
+/// `elem`, have facts; `None` when they have none. The elements' facts are stated by selectors
+/// (`is_C(e) => facts(sel_C(e))`), quantifier-free under the index's `forall`, which is what the
+/// existential form says of a value whose variant is `C`. In a check, an element type whose facts no
+/// finite formula states is recorded as for any other position ([`type_fact_checks`]).
+fn seq_elem_facts<FV>(elem: &Type<FV>, cx: &mut FactsCx) -> Option<chc::Formula<RefinedTypeVar<FV>>>
 where
-    V: Clone,
+    FV: chc::Var,
 {
-    let (signed, width) = match elem {
-        Type::Int(width) => (true, *width),
-        Type::UInt(width) => (false, *width),
-        _ => return None,
+    let mut elem_cx = FactsCx {
+        use_: FactsUse::Checked,
+        defs: cx.defs,
+        enclosing: cx.enclosing.clone(),
+        unsupported: None,
+        seq_depth: cx.seq_depth + 1,
     };
-    int_range(signed, width)?;
-    let i = chc::Term::UserQuantifiedVar(chc::Sort::int(), seq_elem_var());
+    let facts = RefinedType::unrefined(elem.clone()).facts(&mut elem_cx);
+    if cx.use_ == FactsUse::Checked {
+        if let Some(ty) = elem_cx.unsupported {
+            cx.unsupported.get_or_insert(ty);
+        }
+    }
+    if facts.is_top() {
+        return None;
+    }
+    assert!(!facts.has_existentials(), "a check states no existential");
+    let var = seq_fact_var(cx.seq_depth);
+    let k = chc::Term::UserQuantifiedVar(chc::Sort::int(), var);
+    let value = || chc::Term::var(RefinedTypeVar::Value);
+    let elem_facts = facts.body.into_formula().subst_var(|v| match v {
+        RefinedTypeVar::Value => value().seq_nth(k.clone()),
+        RefinedTypeVar::Existential(_) => unreachable!("a check states no existential"),
+        RefinedTypeVar::Free(v) => chc::Term::var(RefinedTypeVar::Free(v)),
+    });
     let in_bounds = chc::Formula::Atom(chc::Atom::new(
         chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
-        vec![i.clone(), chc::Term::int(0)],
+        vec![k.clone(), chc::Term::int(0)],
     ))
     .and(chc::Formula::Atom(chc::Atom::new(
         chc::KnownPred::LESS_THAN.into(),
-        vec![i.clone(), seq.clone().seq_len()],
+        vec![k, value().seq_len()],
     )));
-    let range = int_range_atoms(elem, seq.seq_nth(i))?
-        .into_iter()
-        .map(chc::Formula::Atom)
-        .reduce(chc::Formula::and)?;
     Some(chc::Formula::forall(
-        vec![(seq_elem_var(), chc::Sort::int())],
-        in_bounds.implies(range),
+        vec![(var, chc::Sort::int())],
+        in_bounds.implies(elem_facts),
     ))
+}
+
+/// The facts of every value of `ty` as an obligation on a value of another type entering it
+/// ([`type_fact_checks`], with any definitions of enums `defs` gives); top when there are none.
+pub(super) fn checked_type_facts<U>(
+    ty: &Type<U>,
+    defs: Option<&dyn EnumDefProvider>,
+) -> Refinement<U>
+where
+    U: chc::Var,
+{
+    RefinedType::unrefined(ty.clone()).facts(&mut FactsCx::new(FactsUse::Checked, defs))
 }
 
 /// Whether facts of a type are stated of a value as an assumption (in a clause body) or as an
@@ -1536,6 +1566,8 @@ struct FactsCx<'a> {
     enclosing: Vec<EnumType<Closed>>,
     /// A checked enum type whose facts no finite formula states, met on the way.
     unsupported: Option<Type<Closed>>,
+    /// The number of sequences whose elements enclose the position ([`seq_elem_facts`]).
+    seq_depth: usize,
 }
 
 impl<'a> FactsCx<'a> {
@@ -1545,6 +1577,7 @@ impl<'a> FactsCx<'a> {
             defs,
             enclosing: Vec::new(),
             unsupported: None,
+            seq_depth: 0,
         }
     }
 }
@@ -2044,7 +2077,7 @@ pub(super) fn has_range_facts(
         Type::Int(_) | Type::UInt(_) => {
             int_range_atoms(ty, value).is_some_and(|atoms| !atoms.is_empty())
         }
-        Type::Seq(elem) => seq_elem_range(&elem.ty, value).is_some(),
+        Type::Seq(elem) => has_range_facts(&elem.ty, defs, visited),
         Type::Tuple(ty) => ty
             .elems
             .iter()
@@ -3136,9 +3169,8 @@ impl<FV> RefinedType<FV> {
                 }
             }
             Type::Seq(elem) => {
-                if let Some(range) = seq_elem_range(&elem.ty, chc::Term::var(RefinedTypeVar::Value))
-                {
-                    formula.push_conj(range.into());
+                if let Some(facts) = seq_elem_facts(&elem.ty, cx) {
+                    formula.push_conj(facts.into());
                 }
             }
             Type::Tuple(ty) => {

@@ -333,10 +333,16 @@ where
                 facts.push_conj(atom.into());
             }
         }
-        (Type::Seq(got), Type::Seq(expected)) if !fits(&got.ty, &expected.ty) => {
-            if let Some(range) = super::seq_elem_range(&expected.ty, value()) {
-                facts.push_conj(range.into());
-            }
+        // The elements of a sequence have the facts of their type: a sequence of another element
+        // type entering it is checked against them.
+        (Type::Seq(got), Type::Seq(expected))
+            if !fits(&got.ty, &expected.ty)
+                && got.ty.clone().strip_refinement() != expected.ty.clone().strip_refinement() =>
+        {
+            facts.push_conj(super::checked_type_facts(
+                &Type::Seq(expected.clone()),
+                enum_defs,
+            ));
         }
         (Type::Tuple(got), Type::Tuple(expected)) if got.elems.len() == expected.elems.len() => {
             for (index, (got, expected)) in got.elems.iter().zip(&expected.elems).enumerate() {
