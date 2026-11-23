@@ -947,6 +947,34 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         FormulaOrTerm::Term(chc::Term::App(fun, vec![lhs, rhs]))
     }
 
+    /// Whether a quantified variable ranges over nothing: its type, as the item writes it, has no
+    /// values, as rustc decides it in the item's typing environment, where a type parameter, or a
+    /// projection on one, has values: so a generic item's contract means at an instance
+    /// (`g::<Infallible>`) what it means over its type parameters, where the item is verified. A
+    /// type that holds a type without values elsewhere (`Result<u64, Infallible>`) is an error:
+    /// its model has values that are no Rust value's (`Err(())`).
+    fn binder_ranges_over_nothing(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> bool {
+        let root = self.tcx.typeck_root_def_id(self.local_def_id.to_def_id());
+        let typing_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, root);
+        let ty = self.typeck.pat_ty(pat);
+        let ty = self
+            .tcx
+            .try_normalize_erasing_regions(typing_env, ty)
+            .unwrap_or(ty);
+        if ty.is_privately_uninhabited(self.tcx, typing_env) {
+            return true;
+        }
+        if let Some(found) = self.type_builder.uninhabited_type_argument(ty, typing_env) {
+            self.tcx.dcx().span_fatal(
+                pat.span,
+                format!(
+                    "a quantified variable of type `{ty}` is not supported: it holds `{found}`, which has no values, where its model has values"
+                ),
+            );
+        }
+        false
+    }
+
     fn pat_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
         self.normalized_ty(self.typeck.pat_ty(pat))
     }
@@ -2328,6 +2356,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 );
             };
             let param_ty = self.pat_ty(param.pat);
+            let ranges_over_nothing = self.binder_ranges_over_nothing(param.pat);
             // The enums in the variable's type may occur nowhere else in the function or
             // predicate, yet the query declares their datatypes.
             self.analyzer
@@ -2338,7 +2367,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
-            let fact = if self.type_builder.is_uninhabited(param_ty) {
+            let fact = if ranges_over_nothing {
                 Some(chc::Formula::bottom())
             } else {
                 rty::domain_guard::<_, chc::Formula<_>>(

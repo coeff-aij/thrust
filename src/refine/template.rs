@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use num_bigint::BigInt;
@@ -583,10 +583,87 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
-    /// Whether no value has `ty` (`Infallible`, `!`, an enum without variants, a struct or tuple
-    /// holding one), as rustc decides it: its model may have a value (`Infallible` is `()`).
-    pub fn is_uninhabited(&self, ty: mir_ty::Ty<'tcx>) -> bool {
-        ty.is_privately_uninhabited(self.tcx, self.typing_env)
+    /// A type without values that `ty` holds where no variant's exclusion covers it, so that its
+    /// model's values, which Rust's are not (`Infallible` is `()`), are values of `ty`'s model:
+    /// a generic argument, a tuple's element, or the target of a reference, a pointer or a
+    /// sequence, in `ty` or in the field types of the ADTs it reaches, each as its definition
+    /// writes them (`Infallible` in `Result<u64, Infallible>`, in `W<Infallible>`, or in a field
+    /// `Option<Infallible>`). A field that has no values itself is not one: its variant is
+    /// excluded at the definition, or its struct has no values. An ADT whose model a `Model` impl
+    /// gives is entered only through its generic arguments, since its fields make no model value.
+    pub fn uninhabited_type_argument(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+        typing_env: mir_ty::TypingEnv<'tcx>,
+    ) -> Option<mir_ty::Ty<'tcx>> {
+        let mut fields_not_entered = self.adts_with_model_impl();
+        self.uninhabited_type_argument_within(ty, typing_env, &mut fields_not_entered)
+    }
+
+    fn uninhabited_type_argument_within(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+        typing_env: mir_ty::TypingEnv<'tcx>,
+        fields_not_entered: &mut HashSet<DefId>,
+    ) -> Option<mir_ty::Ty<'tcx>> {
+        match ty.kind() {
+            mir_ty::TyKind::Adt(adt, args) => {
+                let in_args = args.types().find_map(|arg| {
+                    self.uninhabited_type_or_argument(arg, typing_env, fields_not_entered)
+                });
+                if in_args.is_some() || !fields_not_entered.insert(adt.did()) {
+                    return in_args;
+                }
+                let field_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, adt.did());
+                adt.all_fields().find_map(|field| {
+                    let field_ty = self.tcx.type_of(field.did).instantiate_identity();
+                    let field_ty = self
+                        .tcx
+                        .try_normalize_erasing_regions(field_env, field_ty)
+                        .unwrap_or(field_ty);
+                    self.uninhabited_type_argument_within(field_ty, field_env, fields_not_entered)
+                })
+            }
+            mir_ty::TyKind::Tuple(elems) => elems.iter().find_map(|elem| {
+                self.uninhabited_type_argument_within(elem, typing_env, fields_not_entered)
+            }),
+            mir_ty::TyKind::Ref(_, target, _)
+            | mir_ty::TyKind::RawPtr(target, _)
+            | mir_ty::TyKind::Slice(target)
+            | mir_ty::TyKind::Array(target, _) => {
+                self.uninhabited_type_or_argument(*target, typing_env, fields_not_entered)
+            }
+            _ => None,
+        }
+    }
+
+    fn uninhabited_type_or_argument(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+        typing_env: mir_ty::TypingEnv<'tcx>,
+        fields_not_entered: &mut HashSet<DefId>,
+    ) -> Option<mir_ty::Ty<'tcx>> {
+        if ty.is_privately_uninhabited(self.tcx, typing_env) {
+            return Some(ty);
+        }
+        self.uninhabited_type_argument_within(ty, typing_env, fields_not_entered)
+    }
+
+    /// The ADTs that a `Model` impl gives a model.
+    fn adts_with_model_impl(&self) -> HashSet<DefId> {
+        let Some(model_ty) = self.def_ids.model_ty() else {
+            return HashSet::new();
+        };
+        let model_trait = self.tcx.parent(model_ty);
+        self.tcx
+            .all_impls(model_trait)
+            .filter_map(
+                |impl_did| match self.tcx.type_of(impl_did).instantiate_identity().kind() {
+                    mir_ty::TyKind::Adt(adt, _) => Some(adt.did()),
+                    _ => None,
+                },
+            )
+            .collect()
     }
 
     pub fn resolve_model_ty(&self, orig_ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
