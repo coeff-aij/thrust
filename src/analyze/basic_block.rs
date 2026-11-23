@@ -642,6 +642,46 @@ impl PrecondCapture {
     }
 }
 
+/// Finds a place that reads a field of a variant without values, or an aggregate that builds one
+/// ([`crate::refine::variant_has_no_values`]).
+struct VariantWithoutValuesUse<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    local_decls: &'a IndexVec<Local, mir::LocalDecl<'tcx>>,
+    found: bool,
+}
+
+impl<'tcx> VariantWithoutValuesUse<'_, 'tcx> {
+    fn has_no_values(&self, adt: mir_ty::AdtDef<'tcx>, variant: rustc_abi::VariantIdx) -> bool {
+        let typing_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, adt.did());
+        crate::refine::variant_has_no_values(self.tcx, adt.variant(variant), typing_env)
+    }
+}
+
+impl<'tcx> Visitor<'tcx> for VariantWithoutValuesUse<'_, 'tcx> {
+    fn visit_place(&mut self, place: &mir::Place<'tcx>, _: PlaceContext, _: mir::Location) {
+        for (base, elem) in place.iter_projections() {
+            if let mir::PlaceElem::Downcast(_, variant) = elem {
+                let adt = base
+                    .ty(self.local_decls, self.tcx)
+                    .ty
+                    .ty_adt_def()
+                    .expect("a downcast of an enum");
+                self.found |= self.has_no_values(adt, variant);
+            }
+        }
+    }
+
+    fn visit_rvalue(&mut self, rvalue: &Rvalue<'tcx>, location: mir::Location) {
+        if let Rvalue::Aggregate(kind, _) = rvalue {
+            if let mir::AggregateKind::Adt(did, variant, ..) = **kind {
+                let adt = self.tcx.adt_def(did);
+                self.found |= adt.is_enum() && self.has_no_values(adt, variant);
+            }
+        }
+        self.super_rvalue(rvalue, location);
+    }
+}
+
 /// Finds a use of `local` that `uses` accepts.
 struct FindUse<F> {
     local: Local,
@@ -1306,6 +1346,33 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         ]);
         let term = chc::Term::tuple(vec![wrapped.boxed(), overflowed.boxed()]);
         (tuple_ty.into(), term)
+    }
+
+    /// Marks a point that Rust's typing makes unreachable, where no value of a type reaches: a
+    /// block rustc ends in `Unreachable`, or code that reads, borrows or builds a variant without
+    /// values ([`crate::refine::variant_has_no_values`]), which its enum's datatype has no
+    /// constructor for. The program does not run past it. A proof's contract is assumed of every
+    /// value of the sorts, which are never empty, so in a proof the point must be unreachable in
+    /// the logic, as Creusot's `absurd` requires.
+    fn reach_point_unreachable_by_typing(&mut self) {
+        if analyze::lemma::is_proof(self.tcx, self.local_def_id.to_def_id()) {
+            self.assert_term(PlaceTypeBuilder::default(), chc::Term::bool(false));
+        }
+    }
+
+    /// Whether the places and rvalues `visit` shows read, borrow or build a variant without
+    /// values.
+    fn uses_variant_without_values(
+        &self,
+        visit: impl FnOnce(&mut VariantWithoutValuesUse<'_, 'tcx>),
+    ) -> bool {
+        let mut visitor = VariantWithoutValuesUse {
+            tcx: self.tcx,
+            local_decls: &self.local_decls,
+            found: false,
+        };
+        visit(&mut visitor);
+        visitor.found
     }
 
     /// Asserts that the bool `term`, over the variables of `builder`, holds where the current
@@ -3677,6 +3744,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 tracing::warn!(%stmt_idx, ?stmt, "skip before std::ops::Drop");
                 continue;
             }
+            let location = mir::Location {
+                block: self.basic_block,
+                statement_index: stmt_idx,
+            };
+            if self.uses_variant_without_values(|v| v.visit_statement(&stmt, location)) {
+                self.reach_point_unreachable_by_typing();
+            }
             self.reborrow_visitor().visit_statement(&mut stmt);
             tracing::debug!(%stmt_idx, ?stmt);
             match &stmt.kind {
@@ -3958,12 +4032,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             TerminatorKind::UnwindResume {} => {}
             TerminatorKind::Unreachable {} => {
                 // rustc ends a block in `Unreachable` where no value reaches it: a value of an
-                // uninhabited type, or the `otherwise` arm of an exhaustive match. A proof's
-                // contract is assumed of every value of the sorts, which are never empty, so in a
-                // proof the block must be unreachable in the logic, as Creusot's `absurd` requires.
-                if analyze::lemma::is_proof(self.tcx, self.local_def_id.to_def_id()) {
-                    self.assert_term(PlaceTypeBuilder::default(), chc::Term::bool(false));
-                }
+                // uninhabited type, or the `otherwise` arm of an exhaustive match.
+                self.reach_point_unreachable_by_typing();
             }
             _ => unimplemented!("term={:?}", term.kind),
         }
@@ -4246,6 +4316,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.alloc_prophecies();
         self.analyze_statements();
 
+        let block = &self.body.basic_blocks[self.basic_block];
+        let location = mir::Location {
+            block: self.basic_block,
+            statement_index: block.statements.len(),
+        };
+        let original = block.terminator().clone();
+        if self.uses_variant_without_values(|v| v.visit_terminator(&original, location)) {
+            self.reach_point_unreachable_by_typing();
+        }
         let term = self.elaborated_terminator();
         self.analyze_terminator_binds(&term, expected_fn, &outer_fn_param_vars);
         self.analyze_terminator_goto(&term, expected_fn, &outer_fn_param_vars);
