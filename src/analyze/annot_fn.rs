@@ -1038,6 +1038,34 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         FormulaOrTerm::Term(chc::Term::App(fun, vec![lhs, rhs]))
     }
 
+    /// Whether a quantified variable ranges over nothing: its type, as the item writes it, has no
+    /// values, as rustc decides it in the item's typing environment, where a type parameter, or a
+    /// projection on one, has values: so a generic item's contract means at an instance
+    /// (`g::<Infallible>`) what it means over its type parameters, where the item is verified. A
+    /// type that holds a type without values elsewhere (`Result<u64, Infallible>`) is an error:
+    /// its model has values that are no Rust value's (`Err(())`).
+    fn binder_ranges_over_nothing(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> bool {
+        let root = self.tcx.typeck_root_def_id(self.local_def_id.to_def_id());
+        let typing_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, root);
+        let ty = self.typeck.pat_ty(pat);
+        let ty = self
+            .tcx
+            .try_normalize_erasing_regions(typing_env, ty)
+            .unwrap_or(ty);
+        if ty.is_privately_uninhabited(self.tcx, typing_env) {
+            return true;
+        }
+        if let Some(found) = self.type_builder.uninhabited_type_argument(ty, typing_env) {
+            self.tcx.dcx().span_fatal(
+                pat.span,
+                format!(
+                    "a quantified variable of type `{ty}` is not supported: it holds `{found}`, which has no values, where its model has values"
+                ),
+            );
+        }
+        false
+    }
+
     fn pat_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
         self.normalized_ty(self.typeck.pat_ty(pat))
     }
@@ -1060,19 +1088,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     ) -> rustc_hir::BindingMode {
         self.typeck
             .extract_binding_mode(self.tcx.sess, hir_id, span)
-    }
-
-    /// The typing environment of the item the formula belongs to, over its own type parameters.
-    fn written_typing_env(&self) -> mir_ty::TypingEnv<'tcx> {
-        let root = self.tcx.typeck_root_def_id(self.local_def_id.to_def_id());
-        mir_ty::TypingEnv::non_body_analysis(self.tcx, root)
-    }
-
-    /// Whether no value has `written`, a type as the item writes it, as rustc decides it: a type
-    /// parameter has values there, so an instance at a type without values (`g::<Infallible>`)
-    /// keeps the generic item's meaning, over which it is verified.
-    fn written_ty_is_uninhabited(&self, written: mir_ty::Ty<'tcx>) -> bool {
-        written.is_privately_uninhabited(self.tcx, self.written_typing_env())
     }
 
     fn normalized_ty(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
@@ -2432,6 +2447,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 );
             };
             let param_ty = self.pat_ty(param.pat);
+            let ranges_over_nothing = self.binder_ranges_over_nothing(param.pat);
             // The enums in the variable's type may occur nowhere else in the function or
             // predicate, yet the query declares their datatypes.
             self.analyzer
@@ -2442,35 +2458,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
-            let written_ty = self.written_ty(param.pat);
-            let excluded = self.type_builder.excluded_variants(
-                written_ty,
-                &param_rty.ty,
-                self.written_typing_env(),
-            );
-            domains.push((
-                var,
-                self.written_ty_is_uninhabited(written_ty),
-                param_rty.ty,
-                term.clone(),
-                excluded,
-            ));
+            domains.push((var, ranges_over_nothing, param_rty.ty, term.clone()));
             inner_translator.env.insert(hir_id, term);
             vars.push((var, sort));
         }
         let body_formula = inner_translator.to_formula(closure.value);
         let range = domains
             .into_iter()
-            .filter_map(|(var, uninhabited, ty, term, excluded)| {
-                if uninhabited {
+            .filter_map(|(var, ranges_over_nothing, ty, term)| {
+                if ranges_over_nothing {
                     return Some(chc::Formula::bottom());
                 }
-                self.quantified_var_domain(
-                    &ty,
-                    term,
-                    &excluded,
-                    &FieldReads::of(&body_formula, var),
-                )
+                self.quantified_var_domain(&ty, term, &FieldReads::of(&body_formula, var))
             })
             .reduce(chc::Formula::and);
         (vars, range, body_formula)
@@ -2484,16 +2483,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         &self,
         ty: &rty::Type<rty::Closed>,
         var: chc::Term<rty::FunctionParamIdx>,
-        excluded: &rty::ExcludedVariants,
         reads: &FieldReads,
     ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
         let defs = &self.analyzer.enum_defs;
-        let read_fields = |ctor: &chc::DatatypeSymbol, index: usize| match reads {
-            FieldReads::Fields(fields) => fields.contains(&(ctor.clone(), index)),
-            FieldReads::Whole => true,
-        };
-        let read: Option<rty::ReadFields<'_>> = match (ty, reads) {
-            (rty::Type::Enum(_), FieldReads::Fields(_)) => Some(&read_fields),
+        match (ty, reads) {
+            (rty::Type::Enum(_), FieldReads::Fields(fields)) => {
+                rty::domain_guard_of_read_fields::<_, chc::Formula<_>>(
+                    ty,
+                    var,
+                    defs,
+                    &|ctor, index| fields.contains(&(ctor.clone(), index)),
+                )
+            }
             (rty::Type::Enum(_), FieldReads::Whole)
             | (
                 rty::Type::Int(_)
@@ -2511,9 +2512,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 | rty::Type::Pointer(_)
                 | rty::Type::Seq(_),
                 FieldReads::Fields(_) | FieldReads::Whole,
-            ) => None,
-        };
-        rty::domain_guard_of_variable::<_, chc::Formula<_>>(ty, var, defs, excluded, read)
+            ) => rty::domain_guard::<_, chc::Formula<_>>(ty, var, defs),
+        }
     }
 
     /// The body of a one-parameter closure as a term, with the parameter bound to a fresh

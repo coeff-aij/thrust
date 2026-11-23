@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use num_bigint::BigInt;
@@ -583,229 +583,95 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
-    /// Whether no value has `ty` (`Infallible`, `!`, an enum without variants, a struct or tuple
-    /// holding one), as rustc decides it: its model may have a value (`Infallible` is `()`).
-    pub fn is_uninhabited(&self, ty: mir_ty::Ty<'tcx>) -> bool {
-        ty.is_privately_uninhabited(self.tcx, self.typing_env)
+    /// A type without values that `ty` holds where no variant's exclusion covers it, so that its
+    /// model's values, which Rust's are not (`Infallible` is `()`), are values of `ty`'s model:
+    /// a generic argument, a tuple's element, or the target of a reference, a pointer or a
+    /// sequence, in `ty` or in the field types of the ADTs it reaches, each as its definition
+    /// writes them (`Infallible` in `Result<u64, Infallible>`, in `W<Infallible>`, or in a field
+    /// `Option<Infallible>`). A field that has no values itself is not entered (`B(W<Infallible>)`
+    /// with `struct W<T>(T)`): its variant is excluded at the definition, or its struct has no
+    /// values. An ADT whose model a `Model` impl gives is entered only through its generic
+    /// arguments, since its fields make no model value.
+    pub fn uninhabited_type_argument(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+        typing_env: mir_ty::TypingEnv<'tcx>,
+    ) -> Option<mir_ty::Ty<'tcx>> {
+        let mut fields_not_entered = self.adts_with_model_impl();
+        self.uninhabited_type_argument_within(ty, typing_env, &mut fields_not_entered)
     }
 
-    /// The variants a quantified variable of the Rust type `written` excludes besides those of
-    /// each enum's definition, by position in `ty`, its type built at the instance
-    /// ([`rty::ExcludedVariants`]). `written` is the type as the item writes it, in which a type
-    /// parameter, or a projection on one, has values; rustc decides in `typing_env` which variants
-    /// have a field without values. The written type is followed where its model is its own
-    /// structure: an enum or struct modelled by its datatype or by its fields' tuple, a `Box`, a
-    /// `Vec`, a slice or array, a tuple, a reference; anything else (a type parameter, a type whose
-    /// model comes from a `Model` impl) excludes nothing more. A generic item's instance thus gets
-    /// the exclusions of the generic item, which is verified over its type parameters.
-    pub fn excluded_variants(
+    fn uninhabited_type_argument_within(
         &self,
-        written: mir_ty::Ty<'tcx>,
-        ty: &rty::Type<rty::Closed>,
+        ty: mir_ty::Ty<'tcx>,
         typing_env: mir_ty::TypingEnv<'tcx>,
-    ) -> rty::ExcludedVariants {
-        self.excluded_variants_within(written, ty, typing_env, &mut Vec::new())
-    }
-
-    fn excluded_variants_within(
-        &self,
-        written: mir_ty::Ty<'tcx>,
-        ty: &rty::Type<rty::Closed>,
-        typing_env: mir_ty::TypingEnv<'tcx>,
-        enclosing: &mut Vec<mir_ty::Ty<'tcx>>,
-    ) -> rty::ExcludedVariants {
-        match (written.kind(), ty) {
-            (mir_ty::TyKind::Tuple(elems), rty::Type::Tuple(tuple))
-                if elems.len() == tuple.elems.len() =>
-            {
-                rty::ExcludedVariants::tuple(
-                    elems
-                        .iter()
-                        .zip(&tuple.elems)
-                        .map(|(w, t)| {
-                            self.boxed_field_excluded_variants(w, &t.ty, typing_env, enclosing)
-                        })
-                        .collect(),
-                )
+        fields_not_entered: &mut HashSet<DefId>,
+    ) -> Option<mir_ty::Ty<'tcx>> {
+        match ty.kind() {
+            mir_ty::TyKind::Adt(adt, args) => {
+                let in_args = args.types().find_map(|arg| {
+                    self.uninhabited_type_or_argument(arg, typing_env, fields_not_entered)
+                });
+                if in_args.is_some() || !fields_not_entered.insert(adt.did()) {
+                    return in_args;
+                }
+                let field_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, adt.did());
+                adt.all_fields()
+                    .map(|field| {
+                        let field_ty = self.tcx.type_of(field.did).instantiate_identity();
+                        self.tcx
+                            .try_normalize_erasing_regions(field_env, field_ty)
+                            .unwrap_or(field_ty)
+                    })
+                    .filter(|field_ty| !field_ty.is_privately_uninhabited(self.tcx, field_env))
+                    .find_map(|field_ty| {
+                        self.uninhabited_type_argument_within(
+                            field_ty,
+                            field_env,
+                            fields_not_entered,
+                        )
+                    })
             }
-            (mir_ty::TyKind::Ref(_, elem, _), rty::Type::Pointer(pointer)) => {
-                rty::ExcludedVariants::pointer(self.excluded_variants_within(
-                    *elem,
-                    &pointer.elem.ty,
-                    typing_env,
-                    enclosing,
-                ))
+            mir_ty::TyKind::Tuple(elems) => elems.iter().find_map(|elem| {
+                self.uninhabited_type_argument_within(elem, typing_env, fields_not_entered)
+            }),
+            mir_ty::TyKind::Ref(_, target, _)
+            | mir_ty::TyKind::RawPtr(target, _)
+            | mir_ty::TyKind::Slice(target)
+            | mir_ty::TyKind::Array(target, _) => {
+                self.uninhabited_type_or_argument(*target, typing_env, fields_not_entered)
             }
-            (
-                mir_ty::TyKind::Slice(elem) | mir_ty::TyKind::Array(elem, _),
-                rty::Type::Seq(seq_elem),
-            ) => rty::ExcludedVariants::seq(self.excluded_variants_within(
-                *elem,
-                &seq_elem.ty,
-                typing_env,
-                enclosing,
-            )),
-            (mir_ty::TyKind::Adt(adt, args), _) => {
-                self.adt_excluded_variants(written, *adt, args, ty, typing_env, enclosing)
-            }
-            _ => rty::ExcludedVariants::nothing(),
+            _ => None,
         }
     }
 
-    /// [`Self::excluded_variants`] at a tuple element or struct field, whose model is boxed in the
-    /// tuple (elaboration: all fields are boxed).
-    fn boxed_field_excluded_variants(
+    fn uninhabited_type_or_argument(
         &self,
-        written: mir_ty::Ty<'tcx>,
-        ty: &rty::Type<rty::Closed>,
+        ty: mir_ty::Ty<'tcx>,
         typing_env: mir_ty::TypingEnv<'tcx>,
-        enclosing: &mut Vec<mir_ty::Ty<'tcx>>,
-    ) -> rty::ExcludedVariants {
-        match ty {
-            rty::Type::Pointer(pointer) if pointer.is_own() => rty::ExcludedVariants::pointer(
-                self.excluded_variants_within(written, &pointer.elem.ty, typing_env, enclosing),
-            ),
-            _ => self.excluded_variants_within(written, ty, typing_env, enclosing),
+        fields_not_entered: &mut HashSet<DefId>,
+    ) -> Option<mir_ty::Ty<'tcx>> {
+        if ty.is_privately_uninhabited(self.tcx, typing_env) {
+            return Some(ty);
         }
+        self.uninhabited_type_argument_within(ty, typing_env, fields_not_entered)
     }
 
-    /// [`Self::excluded_variants`] at the ADT `written`, `adt` at `args`.
-    fn adt_excluded_variants(
-        &self,
-        written: mir_ty::Ty<'tcx>,
-        adt: mir_ty::AdtDef<'tcx>,
-        args: mir_ty::GenericArgsRef<'tcx>,
-        ty: &rty::Type<rty::Closed>,
-        typing_env: mir_ty::TypingEnv<'tcx>,
-        enclosing: &mut Vec<mir_ty::Ty<'tcx>>,
-    ) -> rty::ExcludedVariants {
-        let did = adt.did();
-        match ty {
-            rty::Type::Pointer(pointer) if Some(did) == self.def_ids.box_() => {
-                return rty::ExcludedVariants::pointer(self.excluded_variants_within(
-                    args.type_at(0),
-                    &pointer.elem.ty,
-                    typing_env,
-                    enclosing,
-                ));
-            }
-            rty::Type::Seq(elem) if Some(did) == self.def_ids.vec() => {
-                return rty::ExcludedVariants::seq(self.excluded_variants_within(
-                    args.type_at(0),
-                    &elem.ty,
-                    typing_env,
-                    enclosing,
-                ));
-            }
-            _ => {}
-        }
-        if !self.is_modelled_by_own_structure(written) {
-            return rty::ExcludedVariants::nothing();
-        }
-        // An ADT met again inside its own fields, other than as an argument of an enclosing
-        // instance, is a recursive definition: its positions exclude nothing more, so that a type
-        // whose arguments grow at each level (`Nest<(T, T)>` in `Nest<T>`) stays finite.
-        let recursive = enclosing.iter().any(|outer| match outer.kind() {
-            mir_ty::TyKind::Adt(outer_adt, outer_args) => {
-                outer_adt.did() == did
-                    && !outer_args
-                        .types()
-                        .any(|arg| arg.walk().any(|t| t == written.into()))
-            }
-            _ => false,
-        });
-        if recursive {
-            return rty::ExcludedVariants::nothing();
-        }
-        enclosing.push(written);
-        let excluded = match ty {
-            rty::Type::Enum(enum_ty)
-                if adt.is_enum() && enum_ty.symbol == refine::datatype_symbol(self.tcx, did) =>
-            {
-                let variants = enum_ty.variants(&self.enum_defs);
-                rty::ExcludedVariants::enum_variants(
-                    adt.variants()
-                        .iter()
-                        .zip(variants)
-                        .map(|(variant, built)| {
-                            let field_tys: Vec<_> = variant
-                                .fields
-                                .iter()
-                                .map(|f| f.ty(self.tcx, args))
-                                .collect();
-                            let excluded = field_tys
-                                .iter()
-                                .any(|f| f.is_privately_uninhabited(self.tcx, typing_env));
-                            let fields = field_tys
-                                .iter()
-                                .zip(&built.field_tys)
-                                .map(|(w, t)| {
-                                    self.excluded_variants_within(*w, t, typing_env, enclosing)
-                                })
-                                .collect();
-                            (excluded, fields)
-                        })
-                        .collect(),
-                )
-            }
-            rty::Type::Tuple(tuple)
-                if adt.is_struct() && adt.all_fields().count() == tuple.elems.len() =>
-            {
-                // A struct's fields are boxed in its tuple.
-                rty::ExcludedVariants::tuple(
-                    adt.all_fields()
-                        .zip(&tuple.elems)
-                        .map(|(field, elem)| {
-                            self.boxed_field_excluded_variants(
-                                field.ty(self.tcx, args),
-                                &elem.ty,
-                                typing_env,
-                                enclosing,
-                            )
-                        })
-                        .collect(),
-                )
-            }
-            _ => rty::ExcludedVariants::nothing(),
+    /// The ADTs that a `Model` impl gives a model.
+    fn adts_with_model_impl(&self) -> HashSet<DefId> {
+        let Some(model_ty) = self.def_ids.model_ty() else {
+            return HashSet::new();
         };
-        enclosing.pop();
-        excluded
-    }
-
-    /// Whether the model of `ty`, an ADT, is its own structure (an enum's datatype, a struct's
-    /// fields), possibly at its arguments' models, not another type a `Model` impl or one of
-    /// Thrust's model types gives.
-    fn is_modelled_by_own_structure(&self, ty: mir_ty::Ty<'tcx>) -> bool {
-        let mir_ty::TyKind::Adt(adt, _) = ty.kind() else {
-            return false;
-        };
-        let did = Some(adt.did());
-        let model_ids = [
-            self.def_ids.int_model(),
-            self.def_ids.dyn_model(),
-            self.def_ids.uint_model(),
-            self.def_ids.uint_n_model(),
-            self.def_ids.int_n_model(),
-            self.def_ids.bit_vec_model(),
-            self.def_ids.mut_model(),
-            self.def_ids.box_model(),
-            self.def_ids.seq_model(),
-            self.def_ids.array_model(),
-            self.def_ids.closure_model(),
-            self.def_ids.ghost_model(),
-            self.def_ids.box_(),
-            self.def_ids.vec(),
-            self.def_ids.slice_iter(),
-            self.def_ids.vec_into_iter(),
-            self.def_ids.slice_iter_mut(),
-        ];
-        // A `Model` impl that maps the ADT to itself at its arguments' models (std.rs's `Option`,
-        // `Result`) keeps its structure; one that maps it to another type does not.
-        let resolved_to_itself = matches!(
-            self.resolve_model_ty(ty).kind(),
-            mir_ty::TyKind::Adt(resolved, _) if resolved.did() == adt.did()
-        );
-        !model_ids.contains(&did) && resolved_to_itself
+        let model_trait = self.tcx.parent(model_ty);
+        self.tcx
+            .all_impls(model_trait)
+            .filter_map(
+                |impl_did| match self.tcx.type_of(impl_did).instantiate_identity().kind() {
+                    mir_ty::TyKind::Adt(adt, _) => Some(adt.did()),
+                    _ => None,
+                },
+            )
+            .collect()
     }
 
     pub fn resolve_model_ty(&self, orig_ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
