@@ -191,6 +191,9 @@ fn contract_opened_at<'tcx>(
     if blocks.contains(&exit) {
         fatal("the code after `block_ensures!` is also under its contract");
     }
+    if entered_from_outside(body, &blocks, entry) {
+        fatal("the code under `block_requires!` is also reached by a path that does not pass it");
+    }
 
     let mut changed = ChangedLocals::default();
     for &bb in &blocks {
@@ -219,6 +222,27 @@ fn contract_opened_at<'tcx>(
         changed: changed.0,
         ends: Vec::new(),
     }
+}
+
+/// Whether a block of the code under a contract, other than its first, has a predecessor outside
+/// the code: a path that reaches it without the `block_requires!` marker, such as the other arm
+/// of an `if` whose one arm holds the marker. The analysis reads the code only from the marker
+/// and ends every path at `block_ensures!`, so such a path would not reach the code after the
+/// contract, and what follows would be checked on the marker's path alone. The code must be
+/// entered only through the marker, as a statement contract in ACSL or Why3's abstract block,
+/// which are single-entry by their syntax. A predecessor no path from the start reaches is no
+/// way in. It reads the body after `separate_entries`, whose first block of the code is entered
+/// only from the marker.
+fn entered_from_outside(body: &Body<'_>, blocks: &HashSet<BasicBlock>, entry: BasicBlock) -> bool {
+    let predecessors = body.basic_blocks.predecessors();
+    let reachable = mir::traversal::reachable_as_bitset(body);
+    let way_in = |pred: &BasicBlock| {
+        !blocks.contains(pred) && !body.basic_blocks[*pred].is_cleanup && reachable.contains(*pred)
+    };
+    blocks
+        .iter()
+        .filter(|&&bb| bb != entry)
+        .any(|&bb| predecessors[bb].iter().any(way_in))
 }
 
 /// The locals a piece of code may change: the base local of every place it writes, borrows
