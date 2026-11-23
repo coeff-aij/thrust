@@ -386,6 +386,10 @@ impl VisitMut for ContextInjector<'_> {
     }
 
     fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
+        if is_block_contract(&mac.path) {
+            self.inject_into_block_contract(mac);
+            return;
+        }
         let Some(with_context) = context_carrying_form(&mac.path) else {
             return;
         };
@@ -398,6 +402,41 @@ impl VisitMut for ContextInjector<'_> {
         mac.tokens = self.inject_context(&mac.tokens);
         mac.path = with_context;
     }
+}
+
+impl ContextInjector<'_> {
+    /// Rewrites a `block_contract!` into `_block_contract_with_context!`: both formulas carry
+    /// the context, and the block is walked as any other code of the body. A form that does not
+    /// parse is left to `block_contract!`, which reports the error.
+    fn inject_into_block_contract(&mut self, mac: &mut syn::Macro) {
+        let Ok(mut contract) =
+            syn::parse2::<crate::block_contract::BlockContract>(mac.tokens.clone())
+        else {
+            return;
+        };
+        let clauses = [&contract.requires, &contract.ensures];
+        if let Some(reference) = clauses
+            .into_iter()
+            .find_map(|clause| crate::loop_label::references(clause).into_iter().next())
+        {
+            let message = crate::loop_label::unresolved_message(&reference);
+            crate::loop_label::replace_with_error(mac, reference.span, &message);
+            return;
+        }
+        contract.requires = self.inject_context(&contract.requires);
+        contract.ensures = self.inject_context(&contract.ensures);
+        self.visit_block_mut(&mut contract.body);
+        self.injected = true;
+        mac.tokens = contract.to_arguments();
+        mac.path = syn::parse_quote!(::thrust_macros::_block_contract_with_context);
+    }
+}
+
+/// Whether `path` names `block_contract!`.
+fn is_block_contract(path: &syn::Path) -> bool {
+    path.segments
+        .last()
+        .is_some_and(|segment| segment.ident == "block_contract")
 }
 
 /// A reference to a labelled loop's ghost left in `mac`, a formula macro, once the loops around
