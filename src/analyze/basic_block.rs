@@ -642,31 +642,23 @@ impl PrecondCapture {
     }
 }
 
-/// Finds a place that reads a field of a variant without values, or an aggregate that builds one
+/// The variants whose fields the places of a statement or terminator read, borrow or write, each
+/// with the place of the enum value, and whether it builds a variant without values
 /// ([`crate::refine::variant_has_no_values`]).
-struct VariantWithoutValuesUse<'a, 'tcx> {
+struct VariantUses<'tcx> {
     tcx: TyCtxt<'tcx>,
-    local_decls: &'a IndexVec<Local, mir::LocalDecl<'tcx>>,
-    found: bool,
+    downcasts: Vec<(mir::Place<'tcx>, rustc_abi::VariantIdx)>,
+    builds_variant_without_values: bool,
 }
 
-impl<'tcx> VariantWithoutValuesUse<'_, 'tcx> {
-    fn has_no_values(&self, adt: mir_ty::AdtDef<'tcx>, variant: rustc_abi::VariantIdx) -> bool {
-        let typing_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, adt.did());
-        crate::refine::variant_has_no_values(self.tcx, adt.variant(variant), typing_env)
-    }
-}
-
-impl<'tcx> Visitor<'tcx> for VariantWithoutValuesUse<'_, 'tcx> {
+impl<'tcx> Visitor<'tcx> for VariantUses<'tcx> {
     fn visit_place(&mut self, place: &mir::Place<'tcx>, _: PlaceContext, _: mir::Location) {
         for (base, elem) in place.iter_projections() {
             if let mir::PlaceElem::Downcast(_, variant) = elem {
-                let adt = base
-                    .ty(self.local_decls, self.tcx)
-                    .ty
-                    .ty_adt_def()
-                    .expect("a downcast of an enum");
-                self.found |= self.has_no_values(adt, variant);
+                let downcast = (base.to_place(self.tcx), variant);
+                if !self.downcasts.contains(&downcast) {
+                    self.downcasts.push(downcast);
+                }
             }
         }
     }
@@ -675,7 +667,13 @@ impl<'tcx> Visitor<'tcx> for VariantWithoutValuesUse<'_, 'tcx> {
         if let Rvalue::Aggregate(kind, _) = rvalue {
             if let mir::AggregateKind::Adt(did, variant, ..) = **kind {
                 let adt = self.tcx.adt_def(did);
-                self.found |= adt.is_enum() && self.has_no_values(adt, variant);
+                let typing_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, did);
+                self.builds_variant_without_values |= adt.is_enum()
+                    && crate::refine::variant_has_no_values(
+                        self.tcx,
+                        adt.variant(variant),
+                        typing_env,
+                    );
             }
         }
         self.super_rvalue(rvalue, location);
@@ -1349,30 +1347,51 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// Marks a point that Rust's typing makes unreachable, where no value of a type reaches: a
-    /// block rustc ends in `Unreachable`, or code that reads, borrows or builds a variant without
-    /// values ([`crate::refine::variant_has_no_values`]), which its enum's datatype has no
-    /// constructor for. The program does not run past it. A proof's contract is assumed of every
-    /// value of the sorts, which are never empty, so in a proof the point must be unreachable in
-    /// the logic, as Creusot's `absurd` requires.
+    /// block rustc ends in `Unreachable`, or code that builds a variant without values
+    /// ([`crate::refine::variant_has_no_values`]), which its enum's datatype has no constructor
+    /// for. The program does not run past it. A proof's contract is assumed of every value of the
+    /// sorts, which are never empty, so in a proof the point must be unreachable in the logic, as
+    /// Creusot's `absurd` requires.
     fn reach_point_unreachable_by_typing(&mut self) {
         if analyze::lemma::is_proof(self.tcx, self.local_def_id.to_def_id()) {
             self.assert_term(PlaceTypeBuilder::default(), chc::Term::bool(false));
         }
     }
 
-    /// Whether the places and rvalues `visit` shows read, borrow or build a variant without
-    /// values.
-    fn uses_variant_without_values(
-        &self,
-        visit: impl FnOnce(&mut VariantWithoutValuesUse<'_, 'tcx>),
-    ) -> bool {
-        let mut visitor = VariantWithoutValuesUse {
+    /// In a proof, requires of the code `visit` shows that each enum value whose variant's field
+    /// it reads, borrows or writes is of that variant, and that it builds no variant without
+    /// values. Elsewhere the variant is assumed where the field is read, as rustc tests it
+    /// before: a `match` reads the discriminant, except where the other variants have no values
+    /// (`let Ok(n) = r` at `Result<i64, Infallible>`). A proof's contract is assumed of every
+    /// value of the sorts, which hold values no Rust value is (`Err(())`), so there the variant
+    /// is an obligation, which a `match`'s test discharges. A variant without values is never
+    /// the value's ([`rty::EnumVariantDef::uninhabited`]).
+    fn assert_variants_used_in_proof(&mut self, visit: impl FnOnce(&mut VariantUses<'tcx>)) {
+        if !analyze::lemma::is_proof(self.tcx, self.local_def_id.to_def_id()) {
+            return;
+        }
+        let mut visitor = VariantUses {
             tcx: self.tcx,
-            local_decls: &self.local_decls,
-            found: false,
+            downcasts: Vec::new(),
+            builds_variant_without_values: false,
         };
         visit(&mut visitor);
-        visitor.found
+        let VariantUses {
+            downcasts,
+            builds_variant_without_values,
+            ..
+        } = visitor;
+        if builds_variant_without_values {
+            self.reach_point_unreachable_by_typing();
+        }
+        for (enum_place, variant) in downcasts {
+            let mut builder = PlaceTypeBuilder::default();
+            let is_variant = self
+                .place_type(&enum_place)
+                .variant_test(variant, &self.ctx.enum_defs);
+            let (_, is_variant) = builder.subsume(is_variant);
+            self.assert_term(builder, is_variant);
+        }
     }
 
     /// Asserts that the bool `term`, over the variables of `builder`, holds where the current
@@ -3748,9 +3767,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 block: self.basic_block,
                 statement_index: stmt_idx,
             };
-            if self.uses_variant_without_values(|v| v.visit_statement(&stmt, location)) {
-                self.reach_point_unreachable_by_typing();
-            }
+            self.assert_variants_used_in_proof(|v| v.visit_statement(&stmt, location));
             self.reborrow_visitor().visit_statement(&mut stmt);
             tracing::debug!(%stmt_idx, ?stmt);
             match &stmt.kind {
@@ -4322,9 +4339,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             statement_index: block.statements.len(),
         };
         let original = block.terminator().clone();
-        if self.uses_variant_without_values(|v| v.visit_terminator(&original, location)) {
-            self.reach_point_unreachable_by_typing();
-        }
+        self.assert_variants_used_in_proof(|v| v.visit_terminator(&original, location));
         let term = self.elaborated_terminator();
         self.analyze_terminator_binds(&term, expected_fn, &outer_fn_param_vars);
         self.analyze_terminator_goto(&term, expected_fn, &outer_fn_param_vars);
