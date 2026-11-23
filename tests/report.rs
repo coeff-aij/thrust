@@ -893,12 +893,15 @@ fn a_function_line_lists_the_functions_its_body_calls() {
         ("passes_closure", calls(vec![apply, passed_closure])),
         ("passes_closure::{closure#0}", calls(vec![helper.clone()])),
         ("through_pointer", calls(vec![helper.clone()])),
+        // A closure that only states a formula is not code the body runs.
+        ("states_formula", calls(vec![])),
         (
             "main",
             calls(vec![
                 helper,
                 callee("passes_closure", at(46, 1, 48, 2)),
                 callee("passes_item", at(42, 1, 44, 2)),
+                callee("states_formula", at(55, 1, 58, 2)),
                 callee("through_closure", at(25, 1, 28, 2)),
                 callee("through_lemma", at(30, 1, 32, 2)),
                 callee("through_parameter", at(21, 1, 23, 2)),

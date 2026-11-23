@@ -116,7 +116,7 @@ fn function(
         parts: (checked && split).then(|| in_parts.iter().map(|p| p.id).collect()),
         verdict: checked.then_some(verdict),
         assumptions,
-        calls: callees(tcx, input.called_fns.get(&def)),
+        calls: callees(tcx, input, input.called_fns.get(&def)),
     }
 }
 
@@ -125,10 +125,11 @@ fn whole_span(tcx: TyCtxt<'_>, def: LocalDefId) -> Span {
         .source_callsite()
 }
 
-fn callees(tcx: TyCtxt<'_>, called: Option<&HashSet<DefId>>) -> Vec<Callee> {
+fn callees(tcx: TyCtxt<'_>, input: &Input<'_>, called: Option<&HashSet<DefId>>) -> Vec<Callee> {
     let mut callees: Vec<Callee> = called
         .into_iter()
         .flatten()
+        .filter(|callee| !is_formula_closure(tcx, input, **callee))
         .map(|callee| Callee {
             name: tcx.def_path_str(*callee),
             span: callee.as_local().map(|def| whole_span(tcx, def)),
@@ -136,6 +137,19 @@ fn callees(tcx: TyCtxt<'_>, called: Option<&HashSet<DefId>>) -> Vec<Callee> {
         .collect();
     callees.sort_by_key(|c| (c.name.clone(), c.span.map(|s| (s.lo(), s.hi()))));
     callees
+}
+
+/// A closure that only states a formula (in a contract, `proof_assert!`, `invariant!`, ...): its
+/// creator is analysed, yet the analysis never analyses it as code, so it gets no body check.
+fn is_formula_closure(tcx: TyCtxt<'_>, input: &Input<'_>, callee: DefId) -> bool {
+    let Some(def) = callee.as_local() else {
+        return false;
+    };
+    tcx.is_closure_like(callee)
+        && matches!(
+            input.body_checks.get(&def),
+            None | Some(BodyCheck::Specification)
+        )
 }
 
 impl Function {

@@ -52,6 +52,11 @@ fn through_pointer(x: i64) -> i64 {
     p(x)
 }
 
+fn states_formula(x: i64) -> i64 {
+    thrust_macros::proof_assert!(|x: i64| x == x);
+    x
+}
+
 fn main() {
     helper(1);
     through_parameter(&Square(2));
@@ -60,4 +65,5 @@ fn main() {
     passes_item(4);
     passes_closure(5);
     through_pointer(6);
+    states_formula(7);
 }
