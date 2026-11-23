@@ -54,9 +54,9 @@ three `next` calls (1210, 1216, 1222), and `Map::new`'s for `largest_niche_size`
 part (the parts holding each goal, solved once); the five proved last add six parts (two for the third `map_or`, one for each other), all `sat` with fptprove 16064279f at 300 s a part: 29 s for each of the `map_or` parts, 134 s for `offsets[i]`, within 2 s for the others. The
 `assume!`s left are listed in the table's `univariant_biased.rs` row.
 `Map::new`'s `requires` for `largest_niche_size` (the block at layout.rs 813) is proved in a block contract:
-`block_requires!` (`layout_pre`, `dl_of`, and the formula's closure and iterator facts), the lemma call
+`requires` (`layout_pre`, `dl_of`, and the formula's closure and iterator facts), the lemma call
 `fields_ok_of_layout_pre`, the lemma call `Map::preservation_inv_of_stable_closure` (thrust/iter.rs), and
-`block_ensures!` of the site's formula; the block scopes the lemma call because calling it at the start of
+`ensures` of the site's formula; the block scopes the lemma call because calling it at the start of
 `univariant_biased` changes 99 other parts. `preservation_inv_of_stable_closure` gives `Map`'s `preservation_inv`
 from the closure's `requires` at the last item of every produced sequence and from the closure's history invariant
 keeping its precondition; the other law it needs, a call ends in a state `hist_inv!` allows (Creusot's

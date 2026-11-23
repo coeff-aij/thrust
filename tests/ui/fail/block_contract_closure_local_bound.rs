@@ -15,9 +15,13 @@ fn run(n: i64) -> i64 {
     let mut calls = 0;
     let w = Wrap { n, f: move |x: i64| { calls += 1; x + calls } };
     let r;
-    thrust_macros::block_requires!(<P: Fn(i64) -> i64> |w: Wrap<P>| true); //~ ERROR: `P` stands for
-    r = w.n;
-    thrust_macros::block_ensures!(|r: i64| true);
+    thrust_macros::block_contract!( //~ ERROR: `P` stands for
+        requires(<P: Fn(i64) -> i64> |w: Wrap<P>| true),
+        ensures(|r: i64| true),
+        {
+            r = w.n;
+        }
+    );
     r
 }
 

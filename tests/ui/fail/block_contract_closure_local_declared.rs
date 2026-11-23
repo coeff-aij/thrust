@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 // A block contract declares a type parameter before its closure (`<P: Fn(i64) -> i64>`), as
 // `assume!` does; its bound lets the formula use `Wrap<P>`'s predicate. The code under the contract
-// starts from `block_requires!` alone; stated of another closure, `g`, its `callable` does not
+// starts from `requires` alone; stated of another closure, `g`, its `callable` does not
 // give what `call` requires of `w`'s.
 
 pub struct Wrap<F> {
@@ -43,11 +43,13 @@ fn run(n: i64) -> i64 {
     );
     let w = Wrap { n, f };
     let r;
-    thrust_macros::block_requires!(
-        <P: Fn(i64) -> i64> |w: Wrap<_>, g: P| Wrap::<P>::callable(g, w.0)
+    thrust_macros::block_contract!(
+        requires(<P: Fn(i64) -> i64> |w: Wrap<_>, g: P| Wrap::<P>::callable(g, w.0)),
+        ensures(<P: Fn(i64) -> i64> |w: Wrap<P>| Wrap::<P>::callable(w.1, w.0)),
+        {
+            r = w.call() + g(0);
+        }
     );
-    r = w.call() + g(0);
-    thrust_macros::block_ensures!(<P: Fn(i64) -> i64> |w: Wrap<P>| Wrap::<P>::callable(w.1, w.0));
     r
 }
 

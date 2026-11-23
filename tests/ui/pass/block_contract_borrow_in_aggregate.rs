@@ -7,9 +7,13 @@ fn main() {
     let mut a = 1i64;
     let mut y = 0i64;
     let p = (&mut a, 0i64);
-    thrust_macros::block_requires!(|y: i64| y == 0);
-    y += 1;
-    thrust_macros::block_ensures!(|y: i64| y == 1);
+    thrust_macros::block_contract!(
+        requires(|y: i64| y == 0),
+        ensures(|y: i64| y == 1),
+        {
+            y += 1;
+        }
+    );
     *p.0 = 2;
     assert!(y == 1 && a == 2);
 }
