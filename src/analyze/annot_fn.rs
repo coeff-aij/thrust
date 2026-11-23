@@ -2635,14 +2635,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// guard on the last arm is rejected, as Verus rejects one: the arm would then be the
     /// fallback of values its guard does not hold of. Where every arm names such a variant, no
     /// Rust value reaches the `match`, and every value of the scrutinee's sort is one no Rust value
-    /// is: the `match` is a fixed value of its type `ty` with the type's facts
+    /// is: the `match` is a fixed value of its type with the type's facts
     /// ([`rty::fact_witness`]), so that a logic function stays a function and keeps the facts of
     /// its result type.
     fn match_term(
         &self,
+        match_expr: &'tcx rustc_hir::Expr<'tcx>,
         scrutinee: &'tcx rustc_hir::Expr<'tcx>,
         arms: &'tcx [rustc_hir::Arm<'tcx>],
-        ty: mir_ty::Ty<'tcx>,
     ) -> chc::Term<rty::FunctionParamIdx> {
         let scrutinee = self.to_term(scrutinee);
         let mut arms: Vec<_> = arms
@@ -2653,7 +2653,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             })
             .collect();
         let Some((last, _, last_translator)) = arms.pop() else {
-            return self.fixed_value(ty);
+            return self.fixed_value(match_expr);
         };
         if let Some(guard) = last.guard {
             self.tcx.dcx().span_fatal(
@@ -2673,13 +2673,19 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         term
     }
 
-    /// A fixed value of `ty` that has the type's facts ([`rty::fact_witness`]).
-    fn fixed_value(&self, ty: mir_ty::Ty<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
+    /// A fixed value of the type of `expr` that has the type's facts ([`rty::fact_witness`]).
+    fn fixed_value(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
+        let ty = self.expr_ty(expr);
         self.analyzer
             .register_enum_defs([ty], self.type_builder.clone());
         let rty = self.type_builder.build(ty);
         rty::fact_witness(&rty.ty, None, &self.analyzer.enum_defs).unwrap_or_else(|| {
-            unimplemented!("a fixed value of `{ty}`, of a `match` no Rust value reaches")
+            self.tcx.dcx().span_fatal(
+                expr.span,
+                format!(
+                    "a `match` that no Rust value reaches is not supported at the type `{ty}`: it stands for a fixed value of its type, and Thrust builds none of that type"
+                ),
+            )
         })
     }
 
@@ -3533,7 +3539,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 if self.expr_ty(hir).is_bool() {
                     FormulaOrTerm::Formula(self.match_formula(scrutinee, arms))
                 } else {
-                    FormulaOrTerm::Term(self.match_term(scrutinee, arms, self.expr_ty(hir)))
+                    FormulaOrTerm::Term(self.match_term(hir, scrutinee, arms))
                 }
             }
             ExprKind::Block(block, _) => {
