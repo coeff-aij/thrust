@@ -29,10 +29,15 @@ impl<C: Copy + thrust_models::Model<Ty: PartialEq>> Calc<C> {
     #[thrust_macros::requires(0 <= n)]
     #[thrust_macros::ensures(0 <= result)]
     fn step(&self, n: i64) -> i64 {
-        thrust_macros::block_requires!(|self: &Calc<C>, n: i64| Self::below(*self, n));
-        let c = self.c;
-        let m = n - 1;
-        thrust_macros::block_ensures!(|self: &Calc<C>, m: i64| Self::below(*self, m));
+        let (c, m) = thrust_macros::block_contract!(
+            requires(|self: &Calc<C>, n: i64| Self::below(*self, n)),
+            ensures(|self: &Calc<C>, result: (C, i64)| Self::below(*self, result.1)),
+            {
+                let c = self.c;
+                let m = n - 1;
+                (c, m)
+            }
+        );
         thrust_macros::proof_assert!(|self: &Calc<C>, c: C| either::<C>(*self, c));
         m
     }

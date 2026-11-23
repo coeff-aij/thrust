@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 use proc_macro2::{TokenStream as TokenStream2, TokenTree as TokenTree2};
 
 mod apit;
+mod block_contract;
 mod closure;
 mod context;
 mod entry_value;
@@ -183,23 +184,40 @@ pub fn assume(input: TokenStream) -> TokenStream {
     invariant::expand(input, invariant::Marker::Assume)
 }
 
-/// Opens a block contract: the code from here to the next `block_ensures!` is checked once
-/// against the contract, under this formula, and the code after it reads only the contract:
+/// A contract on a braced block, as ACSL's statement contracts and Why3's abstract blocks: the
+/// block is checked once from `requires` against `ensures`, and the code after it reads only the
+/// contract, as it reads a call to a function with a written contract:
 ///
 /// ```ignore
-/// thrust_macros::block_requires!(|i: usize, v: &Vec<i64>| i < v.len());
-/// v[i] = 0;
-/// thrust_macros::block_ensures!(|i: usize, v: &Vec<i64>, v0: Ghost<Vec<i64>>| ...);
+/// let n = thrust_macros::block_contract!(
+///     requires(|i: usize, v: &Vec<i64>| i < v.len()),
+///     ensures(|v: &Vec<i64>, result: i64| result == v[0]),
+///     { v[i] = 0; v[0] }
+/// );
 /// ```
 ///
-/// The argument is a closure as for [`proof_assert`]. It runs nothing.
+/// Each clause takes a closure as for [`proof_assert`]; `ensures` names the block's value
+/// `result`. It runs nothing but the block.
+#[proc_macro]
+pub fn block_contract(input: TokenStream) -> TokenStream {
+    block_contract::expand(input, false)
+}
+
+/// Context-carrying counterpart of `block_contract!` (see [`_invariant_with_context`]).
+#[proc_macro]
+pub fn _block_contract_with_context(input: TokenStream) -> TokenStream {
+    block_contract::expand(input, true)
+}
+
+/// The opening marker form `block_contract!` expands into; not written by hand.
+#[doc(hidden)]
 #[proc_macro]
 pub fn block_requires(input: TokenStream) -> TokenStream {
     invariant::expand(input, invariant::Marker::BlockRequires)
 }
 
-/// Closes the block contract the last `block_requires!` opened (see [`block_requires`]). The
-/// argument is a closure as for [`proof_assert`]. It runs nothing.
+/// The closing marker form `block_contract!` expands into; not written by hand.
+#[doc(hidden)]
 #[proc_macro]
 pub fn block_ensures(input: TokenStream) -> TokenStream {
     invariant::expand(input, invariant::Marker::BlockEnsures)
