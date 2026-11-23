@@ -1162,11 +1162,6 @@ impl<'tcx> Analyzer<'tcx> {
             builder: TypeBuilder<'tcx>,
             enums: rustc_data_structures::fx::FxIndexSet<DefId>,
             visited: HashSet<mir_ty::Ty<'tcx>>,
-            /// The ADTs whose fields were visited, at one instance each: the enums an instance's
-            /// fields name are those of the definition's fields and those of its arguments, which
-            /// are visited at every instance, so a type whose arguments grow at each level of its
-            /// own fields (`Nest<(T, T)>` in `Nest<T>`) is visited finitely.
-            expanded: HashSet<DefId>,
         }
         impl<'tcx> mir_ty::TypeVisitor<TyCtxt<'tcx>> for EnumCollector<'tcx> {
             fn visit_ty(&mut self, ty: mir_ty::Ty<'tcx>) {
@@ -1180,10 +1175,8 @@ impl<'tcx> Analyzer<'tcx> {
                     if def.is_enum() {
                         self.enums.insert(def.did());
                     }
-                    if self.expanded.insert(def.did()) {
-                        for field in def.all_fields() {
-                            field.ty(self.tcx, args).visit_with(self);
-                        }
+                    for field in def.all_fields() {
+                        field.ty(self.tcx, args).visit_with(self);
                     }
                 }
                 ty.super_visit_with(self);
@@ -1194,7 +1187,6 @@ impl<'tcx> Analyzer<'tcx> {
             builder,
             enums: Default::default(),
             visited: HashSet::new(),
-            expanded: HashSet::new(),
         };
         for ty in tys {
             ty.visit_with(&mut visitor);
