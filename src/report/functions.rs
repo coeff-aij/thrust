@@ -148,7 +148,7 @@ fn written_callees(
     let mut expanded = HashSet::new();
     let mut written = HashSet::new();
     while let Some(callee) = todo.pop() {
-        if is_formula_closure(tcx, input, callee) {
+        if is_specification(tcx, input, callee) {
             continue;
         }
         match callee.as_local() {
@@ -165,17 +165,25 @@ fn written_callees(
     written
 }
 
-/// A closure that only states a formula (in a contract, `proof_assert!`, `invariant!`, ...): its
-/// creator is analysed, yet the analysis never analyses it as code, so it gets no body check.
-fn is_formula_closure(tcx: TyCtxt<'_>, input: &Input<'_>, callee: DefId) -> bool {
+/// A function that only states a formula: a predicate or logic function, or a closure in a
+/// contract, `proof_assert!` or `invariant!`. Such a closure is created in an analysed body yet is
+/// never analysed as code, so it has no body check (every closure that runs gets one: checked, or
+/// its enclosing function's state, src/analyze/crate_.rs).
+fn is_specification(tcx: TyCtxt<'_>, input: &Input<'_>, callee: DefId) -> bool {
     let Some(def) = callee.as_local() else {
         return false;
     };
-    tcx.is_closure_like(callee)
-        && matches!(
-            input.body_checks.get(&def),
-            None | Some(BodyCheck::Specification)
-        )
+    match input.body_checks.get(&def) {
+        Some(BodyCheck::Specification) => true,
+        None => tcx.is_closure_like(callee),
+        Some(
+            BodyCheck::Checked
+            | BodyCheck::Trusted(_)
+            | BodyCheck::Ignored(_)
+            | BodyCheck::Unselected(_)
+            | BodyCheck::NotAnalyzed(_),
+        ) => false,
+    }
 }
 
 impl Function {
