@@ -971,6 +971,19 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .extract_binding_mode(self.tcx.sess, hir_id, span)
     }
 
+    /// The typing environment of the item the formula belongs to, over its own type parameters.
+    fn written_typing_env(&self) -> mir_ty::TypingEnv<'tcx> {
+        let root = self.tcx.typeck_root_def_id(self.local_def_id.to_def_id());
+        mir_ty::TypingEnv::non_body_analysis(self.tcx, root)
+    }
+
+    /// Whether no value has `written`, a type as the item writes it, as rustc decides it: a type
+    /// parameter has values there, so an instance at a type without values (`g::<Infallible>`)
+    /// keeps the generic item's meaning, over which it is verified.
+    fn written_ty_is_uninhabited(&self, written: mir_ty::Ty<'tcx>) -> bool {
+        written.is_privately_uninhabited(self.tcx, self.written_typing_env())
+    }
+
     fn normalized_ty(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let instantiated = self
             .instantiate_generics(ty, self.generic_args)
@@ -2338,15 +2351,21 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
-            let fact = if self.type_builder.is_uninhabited(param_ty) {
+            let written_ty = self.written_ty(param.pat);
+            let fact = if self.written_ty_is_uninhabited(written_ty) {
                 Some(chc::Formula::bottom())
             } else {
-                rty::domain_guard_at_instance::<_, chc::Formula<_>>(
+                let excluded = self.type_builder.excluded_variants(
+                    written_ty,
+                    &param_rty.ty,
+                    self.written_typing_env(),
+                );
+                rty::domain_guard_of_variable::<_, chc::Formula<_>>(
                     &param_rty.ty,
                     term.clone(),
                     &self.analyzer.enum_defs,
                     rty::IntDomain::Range,
-                    &self.type_builder.uninhabited_at_instance(param_ty),
+                    &excluded,
                 )
             };
             if let Some(fact) = fact {

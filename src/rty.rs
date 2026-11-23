@@ -1691,26 +1691,167 @@ struct DomainCx<'a> {
     ints: IntDomain,
     enclosing: Vec<EnumType<Closed>>,
     seq_depth: usize,
-    /// The variants without values at an instance though not in the enum's definition
-    /// ([`UninhabitedAtInstance`]).
-    uninhabited_at_instance: &'a UninhabitedAtInstance,
 }
 
-/// The variants of enum types that have no values at the instance a type names, though their
-/// definition gives them values (`Result<u64, Infallible>`'s `Err`, whose model is `Err(())`): for
-/// each enum type, by variant, whether every instance of it in the type has no value of that
-/// variant. Read from rustc where the type is built ([`crate::refine::TypeBuilder`]); empty where
-/// it is not known.
+/// The variants a quantified variable's guard excludes besides those of each enum's definition, by
+/// position in its type: at a position where the variable's type as written in the item names an
+/// enum, the variants that have a field without values there as rustc decides it, a type parameter
+/// or a projection on one counting as having values; and the positions of the fields, tuple
+/// elements, pointees and sequence elements below. A position the type as written does not reach
+/// (a type parameter, a type whose model comes from a `Model` impl) excludes nothing more, so an
+/// instance's guard is the guard of the generic item instantiated
+/// (`refine::TypeBuilder::excluded_variants`).
 #[derive(Debug, Clone, Default)]
-pub struct UninhabitedAtInstance(pub Vec<(EnumType<Closed>, Vec<bool>)>);
+pub struct ExcludedVariants(ExcludedAt);
 
-impl UninhabitedAtInstance {
-    fn variant(&self, enum_ty: &EnumType<Closed>, index: usize) -> bool {
-        let enum_ty = enum_ty.clone().strip_refinement();
-        self.0
+#[derive(Debug, Clone, Default)]
+enum ExcludedAt {
+    /// Nothing more is excluded here or below.
+    #[default]
+    Nothing,
+    /// An enum position: for each variant, whether it is excluded and the positions of its fields.
+    Enum(Vec<(bool, Vec<ExcludedAt>)>),
+    Tuple(Vec<ExcludedAt>),
+    Pointer(Box<ExcludedAt>),
+    Seq(Box<ExcludedAt>),
+}
+
+impl ExcludedVariants {
+    pub fn nothing() -> Self {
+        ExcludedVariants(ExcludedAt::Nothing)
+    }
+
+    /// An enum position: for each variant in order, whether it has a field without values and the
+    /// positions of its fields in order.
+    pub fn enum_variants(variants: Vec<(bool, Vec<ExcludedVariants>)>) -> Self {
+        ExcludedVariants(ExcludedAt::Enum(
+            variants
+                .into_iter()
+                .map(|(excluded, fields)| (excluded, fields.into_iter().map(|f| f.0).collect()))
+                .collect(),
+        ))
+    }
+
+    pub fn tuple(elems: Vec<ExcludedVariants>) -> Self {
+        ExcludedVariants(ExcludedAt::Tuple(elems.into_iter().map(|e| e.0).collect()))
+    }
+
+    pub fn pointer(elem: ExcludedVariants) -> Self {
+        ExcludedVariants(ExcludedAt::Pointer(Box::new(elem.0)))
+    }
+
+    pub fn seq(elem: ExcludedVariants) -> Self {
+        ExcludedVariants(ExcludedAt::Seq(Box::new(elem.0)))
+    }
+}
+
+impl ExcludedAt {
+    const NOTHING: &'static ExcludedAt = &ExcludedAt::Nothing;
+
+    /// Whether variant `index` of the enum at this position is excluded. An enum position states
+    /// every variant of the enum (`refine::TypeBuilder::excluded_variants` pairs them by index).
+    fn variant_excluded(&self, index: usize) -> bool {
+        match self {
+            ExcludedAt::Enum(variants) => {
+                variants
+                    .get(index)
+                    .expect("an enum position states every variant")
+                    .0
+            }
+            ExcludedAt::Nothing
+            | ExcludedAt::Tuple(_)
+            | ExcludedAt::Pointer(_)
+            | ExcludedAt::Seq(_) => false,
+        }
+    }
+
+    fn field(&self, variant: usize, field: usize) -> &ExcludedAt {
+        match self {
+            ExcludedAt::Enum(variants) => variants
+                .get(variant)
+                .and_then(|(_, fields)| fields.get(field))
+                .expect("an enum position states every field"),
+            ExcludedAt::Nothing
+            | ExcludedAt::Tuple(_)
+            | ExcludedAt::Pointer(_)
+            | ExcludedAt::Seq(_) => ExcludedAt::NOTHING,
+        }
+    }
+
+    fn tuple_elem(&self, index: usize) -> &ExcludedAt {
+        match self {
+            ExcludedAt::Tuple(elems) => elems
+                .get(index)
+                .expect("a tuple position states every element"),
+            ExcludedAt::Nothing
+            | ExcludedAt::Enum(_)
+            | ExcludedAt::Pointer(_)
+            | ExcludedAt::Seq(_) => ExcludedAt::NOTHING,
+        }
+    }
+
+    fn pointee(&self) -> &ExcludedAt {
+        match self {
+            ExcludedAt::Pointer(elem) => elem,
+            ExcludedAt::Nothing
+            | ExcludedAt::Enum(_)
+            | ExcludedAt::Tuple(_)
+            | ExcludedAt::Seq(_) => ExcludedAt::NOTHING,
+        }
+    }
+
+    fn seq_elem(&self) -> &ExcludedAt {
+        match self {
+            ExcludedAt::Seq(elem) => elem,
+            ExcludedAt::Nothing
+            | ExcludedAt::Enum(_)
+            | ExcludedAt::Tuple(_)
+            | ExcludedAt::Pointer(_) => ExcludedAt::NOTHING,
+        }
+    }
+}
+
+/// Whether the enum type `ty` is met again inside the payload of an enclosing value of the same
+/// enum, other than as one of that value's type arguments: a recursive definition, at its own
+/// arguments (`List`) or at others (`Nest<(T, T)>` inside `Nest<T>`). Such a position gets no
+/// facts and no guard, so that a type whose arguments grow at each level stays finite;
+/// `Option<Option<u64>>`'s inner `Option`, an argument, does not count.
+fn met_again_in_own_payload(enclosing: &[EnumType<Closed>], ty: &EnumType<Closed>) -> bool {
+    enclosing.iter().any(|outer| {
+        outer.symbol == ty.symbol && !outer.args.iter().any(|arg| type_mentions_enum(&arg.ty, ty))
+    })
+}
+
+/// Whether `ty` is or holds the enum type `target`.
+fn type_mentions_enum(ty: &Type<Closed>, target: &EnumType<Closed>) -> bool {
+    match ty {
+        Type::Enum(enum_ty) => {
+            enum_ty == target
+                || enum_ty
+                    .args
+                    .iter()
+                    .any(|arg| type_mentions_enum(&arg.ty, target))
+        }
+        Type::Tuple(tuple) => tuple
+            .elems
             .iter()
-            .find(|(ty, _)| *ty == enum_ty)
-            .is_some_and(|(_, variants)| variants.get(index).copied().unwrap_or(false))
+            .any(|elem| type_mentions_enum(&elem.ty, target)),
+        Type::Pointer(pointer) => type_mentions_enum(&pointer.elem.ty, target),
+        Type::Seq(elem) => type_mentions_enum(&elem.ty, target),
+        Type::Array(array) => {
+            type_mentions_enum(&array.index.ty, target)
+                || type_mentions_enum(&array.elem.ty, target)
+        }
+        Type::Int(_)
+        | Type::UInt(_)
+        | Type::BitVec(_)
+        | Type::Bool
+        | Type::String
+        | Type::Opaque
+        | Type::Never
+        | Type::Param(_)
+        | Type::Alias(_)
+        | Type::Function(_) => false,
     }
 }
 
@@ -1744,18 +1885,18 @@ where
     V: Clone,
     G: DomainGuard<V>,
 {
-    domain_guard_at_instance(ty, value, defs, ints, &UninhabitedAtInstance::default())
+    domain_guard_of_variable(ty, value, defs, ints, &ExcludedVariants::nothing())
 }
 
-/// [`domain_guard`] that also excludes the variants without values at the instance the type
-/// names (`uninhabited`), as a quantifier in Verus or Creusot ranges over the values of the
-/// instantiated type.
-pub fn domain_guard_at_instance<V, G>(
+/// [`domain_guard`] of a variable a quantifier binds, which also excludes the variants `excluded`
+/// states by position: those without values in the variable's type as written in the item, as a
+/// quantifier in Verus or Creusot ranges over the values of its type.
+pub fn domain_guard_of_variable<V, G>(
     ty: &Type<Closed>,
     value: chc::Term<V>,
     defs: &dyn EnumDefProvider,
     ints: IntDomain,
-    uninhabited: &UninhabitedAtInstance,
+    excluded: &ExcludedVariants,
 ) -> Option<G>
 where
     V: Clone,
@@ -1766,14 +1907,14 @@ where
         ints,
         enclosing: Vec::new(),
         seq_depth: 0,
-        uninhabited_at_instance: uninhabited,
     };
-    domain_guard_within(ty, value, &mut cx)
+    domain_guard_within(ty, value, &excluded.0, &mut cx)
 }
 
 fn domain_guard_within<V, G>(
     ty: &Type<Closed>,
     value: chc::Term<V>,
+    excluded: &ExcludedAt,
     cx: &mut DomainCx<'_>,
 ) -> Option<G>
 where
@@ -1792,24 +1933,36 @@ where
             .elems
             .iter()
             .enumerate()
-            .map(|(index, elem)| domain_guard_within(&elem.ty, value.clone().tuple_proj(index), cx))
+            .map(|(index, elem)| {
+                domain_guard_within(
+                    &elem.ty,
+                    value.clone().tuple_proj(index),
+                    excluded.tuple_elem(index),
+                    cx,
+                )
+            })
             .fold(None, conj_guard),
         Type::Pointer(pointer) => {
-            let current =
-                domain_guard_within(&pointer.elem.ty, pointer.kind.deref_term(value.clone()), cx);
+            let current = domain_guard_within(
+                &pointer.elem.ty,
+                pointer.kind.deref_term(value.clone()),
+                excluded.pointee(),
+                cx,
+            );
             let final_ = if pointer.is_mut() {
-                domain_guard_within(&pointer.elem.ty, value.mut_final(), cx)
+                domain_guard_within(&pointer.elem.ty, value.mut_final(), excluded.pointee(), cx)
             } else {
                 None
             };
             conj_guard(current, final_)
         }
-        Type::Enum(enum_ty) => enum_domain_guard(enum_ty, value, cx),
+        Type::Enum(enum_ty) => enum_domain_guard(enum_ty, value, excluded, cx),
         Type::Seq(elem) => {
             let var = seq_guard_var(cx.seq_depth);
             let k = chc::Term::UserQuantifiedVar(chc::Sort::int(), var);
             cx.seq_depth += 1;
-            let elem_guard = domain_guard_within(&elem.ty, value.clone().seq_nth(k), cx);
+            let elem_guard =
+                domain_guard_within(&elem.ty, value.clone().seq_nth(k), excluded.seq_elem(), cx);
             cx.seq_depth -= 1;
             G::every_elem(var, value, elem_guard?)
         }
@@ -1831,13 +1984,15 @@ where
 fn enum_domain_guard<V, G>(
     enum_ty: &EnumType<Closed>,
     value: chc::Term<V>,
+    excluded: &ExcludedAt,
     cx: &mut DomainCx<'_>,
 ) -> Option<G>
 where
     V: Clone,
     G: DomainGuard<V>,
 {
-    if cx.enclosing.contains(enum_ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
+    if met_again_in_own_payload(&cx.enclosing, enum_ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT
+    {
         return None;
     }
     cx.enclosing.push(enum_ty.clone());
@@ -1848,20 +2003,24 @@ where
     for (index, variant) in variants.into_iter().enumerate() {
         let discr = chc::Term::datatype_discr(enum_ty.symbol.clone(), value.clone());
         let is_other_variant = G::other_variant(discr, variant.discr.clone());
-        if variant.uninhabited || cx.uninhabited_at_instance.variant(enum_ty, index) {
+        if variant.uninhabited || excluded.variant_excluded(index) {
             guard = conj_guard(guard, Some(is_other_variant));
             continue;
         }
         let mut fields = None;
-        for (index, field_ty) in variant.field_tys.iter().enumerate() {
+        for (field_index, field_ty) in variant.field_tys.iter().enumerate() {
             let field = chc::Term::datatype_selector(
                 sort.clone(),
                 variant.ctor.clone(),
-                index,
+                field_index,
                 field_ty.to_sort(),
                 value.clone(),
             );
-            fields = conj_guard(fields, domain_guard_within(field_ty, field, cx));
+            let field_excluded = excluded.field(index, field_index);
+            fields = conj_guard(
+                fields,
+                domain_guard_within(field_ty, field, field_excluded, cx),
+            );
         }
         let payload = if single_variant {
             fields
@@ -2002,7 +2161,7 @@ fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Clo
     let Some(defs) = cx.defs.filter(|_| int_range_mode() != IntRange::Off) else {
         return Refinement::top();
     };
-    if cx.enclosing.contains(ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
+    if met_again_in_own_payload(&cx.enclosing, ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
         let enum_ty = Type::Enum(ty.clone());
         if cx.use_ == FactsUse::Checked && has_range_facts(&enum_ty, defs, &mut Vec::new()) {
             cx.unsupported.get_or_insert(enum_ty);
