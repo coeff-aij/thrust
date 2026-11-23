@@ -1677,17 +1677,16 @@ pub trait DomainGuard<V>: Sized {
     /// `forall k. 0 <= k < len(seq) => elem`, `elem` the guard of `seq[k]`, `k` the variable
     /// `var`; `None` where a quantifier cannot be stated.
     fn every_elem(var: chc::UserQuantifiedVarId, seq: chc::Term<V>, elem: Self) -> Option<Self>;
-    /// Whether the guard of an outermost enum is stated by the atom of the predicate defining it
-    /// ([`DomainGuard::by_pred`]); otherwise it is stated in place and no predicate is defined.
-    const STATED_BY_PREDICATE: bool;
-    /// The atom of the predicate `pred` at `value`, where [`Self::STATED_BY_PREDICATE`].
-    fn by_pred(pred: chc::UserDefinedPred, value: chc::Term<V>) -> Option<Self>;
+    /// The guard of an outermost enum at `value` as the atom of the predicate defining it, which
+    /// `register` registers; `None` where the guard is stated in place, and then no predicate is
+    /// registered.
+    fn by_pred(
+        register: impl FnOnce() -> Option<chc::UserDefinedPred>,
+        value: chc::Term<V>,
+    ) -> Option<Self>;
 }
 
 impl<V: Clone> DomainGuard<V> for chc::Term<V> {
-    /// A logic function's domain is stated in place.
-    const STATED_BY_PREDICATE: bool = false;
-
     fn bounds(bounds: IntRangeBounds<V>) -> Option<Self> {
         // `lower` is `x >= min` and `upper` is `x < end`.
         let lower = bounds.lower.and_then(|atom| {
@@ -1719,14 +1718,15 @@ impl<V: Clone> DomainGuard<V> for chc::Term<V> {
     }
 
     /// A logic function's domain is stated in place.
-    fn by_pred(_pred: chc::UserDefinedPred, _value: chc::Term<V>) -> Option<Self> {
+    fn by_pred(
+        _register: impl FnOnce() -> Option<chc::UserDefinedPred>,
+        _value: chc::Term<V>,
+    ) -> Option<Self> {
         None
     }
 }
 
 impl<V: Clone> DomainGuard<V> for chc::Formula<V> {
-    const STATED_BY_PREDICATE: bool = true;
-
     fn bounds(bounds: IntRangeBounds<V>) -> Option<Self> {
         bounds
             .lower
@@ -1764,7 +1764,11 @@ impl<V: Clone> DomainGuard<V> for chc::Formula<V> {
         ))
     }
 
-    fn by_pred(pred: chc::UserDefinedPred, value: chc::Term<V>) -> Option<Self> {
+    fn by_pred(
+        register: impl FnOnce() -> Option<chc::UserDefinedPred>,
+        value: chc::Term<V>,
+    ) -> Option<Self> {
+        let pred = register()?;
         Some(chc::Formula::Atom(chc::Atom::new(pred.into(), vec![value])))
     }
 }
@@ -1913,10 +1917,7 @@ where
     if cx.enclosing.contains(enum_ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
         return None;
     }
-    if G::STATED_BY_PREDICATE
-        && cx.enclosing.is_empty()
-        && cx.read_fields_of_outermost_enum.is_none()
-    {
+    if cx.enclosing.is_empty() && cx.read_fields_of_outermost_enum.is_none() {
         let defs = cx.defs;
         let guard = || {
             let mut cx = DomainCx {
@@ -1931,10 +1932,9 @@ where
                 &mut cx,
             )
         };
-        if let Some(pred) = defs.register_domain_guard_pred(enum_ty, &guard) {
-            if let Some(atom) = G::by_pred(pred, value.clone()) {
-                return Some(atom);
-            }
+        let register = || defs.register_domain_guard_pred(enum_ty, &guard);
+        if let Some(atom) = G::by_pred(register, value.clone()) {
+            return Some(atom);
         }
     }
     enum_domain_guard_in_place(enum_ty, value, cx)
