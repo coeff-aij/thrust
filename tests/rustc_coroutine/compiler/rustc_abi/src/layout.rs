@@ -121,6 +121,38 @@ fn sum_occurring_step<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>,
     }
 }
 
+/// No index occurs among none of the entries: the base case of `sum_at_occurring`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, z: USize| z == 0usize ==> sum_occurring::<I>(ts, s, z, m) == 0))]
+fn sum_occurring_none<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, m: usize) {
+    if m > 0 {
+        sum_occurring_none(s, m - 1);
+    }
+}
+
+/// The step of `sum_at_occurring` at `j == k`: entry `k - 1` is below `n`, and `sum_at` adds its
+/// entry of `ts`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(k > 0 && forall(|j: USize| 0 <= j && j < k ==> I::index_logic(s[j]) < n))]
+#[thrust_macros::ensures(I::index_logic(s[k - 1]) < n)]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>|
+    sum_at::<I>(ts, s, k) == sum_at::<I>(ts, s, k - 1) + ts[I::index_logic(s[k - 1])]))]
+fn sum_at_last<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, k: usize, n: usize) {}
+
+/// `sum_at_occurring` up to `k` from the case up to `k - 1` and the two steps at `k`.
+#[thrust_macros::lemma]
+#[thrust_macros::requires(k > 0 && I::index_logic(s[k - 1]) < n)]
+#[thrust_macros::requires(forall(|ts: Seq<Int>, j: USize| 0 <= j && j <= k - 1
+    ==> sum_at::<I>(ts, s, j) == sum_occurring::<I>(ts, s, j, n)))]
+#[thrust_macros::requires(forall(|ts: Seq<Int>|
+    sum_at::<I>(ts, s, k) == sum_at::<I>(ts, s, k - 1) + ts[I::index_logic(s[k - 1])]))]
+#[thrust_macros::requires(forall(|ts: Seq<Int>|
+    sum_occurring::<I>(ts, s, k, n) == sum_occurring::<I>(ts, s, k - 1, n) + ts[I::index_logic(s[k - 1])]))]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, j: USize| 0 <= j && j <= k
+    ==> sum_at::<I>(ts, s, j) == sum_occurring::<I>(ts, s, j, n)))]
+fn sum_at_occurring_last<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, k: usize, n: usize) {}
+
 /// Up to the first `k` entries of `s`, distinct and below `n`, sum `ts` as the indices that occur.
 #[thrust_macros::lemma]
 #[thrust_macros::variant(k)]
@@ -133,6 +165,10 @@ fn sum_at_occurring<I: Idx + thrust_models::Model>(s: Ghost<IndexVec<u32, I>>, k
         sum_at_occurring(s, k - 1, n);
         lemmas::absent(s, k - 1, k - 1);
         sum_occurring_step(s, k, n);
+        sum_at_last(s, k, n);
+        sum_at_occurring_last(s, k, n);
+    } else {
+        sum_occurring_none(s, n);
     }
 }
 
