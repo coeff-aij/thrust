@@ -3506,24 +3506,74 @@ impl System {
         found
     }
 
-    fn user_defined_preds_in_dependency_order(&self) -> Vec<&UserDefinedPredDef> {
+    /// The definitions in groups, each group after the definitions its members call: a
+    /// definition alone, or definitions that call one another (`define-funs-rec`), as the
+    /// payload-facts predicates of enums that hold one another do. A definition is taken in the
+    /// order of definition once every definition it calls is taken; a group only when no
+    /// definition alone can be.
+    fn user_defined_preds_in_dependency_order(&self) -> Vec<Vec<&UserDefinedPredDef>> {
         let mut remaining: Vec<_> = self.user_defined_pred_defs.iter().collect();
         let mut ordered = Vec::with_capacity(remaining.len());
         while !remaining.is_empty() {
+            let calls_taken = |def: &UserDefinedPredDef, group: &[&UserDefinedPred]| {
+                def.callees().into_iter().all(|callee| {
+                    group.contains(&callee)
+                        || !remaining
+                            .iter()
+                            .any(|dependency| dependency.symbol == *callee)
+                })
+            };
             let next = remaining
                 .iter()
-                .position(|def| {
-                    def.callees().into_iter().all(|callee| {
-                        *callee == def.symbol
-                            || !remaining
-                                .iter()
-                                .any(|dependency| dependency.symbol == *callee)
-                    })
+                .position(|def| calls_taken(def, &[&def.symbol]));
+            if let Some(next) = next {
+                ordered.push(vec![remaining.remove(next)]);
+                continue;
+            }
+            let group = remaining
+                .iter()
+                .map(|def| Self::calling_one_another(&remaining, def))
+                .find(|group| {
+                    let symbols: Vec<_> = group.iter().map(|def| &def.symbol).collect();
+                    group.iter().all(|def| calls_taken(def, &symbols))
                 })
-                .expect("mutually recursive definitions are not supported");
-            ordered.push(remaining.remove(next));
+                .expect("a group of definitions calling one another calls only those taken");
+            remaining.retain(|def| !group.iter().any(|member| std::ptr::eq(*member, *def)));
+            ordered.push(group);
         }
         ordered
+    }
+
+    /// The definitions of `defs` that `def` calls and that call `def`, directly or through
+    /// others of `defs`, `def` among them, in the order of `defs`.
+    fn calling_one_another<'a>(
+        defs: &[&'a UserDefinedPredDef],
+        def: &UserDefinedPredDef,
+    ) -> Vec<&'a UserDefinedPredDef> {
+        let reaches = |from: &UserDefinedPredDef, to: &UserDefinedPred| {
+            let mut pending = vec![&from.symbol];
+            let mut seen = HashSet::new();
+            while let Some(symbol) = pending.pop() {
+                if !seen.insert(symbol) {
+                    continue;
+                }
+                for d in defs.iter().filter(|d| &d.symbol == symbol) {
+                    for callee in d.callees() {
+                        if callee == to {
+                            return true;
+                        }
+                        pending.push(callee);
+                    }
+                }
+            }
+            false
+        };
+        defs.iter()
+            .copied()
+            .filter(|d| {
+                std::ptr::eq(*d, def) || (reaches(def, &d.symbol) && reaches(d, &def.symbol))
+            })
+            .collect()
     }
 
     pub fn new_pred_var(&mut self, sig: PredSig, debug_info: DebugInfo) -> PredVarId {

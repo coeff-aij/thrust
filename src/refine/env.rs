@@ -708,7 +708,7 @@ where
             if let Some(chc_var) = builder.find_mapped_var(var) {
                 origin.add_described_var_mapping(var, chc_var, self.described(var, &paths));
             }
-            let formula = rty.binding_facts(&self.enum_defs);
+            let formula = rty.formula_with(Some(&self.enum_defs));
             let mut instantiator = formula
                 .clone()
                 .map_free_var(|v| builder.mapped_var(v))

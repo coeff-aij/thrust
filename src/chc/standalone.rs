@@ -6,10 +6,11 @@
 //! The printed query is read as the graph of its top-level commands.
 //!
 //! - Pruning. A declaration (of a sort, of a group of datatypes with their constructors,
-//!   selectors and testers, of a function, a definition or an unknown, of a universal function
-//!   with its law) is kept when a kept command names a symbol it declares; the candidate atoms of
-//!   an unknown are kept with the unknown; every other command (an assertion, `set-logic`, a raw
-//!   command) is kept. A command names each of its symbols and each piece of a symbol between `<`,
+//!   selectors and testers, of a function, a definition, a group of definitions calling one
+//!   another or an unknown, of a universal function with its law) is kept when a kept command
+//!   names a symbol it declares; the candidate atoms of an unknown are kept with the unknown;
+//!   every other command (an assertion, `set-logic`, a raw command) is kept. A command names
+//!   each of its symbols and each piece of a symbol between `<`,
 //!   `-` and `>`, so that a symbol built from a sort's name (`A1_Tuple<Seq<a3>-Int>`,
 //!   `q_len_…<a3>`) keeps the sort's declaration. No kept command names a symbol of a declaration
 //!   left out, so leaving it out removes only symbols nothing kept reads and the assumptions
@@ -144,6 +145,12 @@ impl Command {
             (Some(head), Some(Sexp::Atom(name))) if DECLARATIONS.contains(&head) => {
                 Keep::With(vec![name.clone()])
             }
+            (Some("define-funs-rec"), Some(Sexp::List(signatures))) => Keep::With(
+                signatures
+                    .iter()
+                    .filter_map(|signature| signature.list()?.first()?.atom().map(str::to_owned))
+                    .collect(),
+            ),
             (Some("set-info"), Some(Sexp::Atom(key))) if key == ":candidates" => {
                 match items.get(2).and_then(Sexp::list).and_then(|c| c.first()) {
                     Some(Sexp::Atom(pred)) => Keep::With(vec![pred.clone()]),

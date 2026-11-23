@@ -565,10 +565,11 @@ pub struct EnumDefs {
     declared: HashSet<DefId>,
     /// The enums whose definitions are being built: a field of a recursive enum names it again.
     building: HashSet<DefId>,
-    /// The type-facts predicate of each kind and enum type, refinements stripped
-    /// ([`EnumDefs::register_type_fact_pred`]); `None` for a type without such facts.
-    type_fact_preds:
-        HashMap<(TypeFactPredKind, rty::EnumType<rty::Closed>), Option<chc::UserDefinedPred>>,
+    /// The payload-facts predicate of each enum type, refinements stripped
+    /// ([`EnumDefs::register_payload_facts_pred`]).
+    payload_facts_preds: HashMap<rty::EnumType<rty::Closed>, chc::UserDefinedPred>,
+    /// The enum types whose predicates' bodies are being built, innermost last.
+    building_payload_facts_preds: Vec<rty::EnumType<rty::Closed>>,
     /// The definitions of those predicates not yet in the system: each predicate, the sort of
     /// its argument and its body ([`Analyzer::define_type_fact_preds`]).
     pending_type_fact_preds: Vec<(chc::UserDefinedPred, chc::Sort, chc::Formula)>,
@@ -611,54 +612,57 @@ fn type_facts_by_predicate() -> bool {
     })
 }
 
-/// What a type-facts predicate of an enum type states ([`EnumDefs::register_type_fact_pred`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-enum TypeFactPredKind {
-    /// The facts of a value's payloads (`payload_facts_<n>`).
-    PayloadFacts,
-    /// The domain guard of a quantified variable (`domain_guard_<n>`).
-    DomainGuard,
-}
+/// The number of payload-facts predicates of one enum, at different arguments, whose bodies may be
+/// built inside one another ([`EnumDefs::register_payload_facts_pred`]): a type that nests an enum
+/// in its own arguments (`Option<Option<u8>>`) builds one per nesting.
+const SAME_ENUM_PAYLOAD_FACTS_PREDS_BUILDING_LIMIT: usize = 32;
 
 impl EnumDefs {
-    /// The predicate of `kind` for the enum type `ty`, registered on first use with the body
-    /// `body` builds (`None`: no predicate, as when the body is `None`). The body is built before
-    /// the registry is borrowed mutably, since it reads the enums' definitions.
-    fn register_type_fact_pred(
+    /// The payload-facts predicate of the enum type `ty` (`payload_facts_<n>`), registered on first
+    /// use with the body `facts` builds. The predicate is named before its body is built, which
+    /// applies it where the type holds itself, and the registry is not borrowed while the body is
+    /// built, since that reads the enums' definitions and registers the predicates of the enums in
+    /// the payloads. An enum whose definition holds itself at other arguments
+    /// (`enum N<T> { A(Box<N<(T, T)>>) }`) would need a predicate for each of infinitely many
+    /// types; it is rejected once [`SAME_ENUM_PAYLOAD_FACTS_PREDS_BUILDING_LIMIT`] predicates of
+    /// one enum are being built inside one another.
+    fn register_payload_facts_pred(
         defs: &Rc<RefCell<EnumDefs>>,
-        kind: TypeFactPredKind,
         ty: &rty::EnumType<rty::Closed>,
-        body: &dyn Fn() -> Option<chc::Formula>,
-    ) -> Option<chc::UserDefinedPred> {
-        if !type_facts_by_predicate() {
-            return None;
-        }
+        facts: &dyn Fn() -> chc::Formula,
+    ) -> chc::UserDefinedPred {
         let ty = ty.clone().strip_refinement();
-        if let Some(pred) = defs.borrow().type_fact_preds.get(&(kind, ty.clone())) {
+        if let Some(pred) = defs.borrow().payload_facts_preds.get(&ty) {
             return pred.clone();
         }
-        let body = body();
+        let pred = {
+            let mut defs = defs.borrow_mut();
+            let same_enum_building = defs
+                .building_payload_facts_preds
+                .iter()
+                .filter(|outer| outer.symbol == ty.symbol)
+                .count();
+            assert!(
+                same_enum_building < SAME_ENUM_PAYLOAD_FACTS_PREDS_BUILDING_LIMIT,
+                "the payload facts of {} nest its enum {} deep: an enum that holds itself at \
+                 other arguments is not supported",
+                rty::Type::Enum(ty.clone()).display(),
+                SAME_ENUM_PAYLOAD_FACTS_PREDS_BUILDING_LIMIT,
+            );
+            let index = defs.payload_facts_preds.len();
+            let pred = chc::UserDefinedPred::new(format!("payload_facts_{index}"))
+                .named(format!("payload facts of {}", ty.symbol));
+            defs.payload_facts_preds.insert(ty.clone(), pred.clone());
+            defs.building_payload_facts_preds.push(ty.clone());
+            pred
+        };
+        let body = facts();
         let mut defs = defs.borrow_mut();
-        let Some(body) = body else {
-            defs.type_fact_preds.insert((kind, ty), None);
-            return None;
-        };
-        let (prefix, shown) = match kind {
-            TypeFactPredKind::PayloadFacts => ("payload_facts", "payload facts"),
-            TypeFactPredKind::DomainGuard => ("domain_guard", "domain"),
-        };
-        let index = defs
-            .type_fact_preds
-            .keys()
-            .filter(|(k, _)| *k == kind)
-            .count();
-        let pred = chc::UserDefinedPred::new(format!("{prefix}_{index}"))
-            .named(format!("{shown} of {}", ty.symbol));
-        let sort = rty::Type::Enum(ty.clone()).to_sort();
-        defs.type_fact_preds.insert((kind, ty), Some(pred.clone()));
+        defs.building_payload_facts_preds.pop();
+        let sort = rty::Type::Enum(ty).to_sort();
         defs.pending_type_fact_preds
             .push((pred.clone(), sort, body));
-        Some(pred)
+        pred
     }
 }
 
@@ -667,22 +671,16 @@ impl refine::EnumDefProvider for Rc<RefCell<EnumDefs>> {
         self.borrow().find_by_name(name).unwrap().clone()
     }
 
+    fn type_facts_by_predicate(&self) -> bool {
+        type_facts_by_predicate()
+    }
+
     fn register_payload_facts_pred(
         &self,
         ty: &rty::EnumType<rty::Closed>,
         facts: &dyn Fn() -> chc::Formula,
     ) -> Option<chc::UserDefinedPred> {
-        EnumDefs::register_type_fact_pred(self, TypeFactPredKind::PayloadFacts, ty, &|| {
-            Some(facts())
-        })
-    }
-
-    fn register_domain_guard_pred(
-        &self,
-        ty: &rty::EnumType<rty::Closed>,
-        guard: &dyn Fn() -> Option<chc::Formula>,
-    ) -> Option<chc::UserDefinedPred> {
-        EnumDefs::register_type_fact_pred(self, TypeFactPredKind::DomainGuard, ty, guard)
+        Some(EnumDefs::register_payload_facts_pred(self, ty, facts))
     }
 }
 
@@ -2123,7 +2121,7 @@ impl<'tcx> Analyzer<'tcx> {
     /// ([`Self::checked_logic_fn_body`]), so they hold of every interpretation an opaque
     /// declaration stands for, as the value of an opaque function in Dafny or Verus keeps the
     /// constraint of its result type. `None` when the type states none, and when stating them
-    /// needs an existential (the payload of an enum): a law of the form
+    /// needs an existential (the payload of an enum stated in place): a law of the form
     /// `forall params. exists payload. ..` has no test with PCSat, so that declaration keeps
     /// no law.
     fn logic_fn_result_facts(
