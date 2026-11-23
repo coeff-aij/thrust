@@ -2413,8 +2413,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         field_terms: Vec<chc::Term<rty::FunctionParamIdx>>,
     ) -> chc::Term<rty::FunctionParamIdx> {
         let adt_did = self.tcx.parent(variant_did);
-        let variant_idx = self.tcx.adt_def(adt_did).variant_index_with_id(variant_did);
-        if self.analyzer.get_or_register_enum_def(adt_did).variants[variant_idx].uninhabited {
+        let typing_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, adt_did);
+        let variant = self.tcx.adt_def(adt_did).variant_with_id(variant_did);
+        if refine::variant_has_no_values(self.tcx, variant, typing_env) {
             self.tcx.dcx().span_fatal(
                 self.tcx.def_span(variant_did),
                 "a formula that constructs this variant is not supported: no value is of it, so its datatype has no constructor for it",

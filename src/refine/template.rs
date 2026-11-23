@@ -1831,7 +1831,7 @@ where
 /// values in the definition's typing environment `typing_env`, where a type parameter has values.
 /// It does not depend on the instance, so the datatype has no constructor for such a variant
 /// ([`rty::EnumVariantDef::uninhabited`]), and a struct with such a field has no values.
-fn variant_has_no_values<'tcx>(
+pub fn variant_has_no_values<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
     variant: &mir_ty::VariantDef,
     typing_env: mir_ty::TypingEnv<'tcx>,
