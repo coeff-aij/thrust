@@ -871,6 +871,8 @@ fn a_function_line_lists_the_functions_its_body_calls() {
     let helper = callee("helper", at(17, 1, 19, 2));
     let area = callee("Shape::area", at(2, 5, 2, 27));
     let impl_area = callee("<Square as Shape>::area", at(8, 5, 10, 6));
+    let apply = callee("apply", at(38, 1, 40, 2));
+    let passed_closure = callee("passes_closure::{closure#0}", at(47, 11, 47, 29));
     let expected = [
         ("through_parameter", calls(vec![impl_area, area])),
         (
@@ -886,13 +888,21 @@ fn a_function_line_lists_the_functions_its_body_calls() {
             calls(vec![callee("trivial", at(15, 1, 15, 16))]),
         ),
         ("uncalled", calls(vec![])),
+        // A function item or a closure passed on, or cast to a pointer, is reached too.
+        ("passes_item", calls(vec![apply.clone(), helper.clone()])),
+        ("passes_closure", calls(vec![apply, passed_closure])),
+        ("passes_closure::{closure#0}", calls(vec![helper.clone()])),
+        ("through_pointer", calls(vec![helper.clone()])),
         (
             "main",
             calls(vec![
                 helper,
+                callee("passes_closure", at(46, 1, 48, 2)),
+                callee("passes_item", at(42, 1, 44, 2)),
                 callee("through_closure", at(25, 1, 28, 2)),
                 callee("through_lemma", at(30, 1, 32, 2)),
                 callee("through_parameter", at(21, 1, 23, 2)),
+                callee("through_pointer", at(50, 1, 53, 2)),
             ]),
         ),
     ];
