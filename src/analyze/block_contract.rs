@@ -230,14 +230,19 @@ fn contract_opened_at<'tcx>(
 /// and ends every path at `block_ensures!`, so such a path would not reach the code after the
 /// contract, and what follows would be checked on the marker's path alone. The code must be
 /// entered only through the marker, as a statement contract in ACSL or Why3's abstract block,
-/// which are single-entry by their syntax.
+/// which are single-entry by their syntax. A predecessor no path from the start reaches is no
+/// way in. It reads the body after `separate_entries`, whose first block of the code is entered
+/// only from the marker.
 fn entered_from_outside(body: &Body<'_>, blocks: &HashSet<BasicBlock>, entry: BasicBlock) -> bool {
     let predecessors = body.basic_blocks.predecessors();
-    blocks.iter().filter(|&&bb| bb != entry).any(|&bb| {
-        predecessors[bb]
-            .iter()
-            .any(|pred| !blocks.contains(pred) && !body.basic_blocks[*pred].is_cleanup)
-    })
+    let reachable = mir::traversal::reachable_as_bitset(body);
+    let way_in = |pred: &BasicBlock| {
+        !blocks.contains(pred) && !body.basic_blocks[*pred].is_cleanup && reachable.contains(*pred)
+    };
+    blocks
+        .iter()
+        .filter(|&&bb| bb != entry)
+        .any(|&bb| predecessors[bb].iter().any(way_in))
 }
 
 /// The locals a piece of code may change: the base local of every place it writes, borrows
