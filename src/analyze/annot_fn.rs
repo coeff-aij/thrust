@@ -2434,6 +2434,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 self.type_builder.is_uninhabited(param_ty),
                 param_rty.ty,
                 term.clone(),
+                self.type_builder.uninhabited_at_instance(param_ty),
             ));
             inner_translator.env.insert(hir_id, term);
             vars.push((var, sort));
@@ -2441,11 +2442,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let body_formula = inner_translator.to_formula(closure.value);
         let range = domains
             .into_iter()
-            .filter_map(|(var, uninhabited, ty, term)| {
+            .filter_map(|(var, uninhabited, ty, term, uninhabited_variants)| {
                 if uninhabited {
                     return Some(chc::Formula::bottom());
                 }
-                self.quantified_var_domain(&ty, term, &FieldReads::of(&body_formula, var))
+                self.quantified_var_domain(
+                    &ty,
+                    term,
+                    &uninhabited_variants,
+                    &FieldReads::of(&body_formula, var),
+                )
             })
             .reduce(chc::Formula::and);
         (vars, range, body_formula)
@@ -2459,18 +2465,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         &self,
         ty: &rty::Type<rty::Closed>,
         var: chc::Term<rty::FunctionParamIdx>,
+        uninhabited: &rty::UninhabitedAtInstance,
         reads: &FieldReads,
     ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
         let defs = &self.analyzer.enum_defs;
-        match (ty, reads) {
-            (rty::Type::Enum(_), FieldReads::Fields(fields)) => {
-                rty::domain_guard_of_read_fields::<_, chc::Formula<_>>(
-                    ty,
-                    var,
-                    defs,
-                    &|ctor, index| fields.contains(&(ctor.clone(), index)),
-                )
-            }
+        let read_fields = |ctor: &chc::DatatypeSymbol, index: usize| match reads {
+            FieldReads::Fields(fields) => fields.contains(&(ctor.clone(), index)),
+            FieldReads::Whole => true,
+        };
+        let read: Option<rty::ReadFields<'_>> = match (ty, reads) {
+            (rty::Type::Enum(_), FieldReads::Fields(_)) => Some(&read_fields),
             (rty::Type::Enum(_), FieldReads::Whole)
             | (
                 rty::Type::Int(_)
@@ -2487,9 +2491,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 | rty::Type::Tuple(_)
                 | rty::Type::Pointer(_)
                 | rty::Type::Seq(_),
-                _,
-            ) => rty::domain_guard::<_, chc::Formula<_>>(ty, var, defs),
-        }
+                FieldReads::Fields(_) | FieldReads::Whole,
+            ) => None,
+        };
+        rty::domain_guard_of_variable::<_, chc::Formula<_>>(ty, var, defs, uninhabited, read)
     }
 
     /// The body of a one-parameter closure as a term, with the parameter bound to a fresh

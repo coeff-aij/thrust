@@ -1674,13 +1674,17 @@ pub trait DomainGuard<V>: Sized {
     /// `forall k. 0 <= k < len(seq) => elem`, `elem` the guard of `seq[k]`, `k` the variable
     /// `var`; `None` where a quantifier cannot be stated.
     fn every_elem(var: chc::UserQuantifiedVarId, seq: chc::Term<V>, elem: Self) -> Option<Self>;
-    /// The atom of the predicate `pred` at `value`, where the guard of an outermost enum is stated
-    /// by the predicate defining it ([`EnumDefProvider::domain_guard_pred`]); `None` where it is
-    /// stated in place.
+    /// Whether the guard of an outermost enum is stated by the atom of the predicate defining it
+    /// ([`DomainGuard::by_pred`]); otherwise it is stated in place and no predicate is defined.
+    const STATED_BY_PREDICATE: bool;
+    /// The atom of the predicate `pred` at `value`, where [`Self::STATED_BY_PREDICATE`].
     fn by_pred(pred: chc::UserDefinedPred, value: chc::Term<V>) -> Option<Self>;
 }
 
 impl<V: Clone> DomainGuard<V> for chc::Term<V> {
+    /// A logic function's domain is stated in place.
+    const STATED_BY_PREDICATE: bool = false;
+
     fn bounds(bounds: IntRangeBounds<V>) -> Option<Self> {
         // `lower` is `x >= min` and `upper` is `x < end`.
         let lower = bounds.lower.and_then(|atom| {
@@ -1718,6 +1722,8 @@ impl<V: Clone> DomainGuard<V> for chc::Term<V> {
 }
 
 impl<V: Clone> DomainGuard<V> for chc::Formula<V> {
+    const STATED_BY_PREDICATE: bool = true;
+
     fn bounds(bounds: IntRangeBounds<V>) -> Option<Self> {
         bounds
             .lower
@@ -1766,13 +1772,38 @@ struct DomainCx<'a> {
     defs: &'a dyn EnumDefProvider,
     enclosing: Vec<EnumType<Closed>>,
     seq_depth: usize,
+    /// The variants without values at an instance though not in the enum's definition
+    /// ([`UninhabitedAtInstance`]).
+    uninhabited_at_instance: &'a UninhabitedAtInstance,
     /// The payload fields of the outermost enum whose facts are stated, by constructor and
-    /// index; every field when `None` ([`domain_guard_of_read_fields`]).
+    /// index; every field when `None` ([`domain_guard_of_variable`]).
     read_fields_of_outermost_enum: Option<ReadFields<'a>>,
 }
 
-/// Whether a payload field, by constructor and index, is read ([`domain_guard_of_read_fields`]).
-type ReadFields<'a> = &'a dyn Fn(&chc::DatatypeSymbol, usize) -> bool;
+/// The variants of enum types that have no values at the instance a type names, though their
+/// definition gives them values (`Result<u64, Infallible>`'s `Err`, whose model is `Err(())`): for
+/// each enum type, by variant, whether every instance of it in the type has no value of that
+/// variant. Read from rustc where the type is built ([`crate::refine::TypeBuilder`]); empty where
+/// it is not known.
+#[derive(Debug, Clone, Default)]
+pub struct UninhabitedAtInstance(pub Vec<(EnumType<Closed>, Vec<bool>)>);
+
+impl UninhabitedAtInstance {
+    fn variant(&self, enum_ty: &EnumType<Closed>, index: usize) -> bool {
+        let enum_ty = enum_ty.clone().strip_refinement();
+        self.0
+            .iter()
+            .find(|(ty, _)| *ty == enum_ty)
+            .is_some_and(|(_, variants)| variants.get(index).copied().unwrap_or(false))
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// Whether a payload field, by constructor and index, is read ([`domain_guard_of_variable`]).
+pub type ReadFields<'a> = &'a dyn Fn(&chc::DatatypeSymbol, usize) -> bool;
 
 /// The index variable of the guard of a sequence's elements at nesting `depth`
 /// ([`DomainGuard::every_elem`]). The identifiers are reserved, as [`seq_elem_var`]'s is.
@@ -1806,27 +1837,23 @@ where
     V: Clone,
     G: DomainGuard<V>,
 {
-    let mut cx = DomainCx {
-        defs,
-        enclosing: Vec::new(),
-        seq_depth: 0,
-        read_fields_of_outermost_enum: None,
-    };
-    domain_guard_within(ty, value, &mut cx)
+    domain_guard_of_variable(ty, value, defs, &UninhabitedAtInstance::default(), None)
 }
 
-/// [`domain_guard`] of a value of the enum type `ty` that a formula reads only through the
-/// payload fields `read` accepts (by constructor and index), its discriminant and its testers:
-/// the facts of the other fields are left out; the exclusion of each variant no value is of is
-/// kept. The formula holds at every value with this guard iff it holds at every value with the
-/// full guard (and has a witness with one iff with the other): a value with this guard becomes one
-/// with the full guard by replacing the unread fields, which the formula does not see, with
-/// values that have their facts.
-pub fn domain_guard_of_read_fields<V, G>(
+/// [`domain_guard`] of a variable a quantifier binds. It also excludes the variants without
+/// values at the instance its type names (`uninhabited`), as a quantifier in Verus or Creusot
+/// ranges over the values of the instantiated type. At an enum type that the formula reads only
+/// through the payload fields `read` accepts (by constructor and index), its discriminant and its
+/// testers, the facts of the other fields are left out; the exclusions are kept. The formula holds
+/// at every value with this guard iff it holds at every value with the full guard (and has a
+/// witness with one iff with the other): a value with this guard becomes one with the full guard by
+/// replacing the unread fields, which the formula does not see, with values that have their facts.
+pub fn domain_guard_of_variable<V, G>(
     ty: &Type<Closed>,
     value: chc::Term<V>,
     defs: &dyn EnumDefProvider,
-    read: ReadFields<'_>,
+    uninhabited: &UninhabitedAtInstance,
+    read: Option<ReadFields<'_>>,
 ) -> Option<G>
 where
     V: Clone,
@@ -1836,7 +1863,8 @@ where
         defs,
         enclosing: Vec::new(),
         seq_depth: 0,
-        read_fields_of_outermost_enum: Some(read),
+        uninhabited_at_instance: uninhabited,
+        read_fields_of_outermost_enum: read,
     };
     domain_guard_within(ty, value, &mut cx)
 }
@@ -1904,13 +1932,18 @@ where
     if cx.enclosing.contains(enum_ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
         return None;
     }
-    if cx.enclosing.is_empty() && cx.read_fields_of_outermost_enum.is_none() {
+    if G::STATED_BY_PREDICATE
+        && cx.enclosing.is_empty()
+        && cx.read_fields_of_outermost_enum.is_none()
+        && cx.uninhabited_at_instance.is_empty()
+    {
         let defs = cx.defs;
         let guard = || {
             let mut cx = DomainCx {
                 defs,
                 enclosing: Vec::new(),
                 seq_depth: 0,
+                uninhabited_at_instance: &UninhabitedAtInstance::default(),
                 read_fields_of_outermost_enum: None,
             };
             enum_domain_guard_in_place::<chc::TermVarIdx, chc::Formula<chc::TermVarIdx>>(
@@ -1948,10 +1981,10 @@ where
     let variants = enum_ty.variants(cx.defs);
     let single_variant = variants.len() == 1;
     let mut guard = None;
-    for variant in variants {
+    for (index, variant) in variants.into_iter().enumerate() {
         let discr = chc::Term::datatype_discr(enum_ty.symbol.clone(), value.clone());
         let is_other_variant = G::other_variant(discr, variant.discr.clone());
-        if variant.uninhabited {
+        if variant.uninhabited || cx.uninhabited_at_instance.variant(enum_ty, index) {
             guard = conj_guard(guard, Some(is_other_variant));
             continue;
         }
