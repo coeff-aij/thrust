@@ -386,7 +386,7 @@ impl VisitMut for ContextInjector<'_> {
     }
 
     fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
-        if is_block_contract(&mac.path) {
+        if crate::block_contract::is_block_contract(&mac.path) {
             self.inject_into_block_contract(mac);
             return;
         }
@@ -430,13 +430,6 @@ impl ContextInjector<'_> {
         mac.tokens = contract.to_arguments();
         mac.path = syn::parse_quote!(::thrust_macros::_block_contract_with_context);
     }
-}
-
-/// Whether `path` names `block_contract!`.
-fn is_block_contract(path: &syn::Path) -> bool {
-    path.segments
-        .last()
-        .is_some_and(|segment| segment.ident == "block_contract")
 }
 
 /// A reference to a labelled loop's ghost left in `mac`, a formula macro, once the loops around

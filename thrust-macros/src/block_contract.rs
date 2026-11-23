@@ -73,6 +73,13 @@ impl BlockContract {
     }
 }
 
+/// Whether `path` names `block_contract!`.
+pub fn is_block_contract(path: &syn::Path) -> bool {
+    path.segments
+        .last()
+        .is_some_and(|segment| segment.ident == "block_contract")
+}
+
 /// Expands the form, with the markers carrying the host function's context when
 /// `with_context` (the injector put the context into both formulas).
 pub fn expand(input: proc_macro::TokenStream, with_context: bool) -> proc_macro::TokenStream {
