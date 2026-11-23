@@ -1552,13 +1552,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
                         let sort_args: Vec<_> =
                             rty_args.iter().map(|rty| rty.ty.to_sort()).collect();
-                        let ty = rty::EnumType::new(enum_def.name.clone(), rty_args).into();
+                        let ty: rty::Type<_> =
+                            rty::EnumType::new(enum_def.name.clone(), rty_args).into();
 
                         let mut builder = PlaceTypeBuilder::default();
                         let mut field_terms = Vec::new();
                         for field_ty in field_tys {
                             let (_, field_term) = builder.subsume(field_ty);
                             field_terms.push(field_term);
+                        }
+                        if variant_def.uninhabited {
+                            // The datatype has no constructor for the variant: no value of its
+                            // fields reaches here.
+                            builder.push_formula(chc::Atom::bottom());
+                            let value = builder.push_existential(ty.to_sort());
+                            return builder.build(ty, chc::Term::var(value.into()));
                         }
                         builder.build(
                             ty,

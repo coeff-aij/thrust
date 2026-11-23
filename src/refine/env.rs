@@ -74,6 +74,19 @@ struct FlowBindingVariant {
     pub fields: IndexVec<FieldIdx, TempVarIdx>,
 }
 
+/// The field temporaries of the variants the datatype has a constructor for, in order: the
+/// arguments of the matcher predicate besides the value ([`rty::EnumDatatypeDef::field_tys`]).
+fn declared_variant_fields<'a>(
+    def: &'a rty::EnumDatatypeDef,
+    variants: &'a IndexVec<VariantIdx, FlowBindingVariant>,
+) -> impl Iterator<Item = TempVarIdx> + 'a {
+    def.variants
+        .iter()
+        .zip(variants)
+        .filter(|(variant, _)| !variant.uninhabited)
+        .flat_map(|(_, fields)| fields.fields.iter().copied())
+}
+
 #[derive(Debug, Clone)]
 enum FlowBinding {
     Mut(TempVarIdx, TempVarIdx),
@@ -530,6 +543,12 @@ impl PlaceType {
             .push_conj(rty::int_range_type_facts(&rty.ty, &enum_defs));
         let sort = chc::DatatypeSort::new(def.name.clone(), inner_ty.arg_sorts());
         let rty = rty.boxed();
+        if variant.uninhabited {
+            // The datatype has no constructor for the variant: no value reaches the place.
+            let (ty, field_ex_var) = builder.subsume_rty(rty);
+            builder.push_formula(chc::Atom::bottom());
+            return builder.build(ty, chc::Term::var(field_ex_var.into()));
+        }
         let field = chc::Term::datatype_selector(
             sort.clone(),
             variant.name.clone(),
@@ -1064,10 +1083,8 @@ where
                 rty::RefinedTypeVar::Existential(ev) => PlaceTypeVar::Existential(ev),
             }),
         );
-        let mut pred_args: Vec<_> = variants
-            .iter()
-            .flat_map(|v| &v.fields)
-            .map(|&x| {
+        let mut pred_args: Vec<_> = declared_variant_fields(&def, &variants)
+            .map(|x| {
                 let ty = self.var_type(x.into());
                 assumption.body.push_conj(
                     ty.formula
@@ -1338,10 +1355,9 @@ where
                         chc::Term::var(value.var.into()),
                     );
                 }
-                let field_tys: Vec<_> = variants
-                    .iter()
-                    .flat_map(|v| &v.fields)
-                    .map(|&v| self.var_type(v.into()))
+                let def = self.enum_defs.enum_def(sym);
+                let field_tys: Vec<_> = declared_variant_fields(&def, variants)
+                    .map(|v| self.var_type(v.into()))
                     .collect();
 
                 let enum_ty = rty::EnumType::new(sym.clone(), args.clone());
@@ -1423,7 +1439,12 @@ where
                 let def = self.enum_defs.enum_def(sym);
                 let args = rty::EnumType::new(sym.clone(), args.clone()).arg_sorts();
                 let mut term = None;
-                for (variant, fields) in def.variants.iter().zip(variants).rev() {
+                let declared = def
+                    .variants
+                    .iter()
+                    .zip(variants)
+                    .filter(|(v, _)| !v.uninhabited);
+                for (variant, fields) in declared.rev() {
                     let fields = fields
                         .fields
                         .iter()
@@ -1445,7 +1466,12 @@ where
                         ),
                     });
                 }
-                term.expect("borrow through an inhabited enum")
+                term.unwrap_or_else(|| {
+                    let (ctor, _) = def
+                        .ctor_without_rust_value()
+                        .expect("an enum with a declared variant");
+                    chc::Term::datatype_ctor(sym.clone(), args, ctor, Vec::new())
+                })
             }
             None => self
                 .var_type(var)

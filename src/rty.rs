@@ -587,12 +587,12 @@ where
     }
     enclosing.push(ety.clone());
     let mut acc = chc::Formula::top();
-    for variant in parts.defs.enum_def(&ety.symbol).variants {
+    for variant in parts.defs.enum_def(&ety.symbol).declared_variants() {
         let field_rtys: Vec<_> = variant
             .field_tys
-            .into_iter()
+            .iter()
             .map(|field_ty| {
-                let mut field_rty = field_ty.vacuous();
+                let mut field_rty = field_ty.clone().vacuous();
                 field_rty.instantiate_ty_params(ety.args.clone());
                 field_rty
             })
@@ -995,7 +995,8 @@ pub struct EnumVariantDef {
     /// Whether no value is of the variant, which a `match` may then leave out: a field's type has
     /// no value at every instance of the enum (`Infallible`, `!`, an enum without variants), as
     /// rustc decides it. A model may give such a type a value (`Infallible` is `()`), so this is
-    /// read from the Rust type.
+    /// read from the Rust type. The datatype has no constructor for such a variant
+    /// ([`EnumDatatypeDef::declared_variants`]), so no value of its sort is of it at any depth.
     pub uninhabited: bool,
 }
 
@@ -1008,8 +1009,33 @@ pub struct EnumDatatypeDef {
 }
 
 impl EnumDatatypeDef {
+    /// The variants the datatype has a constructor for: those some value is of
+    /// ([`EnumVariantDef::uninhabited`]), in order.
+    pub fn declared_variants(&self) -> impl Iterator<Item = &EnumVariantDef> {
+        self.variants.iter().filter(|v| !v.uninhabited)
+    }
+
+    /// The fields of the [`Self::declared_variants`], in order: the arguments of the matcher
+    /// predicate besides the value.
     pub fn field_tys(&self) -> impl Iterator<Item = &RefinedType<Closed>> {
-        self.variants.iter().flat_map(|v| &v.field_tys)
+        self.declared_variants().flat_map(|v| &v.field_tys)
+    }
+
+    /// The constructor of an enum without values, one none of whose variants has values (an enum
+    /// without variants among them), which stands for no Rust value: a datatype needs a
+    /// constructor, as Creusot declares an enum without variants as `unit`. Its discriminant is no
+    /// variant's. `None` when a variant has values.
+    pub fn ctor_without_rust_value(&self) -> Option<(chc::DatatypeSymbol, BigInt)> {
+        if self.declared_variants().next().is_some() {
+            return None;
+        }
+        let discr = self
+            .variants
+            .iter()
+            .map(|v| &v.discr + 1)
+            .max()
+            .unwrap_or_default();
+        Some((self.name.member("no_value"), discr))
     }
 }
 
@@ -1075,19 +1101,19 @@ pub struct EnumVariant {
     pub ctor: chc::DatatypeSymbol,
     pub discr: BigInt,
     pub field_tys: Vec<Type<Closed>>,
-    /// [`EnumVariantDef::uninhabited`].
-    pub uninhabited: bool,
 }
 
 impl EnumType<Closed> {
+    /// The variants of the type that the datatype has a constructor for
+    /// ([`EnumDatatypeDef::declared_variants`]).
     pub fn variants(&self, defs: &dyn EnumDefProvider) -> Vec<EnumVariant> {
         defs.enum_def(&self.symbol)
             .variants
             .into_iter()
+            .filter(|variant| !variant.uninhabited)
             .map(|variant| EnumVariant {
                 ctor: variant.name,
                 discr: variant.discr,
-                uninhabited: variant.uninhabited,
                 field_tys: variant
                     .field_tys
                     .into_iter()
@@ -1798,12 +1824,11 @@ fn seq_guard_var(depth: usize) -> chc::UserQuantifiedVarId {
 /// have ([`int_range_bounds`]: `0 <=` of an unsigned one in every mode, its range when
 /// [`int_range`] is in use), through tuples, pointers, the payloads of enums and, in a formula, the
 /// elements of sequences ([`DomainGuard::every_elem`], stated only when the elements have a
-/// guard), and of an enum the exclusion of each variant no Rust value is
-/// ([`EnumVariantDef::uninhabited`]), in every mode; `None` when there are none. As a term it is
-/// quantifier-free. A variant's payload is read by its selectors under its discriminant,
-/// `discr(v) = d => guard(sel(v))`, and a variant no Rust value is is `discr(v) != d`. An enum met
-/// again inside its own payload, or nested past [`ENUM_NESTING_LIMIT`], adds nothing, as
-/// [`enum_payload_facts`] does.
+/// guard); `None` when there are none. As a term it is quantifier-free. A variant's payload is read
+/// by its selectors under its discriminant, `discr(v) = d => guard(sel(v))`. An enum met again
+/// inside its own payload, or nested past [`ENUM_NESTING_LIMIT`], adds nothing, as
+/// [`enum_payload_facts`] does. A variant no Rust value is of needs no guard: the datatype has no
+/// constructor for it ([`EnumVariantDef::uninhabited`]).
 ///
 /// It is the domain of the variable an annotation's `forall` or `exists` binds, as a quantifier
 /// in Verus or Creusot ranges over the values of its type, and of the arguments a logic function's
@@ -1830,8 +1855,7 @@ where
 
 /// [`domain_guard`] of a value of the enum type `ty` that a formula reads only through the
 /// payload fields `read` accepts (by constructor and index), its discriminant and its testers:
-/// the facts of the other fields are left out; the exclusion of each variant no value is of is
-/// kept. The formula holds at every value with this guard iff it holds at every value with the
+/// the facts of the other fields are left out. The formula holds at every value with this guard iff it holds at every value with the
 /// full guard (and has a witness with one iff with the other): a value with this guard becomes one
 /// with the full guard by replacing the unread fields, which the formula does not see, with
 /// values that have their facts.
@@ -1902,9 +1926,9 @@ where
     }
 }
 
-/// [`domain_guard`] of a value of the enum type `enum_ty`: for each variant, `discr(v) != d` when
-/// no Rust value is of it, and `discr(v) = d => guards(sel(v))` when its fields have guards, the
-/// test left out when the variant is the only one.
+/// [`domain_guard`] of a value of the enum type `enum_ty`: for each variant,
+/// `discr(v) = d => guards(sel(v))` when its fields have guards, the test left out when the
+/// variant is the only one.
 fn enum_domain_guard<V, G>(
     enum_ty: &EnumType<Closed>,
     value: chc::Term<V>,
@@ -1963,10 +1987,6 @@ where
     for variant in variants {
         let discr = chc::Term::datatype_discr(enum_ty.symbol.clone(), value.clone());
         let is_other_variant = G::other_variant(discr, variant.discr.clone());
-        if variant.uninhabited {
-            guard = conj_guard(guard, Some(is_other_variant));
-            continue;
-        }
         let mut fields = None;
         for (index, field_ty) in variant.field_tys.iter().enumerate() {
             if read_fields.is_some_and(|read| !read(&variant.ctor, index)) {
