@@ -1045,22 +1045,38 @@ impl EnumDatatypeDef {
 pub trait EnumDefProvider {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> EnumDatatypeDef;
 
-    /// Whether the facts of every enum's payloads are stated by the predicate defining them
-    /// ([`Self::register_payload_facts_pred`]) wherever they are stated, rather than in place.
+    /// Whether the solver reads the predicates the clauses state the facts of an outermost enum
+    /// by ([`Self::register_payload_facts_pred`], [`Self::register_domain_guard_pred`]); where it
+    /// does not, they are stated in place, and a predicate only where no finite formula states
+    /// them.
     fn type_facts_by_predicate(&self) -> bool {
         false
     }
 
-    /// Registers, on first use, the predicate that the facts of the payloads of a value of `ty`
-    /// (its argument, variable 0) are, defined as `facts`; `None` where the provider defines
-    /// none. `facts` may apply this predicate and those of other enums, as a recursive enum's
-    /// payload holds the enum, so the provider names the predicate before it builds the body:
-    /// the definitions recurse as the types do. This is the one method of the provider with an
-    /// effect: the definition goes into the query.
+    /// Registers, on first use, a predicate defined as `facts`, the facts of the payloads of a
+    /// value of `ty` (its argument, variable 0), so that the clauses that assume them of a binding
+    /// state them by one atom rather than each repeating them; `None` where they are stated in
+    /// place. This is the one method of the provider with an effect: the definition goes into the
+    /// query.
     fn register_payload_facts_pred(
         &self,
         _ty: &EnumType<Closed>,
         _facts: &dyn Fn() -> chc::Formula<chc::TermVarIdx>,
+    ) -> Option<chc::UserDefinedPred> {
+        None
+    }
+
+    /// Registers, on first use, a predicate defined as `guard`, the domain guard of a value of
+    /// `ty` (its argument, variable 0; [`domain_guard`]), so that the quantified variables of the
+    /// type are guarded by one atom rather than each repeating it; `None` where it is stated in
+    /// place, and where `guard` gives none. `guard` may apply this predicate, where the type holds
+    /// itself in its payloads, and the predicates of other enums, so the provider names the
+    /// predicate before it builds the body. Like [`Self::register_payload_facts_pred`], the
+    /// definition goes into the query.
+    fn register_domain_guard_pred(
+        &self,
+        _ty: &EnumType<Closed>,
+        _guard: &dyn Fn() -> Option<chc::Formula<chc::TermVarIdx>>,
     ) -> Option<chc::UserDefinedPred> {
         None
     }
@@ -1081,6 +1097,14 @@ impl<T: EnumDefProvider> EnumDefProvider for &T {
         facts: &dyn Fn() -> chc::Formula<chc::TermVarIdx>,
     ) -> Option<chc::UserDefinedPred> {
         <T as EnumDefProvider>::register_payload_facts_pred(self, ty, facts)
+    }
+
+    fn register_domain_guard_pred(
+        &self,
+        ty: &EnumType<Closed>,
+        guard: &dyn Fn() -> Option<chc::Formula<chc::TermVarIdx>>,
+    ) -> Option<chc::UserDefinedPred> {
+        <T as EnumDefProvider>::register_domain_guard_pred(self, ty, guard)
     }
 }
 
@@ -1504,11 +1528,11 @@ pub type QuantifiedVars = Vec<(chc::UserQuantifiedVarId, chc::Sort)>;
 ///
 /// A binding is assumed to have these facts, so a variable that stands for a binding of a proof,
 /// such as a law's, ranges over them: the law's quantifier gets them as a premise. Their
-/// existentials (an enum's payloads stated in place) are variables `fresh` makes, returned with
-/// their sorts to be quantified with the law's own, since `forall x. (exists f. p) => q` is
-/// `forall x f. p => q`. A premise that left out facts the proof assumes would let the law hold
-/// of values the proof never saw, so an enum whose facts no finite formula states in place gets
-/// the atom of its predicate ([`FactsCx::predicate_where_cut`]).
+/// existentials (an enum's payloads) are variables `fresh` makes, returned with their sorts to be
+/// quantified with the law's own, since `forall x. (exists f. p) => q` is
+/// `forall x f. p => q`. A premise that left out facts the proof assumes would let the law hold of
+/// values no proof sees, so an enum met again inside its own payload gets the atom of its
+/// domain-guard predicate ([`FactsCx::predicate_where_cut`]).
 pub fn int_range_type_formula<FV, W>(
     ty: &Type<FV>,
     value: chc::Term<W>,
@@ -1562,7 +1586,9 @@ where
         enclosing: cx.enclosing.clone(),
         unsupported: None,
         seq_depth: cx.seq_depth + 1,
-        by_predicate: cx.by_predicate,
+        // The predicate's definition is the checked form these facts take, so an assumed
+        // element states it by the atom too.
+        payload_facts_by_pred: cx.payload_facts_by_pred && cx.use_ == FactsUse::Assumed,
         predicate_where_cut: cx.predicate_where_cut,
     };
     let facts = RefinedType::unrefined(elem.clone()).facts(&mut elem_cx);
@@ -1617,10 +1643,36 @@ enum FactsUse {
     Checked,
 }
 
-/// The depth of enum types, nested through their payloads, to which facts are stated in place
-/// where they are not stated by predicates ([`FactsCx::by_predicate`]); also the bound of the
-/// refinements of a template's enum arguments ([`inner_refinements_formula`]).
+/// The enum types nested more deeply than this, through their payloads, are not followed by a
+/// template's refinements ([`inner_refinements_formula`]) and a resolution
+/// ([`Type::resolution`]): the bound of a type whose definition recurses at other arguments
+/// (`enum N<T> { A(Box<N<(T, T)>>) }`).
 const ENUM_NESTING_LIMIT: usize = 8;
+
+/// The number of times one enum, at different arguments, may enclose a position through its
+/// payloads before the type is taken for one whose definition holds itself at other arguments
+/// ([`meets_itself`]); a type that nests an enum in its own arguments (`Option<Option<u8>>`)
+/// encloses it once per nesting.
+const SAME_ENUM_NESTING_LIMIT: usize = 32;
+
+/// Whether the enum type `ty`, at a position its payloads' enclosing enum types `enclosing`
+/// enclose, is met again inside its own payload, where the facts stated in place stop: a finite
+/// formula cannot follow it. A type nested through other types ends, since a crate has finitely
+/// many; a definition that holds itself at other arguments (`enum N<T> { A(Box<N<(T, T)>>) }`)
+/// would not, and is rejected.
+fn meets_itself(enclosing: &[EnumType<Closed>], ty: &EnumType<Closed>) -> bool {
+    let same_enum = enclosing
+        .iter()
+        .filter(|outer| outer.symbol == ty.symbol)
+        .count();
+    assert!(
+        same_enum < SAME_ENUM_NESTING_LIMIT,
+        "the facts of a type nest the enum {} {SAME_ENUM_NESTING_LIMIT} deep: an enum that \
+         holds itself at other arguments is not supported",
+        ty.symbol,
+    );
+    enclosing.contains(ty)
+}
 
 /// What a traversal stating the facts of a type is at: how the facts are used, where the
 /// definitions of enums come from (none: their payloads get no facts) and the enum types whose
@@ -1633,13 +1685,14 @@ struct FactsCx<'a> {
     unsupported: Option<Type<Closed>>,
     /// The number of sequences whose elements enclose the position ([`seq_elem_facts`]).
     seq_depth: usize,
-    /// Whether the payload facts of every enum are the atom of the predicate defining them
-    /// ([`payload_facts_atom`]): where the solver reads the predicates
-    /// ([`EnumDefProvider::type_facts_by_predicate`]), and in a predicate's own definition.
-    by_predicate: bool,
-    /// Whether an enum stated in place that is met again inside its own payload, or nested past
-    /// [`ENUM_NESTING_LIMIT`], gets the atom of its predicate rather than no facts: where leaving
-    /// facts out would assume more, as in a law's premise ([`int_range_type_formula`]).
+    /// Whether the payload facts of an outermost enum are stated by the atom of the predicate
+    /// defining them ([`payload_facts_atom`]), as a binding's are in a clause, also those of its
+    /// sequences' elements.
+    payload_facts_by_pred: bool,
+    /// Whether an enum met again inside its own payload gets the atom of its domain-guard
+    /// predicate ([`domain_guard_pred`]), which follows it at every depth, rather than no facts:
+    /// where leaving facts out would assume more, as in a law's premise
+    /// ([`int_range_type_formula`]).
     predicate_where_cut: bool,
 }
 
@@ -1651,7 +1704,7 @@ impl<'a> FactsCx<'a> {
             enclosing: Vec::new(),
             unsupported: None,
             seq_depth: 0,
-            by_predicate: defs.is_some_and(|defs| defs.type_facts_by_predicate()),
+            payload_facts_by_pred: false,
             predicate_where_cut: false,
         }
     }
@@ -1702,8 +1755,9 @@ pub trait DomainGuard<V>: Sized {
     /// `forall k. 0 <= k < len(seq) => elem`, `elem` the guard of `seq[k]`, `k` the variable
     /// `var`; `None` where a quantifier cannot be stated.
     fn every_elem(var: chc::UserQuantifiedVarId, seq: chc::Term<V>, elem: Self) -> Option<Self>;
-    /// The guard of an enum at `value` as the atom of the predicate defining it, which `register`
-    /// registers; `None` where the guard is stated in place, and then no predicate is registered.
+    /// The guard of an outermost enum at `value` as the atom of the predicate defining it, which
+    /// `register` registers; `None` where the guard is stated in place, and then no predicate is
+    /// registered.
     fn by_pred(
         register: impl FnOnce() -> Option<chc::UserDefinedPred>,
         value: chc::Term<V>,
@@ -1823,13 +1877,12 @@ fn seq_guard_var(depth: usize) -> chc::UserQuantifiedVarId {
 /// [`int_range`] is in use), through tuples, pointers, the payloads of enums and, in a formula, the
 /// elements of sequences ([`DomainGuard::every_elem`], stated only when the elements have a
 /// guard); `None` when there are none. As a term it is quantifier-free. A variant's payload is read
-/// by its selectors under its discriminant, `discr(v) = d => guard(sel(v))`. As a formula, the
-/// guard of an enum is the atom of its payload-facts predicate ([`payload_facts_pred`]) where the
-/// solver reads the predicates ([`EnumDefProvider::type_facts_by_predicate`]), and where no finite
-/// formula states it in place: met again inside its own payload, or nested past
-/// [`ENUM_NESTING_LIMIT`]. As a term, such an enum adds nothing: the domain of a logic function's
-/// definition is then larger, which only adds to what its check proves. A variant no Rust value is
-/// of needs no guard: the datatype has no constructor for it ([`EnumVariantDef::uninhabited`]).
+/// by its selectors under its discriminant, `discr(v) = d => guard(sel(v))`. An enum met again
+/// inside its own payload is, as a formula, the atom of its predicate ([`domain_guard_pred`]),
+/// which applies itself there and so follows the payloads at every depth; as a term it adds
+/// nothing: the domain of a logic function's definition is then larger, which only adds to what
+/// its check proves. A variant no Rust value is of needs no guard: the datatype has no
+/// constructor for it ([`EnumVariantDef::uninhabited`]).
 ///
 /// It is the domain of the variable an annotation's `forall` or `exists` binds, as a quantifier
 /// in Verus or Creusot ranges over the values of its type, and of the arguments a logic function's
@@ -1927,9 +1980,9 @@ where
     }
 }
 
-/// [`domain_guard`] of a value of the enum type `enum_ty`: the atom of its predicate, or for each
-/// variant, `discr(v) = d => guards(sel(v))` when its fields have guards, the test left out when
-/// the variant is the only one. The outermost enum whose read fields are given is stated in place.
+/// [`domain_guard`] of a value of the enum type `enum_ty`: for each variant,
+/// `discr(v) = d => guards(sel(v))` when its fields have guards, the test left out when the
+/// variant is the only one.
 fn enum_domain_guard<V, G>(
     enum_ty: &EnumType<Closed>,
     value: chc::Term<V>,
@@ -1939,10 +1992,13 @@ where
     V: Clone,
     G: DomainGuard<V>,
 {
-    let cut = cx.enclosing.contains(enum_ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT;
-    let some_fields_read = cx.enclosing.is_empty() && cx.read_fields_of_outermost_enum.is_some();
-    if !some_fields_read && (cut || cx.defs.type_facts_by_predicate()) {
-        let register = || payload_facts_pred(enum_ty, cx.defs);
+    let cut = meets_itself(&cx.enclosing, enum_ty);
+    let outermost = cx.enclosing.is_empty()
+        && cx.read_fields_of_outermost_enum.is_none()
+        && cx.defs.type_facts_by_predicate();
+    if cut || outermost {
+        let defs = cx.defs;
+        let register = || domain_guard_pred(enum_ty, defs, cut);
         if let Some(atom) = G::by_pred(register, value.clone()) {
             return Some(atom);
         }
@@ -1951,6 +2007,36 @@ where
         return None;
     }
     enum_domain_guard_in_place(enum_ty, value, cx)
+}
+
+/// The predicate the domain guard of a value of the enum type `ty` is
+/// ([`EnumDefProvider::register_domain_guard_pred`]), defined in place
+/// ([`enum_domain_guard_in_place`]), where an enum met again inside its own payload is the atom of
+/// its own predicate; `None` where `defs` defines none, or the guard is none. Met `inside_itself`,
+/// a type whose payloads hold no integer with facts gets none, so that the guard of a recursive enum
+/// without such integers stays none.
+fn domain_guard_pred(
+    ty: &EnumType<Closed>,
+    defs: &dyn EnumDefProvider,
+    inside_itself: bool,
+) -> Option<chc::UserDefinedPred> {
+    if inside_itself && !has_range_facts(&Type::Enum(ty.clone()), defs, &mut Vec::new()) {
+        return None;
+    }
+    let guard = || {
+        let mut cx = DomainCx {
+            defs,
+            enclosing: Vec::new(),
+            seq_depth: 0,
+            read_fields_of_outermost_enum: None,
+        };
+        enum_domain_guard_in_place::<chc::TermVarIdx, chc::Formula<chc::TermVarIdx>>(
+            ty,
+            chc::Term::var(chc::TermVarIdx::from(0usize)),
+            &mut cx,
+        )
+    };
+    defs.register_domain_guard_pred(ty, &guard)
 }
 
 /// [`enum_domain_guard`] stated in place, without the predicate of the enum.
@@ -2118,45 +2204,39 @@ fn enum_value<V: Clone>(
 
 /// The facts of the payloads of a value of the enum type `ty` when `cx` has the definitions, for
 /// each variant whose fields have facts (`0 <=` of an unsigned integer in every mode, its range
-/// when [`int_range_mode`] is on). Where `cx` states them by predicates
-/// ([`FactsCx::by_predicate`]), they are the atom of the enum's predicate ([`payload_facts_pred`]).
-/// In place, assumed:
+/// when [`int_range_mode`] is on). Assumed:
 /// `exists f. discr(v) = d => v = C(f) && facts(f)`, quantifier-free in a clause body; where the
 /// variant is the value's, `f` is its payload, and elsewhere the implication holds for any `f`.
 /// Checked: `is_C(v) => facts(sel_C(v))`, by selectors. Both say of the value's payload what
 /// the facts of its type say, and nothing of the other variants.
 ///
-/// In place, an enum type inside its own payload (the same type, as a recursive definition makes
-/// it), or nested past [`ENUM_NESTING_LIMIT`], is one a finite formula cannot follow. Assumed, it
-/// gets no facts, which assumes less; in a premise, the atom of its predicate
-/// ([`FactsCx::predicate_where_cut`]); checked, its check is an error ([`type_fact_checks`]) when
-/// it holds integers with facts, so no fact is assumed that is not checked.
+/// An enum type inside its own payload (the same type, as a recursive definition makes it) gets no
+/// facts, since a finite formula cannot follow it ([`meets_itself`]), except the atom of its
+/// domain-guard predicate in a premise ([`FactsCx::predicate_where_cut`]). Its check is an error
+/// ([`type_fact_checks`]) when it holds integers with facts, so no fact is assumed that is not
+/// checked.
 fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Closed> {
     let Some(defs) = cx.defs else {
         return Refinement::top();
     };
-    let cut = cx.enclosing.contains(ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT;
-    if cx.by_predicate || (cut && cx.predicate_where_cut) {
-        if let Some(atom) = payload_facts_atom(ty, defs) {
-            return atom;
+    if meets_itself(&cx.enclosing, ty) {
+        if cx.predicate_where_cut {
+            if let Some(pred) = domain_guard_pred(ty, defs, true) {
+                let atom = chc::Atom::new(pred.into(), vec![chc::Term::var(RefinedTypeVar::Value)]);
+                return atom.into();
+            }
         }
-    }
-    if cut {
         let enum_ty = Type::Enum(ty.clone());
         if cx.use_ == FactsUse::Checked && has_range_facts(&enum_ty, defs, &mut Vec::new()) {
             cx.unsupported.get_or_insert(enum_ty);
         }
         return Refinement::top();
     }
-    enum_payload_facts_in_place(ty, defs, cx)
-}
-
-/// [`enum_payload_facts`] stated in place, for each variant.
-fn enum_payload_facts_in_place(
-    ty: &EnumType<Closed>,
-    defs: &dyn EnumDefProvider,
-    cx: &mut FactsCx,
-) -> Refinement<Closed> {
+    if cx.payload_facts_by_pred && cx.enclosing.is_empty() {
+        if let Some(atom) = payload_facts_atom(ty, defs) {
+            return atom;
+        }
+    }
     cx.enclosing.push(ty.clone());
     let mut facts = Refinement::top();
     for variant in ty.variants(defs) {
@@ -2170,27 +2250,22 @@ fn enum_payload_facts_in_place(
     facts
 }
 
-/// The predicate the payload facts of a value of the enum type `ty` are, which `defs` registers
-/// ([`EnumDefProvider::register_payload_facts_pred`]); `None` where `defs` defines none, and when
-/// the payloads have no facts. Its definition is their checked form, `is_C(v) => facts(sel_C(v))`
-/// for each variant, which says the same as the assumed form
-/// `exists f. discr(v) = d => v = C(f) && facts(f)`, since `discr(v) = d` is `is_C(v)` and
-/// `v = C(f)` makes `f` the payload `sel_C(v)`, and the same as the domain guard
-/// `discr(v) != d || guard(sel(v))` ([`domain_guard`]). An enum in a payload is the atom of its own
-/// predicate, this one's included, so the definitions recurse as the types do and state the facts
-/// at every depth, as Creusot's type invariant of an enum applies the invariants of its fields
-/// (`structural_invariant` in `creusot/src/backend/ty_inv.rs`).
-fn payload_facts_pred(
+/// The assumed payload facts of a value of the outermost enum type `ty` as one atom of the
+/// predicate `defs` defines for them ([`EnumDefProvider::register_payload_facts_pred`]): its definition is
+/// their checked form, `is_C(v) => facts(sel_C(v))` for each variant, which says the same as the
+/// assumed form `exists f. discr(v) = d => v = C(f) && facts(f)`, since `discr(v) = d` is `is_C(v)`
+/// and `v = C(f)` makes `f` the payload `sel_C(v)`. `None` where `defs` defines none; top when the
+/// payloads have no facts.
+fn payload_facts_atom(
     ty: &EnumType<Closed>,
     defs: &dyn EnumDefProvider,
-) -> Option<chc::UserDefinedPred> {
+) -> Option<Refinement<Closed>> {
     if !has_range_facts(&Type::Enum(ty.clone()), defs, &mut Vec::new()) {
-        return None;
+        return Some(Refinement::top());
     }
     let facts = || {
         let mut cx = FactsCx::new(FactsUse::Checked, Some(defs));
-        cx.by_predicate = true;
-        enum_payload_facts_in_place(ty, defs, &mut cx)
+        enum_payload_facts(ty, &mut cx)
             .body
             .into_formula()
             .map_var(|v| match v {
@@ -2199,20 +2274,7 @@ fn payload_facts_pred(
                 RefinedTypeVar::Free(v) => match v {},
             })
     };
-    defs.register_payload_facts_pred(ty, &facts)
-}
-
-/// The payload facts of a value of the enum type `ty` as the atom of its predicate
-/// ([`payload_facts_pred`]); top when the payloads have no facts, `None` where `defs` defines no
-/// predicate.
-fn payload_facts_atom(
-    ty: &EnumType<Closed>,
-    defs: &dyn EnumDefProvider,
-) -> Option<Refinement<Closed>> {
-    if !has_range_facts(&Type::Enum(ty.clone()), defs, &mut Vec::new()) {
-        return Some(Refinement::top());
-    }
-    let pred = payload_facts_pred(ty, defs)?;
+    let pred = defs.register_payload_facts_pred(ty, &facts)?;
     let atom = chc::Atom::new(pred.into(), vec![chc::Term::var(RefinedTypeVar::Value)]);
     Some(atom.into())
 }
@@ -3376,13 +3438,25 @@ impl<FV> RefinedType<FV> {
     }
 
     /// [`Self::formula`] with the facts of the payloads of enums, whose definitions `defs` gives
-    /// (none: as [`Self::formula`]), stated by the predicates defining them where `defs` states
-    /// them so ([`EnumDefProvider::type_facts_by_predicate`]).
+    /// (none: as [`Self::formula`]).
     pub fn formula_with(&self, defs: Option<&dyn EnumDefProvider>) -> Refinement<FV>
     where
         FV: chc::Var,
     {
         self.facts(&mut FactsCx::new(FactsUse::Assumed, defs))
+    }
+
+    /// [`Self::formula_with`] as the facts of a binding in a clause: the payload facts of each
+    /// outermost enum are the atom of the predicate `defs` defines for them, where it defines one
+    /// ([`EnumDefProvider::register_payload_facts_pred`]), which says the same once per enum type rather
+    /// than once per clause and binding.
+    pub fn binding_facts(&self, defs: &dyn EnumDefProvider) -> Refinement<FV>
+    where
+        FV: chc::Var,
+    {
+        let mut cx = FactsCx::new(FactsUse::Assumed, Some(defs));
+        cx.payload_facts_by_pred = defs.type_facts_by_predicate();
+        self.facts(&mut cx)
     }
 
     /// The facts of a value of this type as `cx` states them. Both uses traverse the type alike and
