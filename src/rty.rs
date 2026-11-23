@@ -1985,8 +1985,6 @@ where
     let single_variant = variants.len() == 1;
     let mut guard = None;
     for variant in variants {
-        let discr = chc::Term::datatype_discr(enum_ty.symbol.clone(), value.clone());
-        let is_other_variant = G::other_variant(discr, variant.discr.clone());
         let mut fields = None;
         for (index, field_ty) in variant.field_tys.iter().enumerate() {
             if read_fields.is_some_and(|read| !read(&variant.ctor, index)) {
@@ -2004,7 +2002,10 @@ where
         let payload = if single_variant {
             fields
         } else {
-            fields.map(|fields| is_other_variant.or(fields))
+            fields.map(|fields| {
+                let discr = chc::Term::datatype_discr(enum_ty.symbol.clone(), value.clone());
+                G::other_variant(discr, variant.discr.clone()).or(fields)
+            })
         };
         guard = conj_guard(guard, payload);
     }
