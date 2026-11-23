@@ -539,7 +539,6 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             let assignments_before = thrust_macros::ghost!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>| -> IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>> {
                 assignments
             });
-            #[cfg(not(thrust_eligibility_fail))]
             thrust_macros::block_contract!(
                 requires(
                     |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
@@ -549,30 +548,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                 ensures(
                     |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, value: SavedLocalEligibility<VariantIdx, FieldIdx>,
                      assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                    assignments.len() == assignments_before.len()
-                    && forall(|l: USize| 0 <= l && l < assignments.len() && <LocalIdx as Idx>::index_is(local, l)
-                        ==> assignments[l] == value)
-                    && forall(|l: USize| 0 <= l && l < assignments.len() && !<LocalIdx as Idx>::index_is(local, l)
-                        ==> assignments[l] == assignments_before[l])
-                ),
-                {
-                    assignments[local] = value;
-                }
-            );
-            // The fail twin of the eligibility root sets this cfg: the write leaves the other
-            // locals as they are, so a contract that every local gets `value` is refuted.
-            #[cfg(thrust_eligibility_fail)]
-            thrust_macros::block_contract!(
-                requires(
-                    |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                    assignments_before == assignments
-                    && forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < assignments.len())
-                ),
-                ensures(
-                    |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, value: SavedLocalEligibility<VariantIdx, FieldIdx>,
-                     assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                    assignments.len() == assignments_before.len()
-                    && forall(|l: USize| 0 <= l && l < assignments.len() ==> assignments[l] == value)
+                    written_at::<VariantIdx, FieldIdx, LocalIdx>(assignments, local, value, assignments_before)
                 ),
                 {
                     assignments[local] = value;
@@ -582,6 +558,33 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     }
 
     (ineligible_locals, assignments)
+}
+
+/// What the last loop's write to `assignments` gives: `value` at `local`, every other entry
+/// kept. The fail root eligibility.rs (`thrust_eligibility_fail`) defines it as `value` at every
+/// entry, which the write refutes.
+#[cfg(not(thrust_eligibility_fail))]
+#[thrust_macros::predicate]
+fn written_at<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
+    assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    local: LocalIdx,
+    value: SavedLocalEligibility<VariantIdx, FieldIdx>,
+    before: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+) -> bool {
+    assignments.len() == before.len()
+        && forall(|l: USize| !(0 <= l && l < assignments.len() && <LocalIdx as Idx>::index_is(local, l)) || assignments[l] == value)
+        && forall(|l: USize| !(0 <= l && l < assignments.len() && !<LocalIdx as Idx>::index_is(local, l)) || assignments[l] == before[l])
+}
+
+#[cfg(thrust_eligibility_fail)]
+#[thrust_macros::predicate]
+fn written_at<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrust_models::Model, LocalIdx: Idx + thrust_models::Model>(
+    assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+    local: LocalIdx,
+    value: SavedLocalEligibility<VariantIdx, FieldIdx>,
+    before: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
+) -> bool {
+    assignments.len() == before.len() && forall(|l: USize| !(0 <= l && l < assignments.len()) || assignments[l] == value)
 }
 
 /// Property 3 at the promoted fields: an `Ineligible` local's field index is below the lengths of
