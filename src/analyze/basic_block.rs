@@ -1350,6 +1350,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             Operand::Copy(place) | Operand::Move(place) => self.place_type(place),
             Operand::Constant(operand) => self.const_ty(&operand.const_),
         };
+        // A function item used as a value (passed on, stored) may be called wherever it goes.
+        if let Some((def_id, args)) = operand.const_fn_def() {
+            self.record_called_fn(def_id, args);
+        }
         tracing::debug!(operand = ?operand, ty = %ty.display(), "operand_type");
         ty
     }
@@ -1639,6 +1643,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     mir::AggregateKind::Adt { .. }
                     | mir::AggregateKind::Tuple
                     | mir::AggregateKind::Closure { .. } => {
+                        // A closure created here may be called wherever it is passed.
+                        if let mir::AggregateKind::Closure(closure_def_id, _) = *kind {
+                            self.ctx
+                                .called_fns()
+                                .record(self.local_def_id, closure_def_id);
+                        }
                         // A struct that the model lowering makes transparent is its live field
                         // in the logic, so building it out of that field is the identity --
                         // the same lowering `elaborate_place` gives the field access.
@@ -1687,7 +1697,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 _ty,
             ) => {
                 let func_ty = match operand.const_fn_def() {
-                    Some((def_id, args)) => self.callable_ty(def_id, args),
+                    Some((def_id, args)) => {
+                        self.record_called_fn(def_id, args);
+                        self.callable_ty(def_id, args)
+                    }
                     _ => unimplemented!(),
                 };
                 PlaceType::with_ty_and_term(func_ty.vacuous(), chc::Term::null())
@@ -2247,6 +2260,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .any(|ty| analyze::model_eq::compares_ghost(self.tcx, ty))
     }
 
+    /// Keeps the function a call of `def_id` reaches, for the report: the one the call resolves to,
+    /// or the trait method itself when the callee depends on the caller's type parameters.
+    fn record_called_fn(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) {
+        let callee = match self.resolve_callable(def_id, args) {
+            ResolvedCallable::Concrete(resolved_def_id, _) => resolved_def_id,
+            ResolvedCallable::Generic(_) | ResolvedCallable::Unresolved => def_id,
+        };
+        self.ctx.called_fns().record(self.local_def_id, callee);
+    }
+
     fn callable_ty(
         &mut self,
         def_id: DefId,
@@ -2662,6 +2685,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     {
         // TODO: handle const_fn_def on Env side
         let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
+            self.record_called_fn(def_id, args);
             let ty = self.callable_ty(def_id, args);
             if analyze::candidate_atoms_enabled() {
                 self.record_called_fn_ty(&ty);
