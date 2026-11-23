@@ -1069,7 +1069,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// its model has values that are no Rust value's (`Err(())`).
     fn reject_binder_holding_type_without_values(&self, pat: &'tcx rustc_hir::Pat<'tcx>) {
         let (ty, typing_env) = self.binder_written_ty(pat);
-        if let Some(found) = self.type_builder.uninhabited_type_inside(ty, typing_env) {
+        if let Some(found) = self
+            .type_builder
+            .uninhabited_type_inside(ty, typing_env, pat.span)
+        {
             self.tcx.dcx().span_fatal(
                 pat.span,
                 format!(
