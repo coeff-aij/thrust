@@ -588,9 +588,10 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// a generic argument, a tuple's element, or the target of a reference, a pointer or a
     /// sequence, in `ty` or in the field types of the ADTs it reaches, each as its definition
     /// writes them (`Infallible` in `Result<u64, Infallible>`, in `W<Infallible>`, or in a field
-    /// `Option<Infallible>`). A field that has no values itself is not one: its variant is
-    /// excluded at the definition, or its struct has no values. An ADT whose model a `Model` impl
-    /// gives is entered only through its generic arguments, since its fields make no model value.
+    /// `Option<Infallible>`). A field that has no values itself is not entered (`B(W<Infallible>)`
+    /// with `struct W<T>(T)`): its variant is excluded at the definition, or its struct has no
+    /// values. An ADT whose model a `Model` impl gives is entered only through its generic
+    /// arguments, since its fields make no model value.
     pub fn uninhabited_type_argument(
         &self,
         ty: mir_ty::Ty<'tcx>,
@@ -615,14 +616,21 @@ impl<'tcx> TypeBuilder<'tcx> {
                     return in_args;
                 }
                 let field_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, adt.did());
-                adt.all_fields().find_map(|field| {
-                    let field_ty = self.tcx.type_of(field.did).instantiate_identity();
-                    let field_ty = self
-                        .tcx
-                        .try_normalize_erasing_regions(field_env, field_ty)
-                        .unwrap_or(field_ty);
-                    self.uninhabited_type_argument_within(field_ty, field_env, fields_not_entered)
-                })
+                adt.all_fields()
+                    .map(|field| {
+                        let field_ty = self.tcx.type_of(field.did).instantiate_identity();
+                        self.tcx
+                            .try_normalize_erasing_regions(field_env, field_ty)
+                            .unwrap_or(field_ty)
+                    })
+                    .filter(|field_ty| !field_ty.is_privately_uninhabited(self.tcx, field_env))
+                    .find_map(|field_ty| {
+                        self.uninhabited_type_argument_within(
+                            field_ty,
+                            field_env,
+                            fields_not_entered,
+                        )
+                    })
             }
             mir_ty::TyKind::Tuple(elems) => elems.iter().find_map(|elem| {
                 self.uninhabited_type_argument_within(elem, typing_env, fields_not_entered)
