@@ -1548,6 +1548,7 @@ fn promote_locals<
              calc: &LayoutCalculator<C>,
              entry_ghost: thrust_models::Ghost<IndexVec<FieldIdx, F>>| {
                 0 <= DenseBitSet::<LocalIdx>::card(*ineligible_locals)
+                    && !current == !prefix_layouts.at_entry()
                     && entry_ghost == *prefix_layouts.at_entry()
                     && layouts_wf::<FieldIdx, F, FieldIdx, VariantIdx, C>(*calc, &entry_ghost)
                     && layouts_wf::<LocalIdx, F, FieldIdx, VariantIdx, C>(*calc, local_layouts)
