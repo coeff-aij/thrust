@@ -1029,6 +1029,18 @@ pub trait EnumDefProvider {
     ) -> Option<chc::UserDefinedPred> {
         None
     }
+
+    /// A predicate defined as `guard`, the domain guard of a value of `ty` (its argument, variable
+    /// 0; [`domain_guard`]), so that the quantified variables of the type are guarded by one atom
+    /// rather than each repeating it; `None` where it is stated in place, and where `guard` gives
+    /// none.
+    fn domain_guard_pred(
+        &self,
+        _ty: &EnumType<Closed>,
+        _guard: &dyn Fn() -> Option<chc::Formula<chc::TermVarIdx>>,
+    ) -> Option<chc::UserDefinedPred> {
+        None
+    }
 }
 
 impl<T: EnumDefProvider> EnumDefProvider for &T {
@@ -1042,6 +1054,14 @@ impl<T: EnumDefProvider> EnumDefProvider for &T {
         facts: &dyn Fn() -> chc::Formula<chc::TermVarIdx>,
     ) -> Option<chc::UserDefinedPred> {
         <T as EnumDefProvider>::payload_facts_pred(self, ty, facts)
+    }
+
+    fn domain_guard_pred(
+        &self,
+        ty: &EnumType<Closed>,
+        guard: &dyn Fn() -> Option<chc::Formula<chc::TermVarIdx>>,
+    ) -> Option<chc::UserDefinedPred> {
+        <T as EnumDefProvider>::domain_guard_pred(self, ty, guard)
     }
 }
 
@@ -1519,7 +1539,9 @@ where
         enclosing: cx.enclosing.clone(),
         unsupported: None,
         seq_depth: cx.seq_depth + 1,
-        payload_facts_by_pred: false,
+        // The predicate's definition is the checked form these facts take, so an assumed
+        // element states it by the atom too.
+        payload_facts_by_pred: cx.payload_facts_by_pred && cx.use_ == FactsUse::Assumed,
     };
     let facts = RefinedType::unrefined(elem.clone()).facts(&mut elem_cx);
     if cx.use_ == FactsUse::Checked {
@@ -1588,8 +1610,9 @@ struct FactsCx<'a> {
     unsupported: Option<Type<Closed>>,
     /// The number of sequences whose elements enclose the position ([`seq_elem_facts`]).
     seq_depth: usize,
-    /// Whether the assumed payload facts of an outermost enum are stated by the atom of the
-    /// predicate defining them ([`payload_facts_atom`]), as a binding's are in a clause.
+    /// Whether the payload facts of an outermost enum are stated by the atom of the predicate
+    /// defining them ([`payload_facts_atom`]), as a binding's are in a clause, also those of its
+    /// sequences' elements.
     payload_facts_by_pred: bool,
 }
 
@@ -1651,6 +1674,10 @@ pub trait DomainGuard<V>: Sized {
     /// `forall k. 0 <= k < len(seq) => elem`, `elem` the guard of `seq[k]`, `k` the variable
     /// `var`; `None` where a quantifier cannot be stated.
     fn every_elem(var: chc::UserQuantifiedVarId, seq: chc::Term<V>, elem: Self) -> Option<Self>;
+    /// The atom of the predicate `pred` at `value`, where the guard of an outermost enum is stated
+    /// by the predicate defining it ([`EnumDefProvider::domain_guard_pred`]); `None` where it is
+    /// stated in place.
+    fn by_pred(pred: chc::UserDefinedPred, value: chc::Term<V>) -> Option<Self>;
 }
 
 impl<V: Clone> DomainGuard<V> for chc::Term<V> {
@@ -1681,6 +1708,11 @@ impl<V: Clone> DomainGuard<V> for chc::Term<V> {
 
     /// A term has no quantifier: a logic function's domain stays quantifier-free.
     fn every_elem(_var: chc::UserQuantifiedVarId, _seq: chc::Term<V>, _elem: Self) -> Option<Self> {
+        None
+    }
+
+    /// A logic function's domain is stated in place.
+    fn by_pred(_pred: chc::UserDefinedPred, _value: chc::Term<V>) -> Option<Self> {
         None
     }
 }
@@ -1721,6 +1753,10 @@ impl<V: Clone> DomainGuard<V> for chc::Formula<V> {
             vec![(var, chc::Sort::int())],
             in_bounds.implies(elem),
         ))
+    }
+
+    fn by_pred(pred: chc::UserDefinedPred, value: chc::Term<V>) -> Option<Self> {
+        Some(chc::Formula::Atom(chc::Atom::new(pred.into(), vec![value])))
     }
 }
 
@@ -1868,6 +1904,40 @@ where
     if cx.enclosing.contains(enum_ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
         return None;
     }
+    if cx.enclosing.is_empty() && cx.read_fields_of_outermost_enum.is_none() {
+        let defs = cx.defs;
+        let guard = || {
+            let mut cx = DomainCx {
+                defs,
+                enclosing: Vec::new(),
+                seq_depth: 0,
+                read_fields_of_outermost_enum: None,
+            };
+            enum_domain_guard_in_place::<chc::TermVarIdx, chc::Formula<chc::TermVarIdx>>(
+                enum_ty,
+                chc::Term::var(chc::TermVarIdx::from(0usize)),
+                &mut cx,
+            )
+        };
+        if let Some(pred) = defs.domain_guard_pred(enum_ty, &guard) {
+            if let Some(atom) = G::by_pred(pred, value.clone()) {
+                return Some(atom);
+            }
+        }
+    }
+    enum_domain_guard_in_place(enum_ty, value, cx)
+}
+
+/// [`enum_domain_guard`] stated in place, without the predicate of an outermost enum.
+fn enum_domain_guard_in_place<V, G>(
+    enum_ty: &EnumType<Closed>,
+    value: chc::Term<V>,
+    cx: &mut DomainCx<'_>,
+) -> Option<G>
+where
+    V: Clone,
+    G: DomainGuard<V>,
+{
     let read_fields = if cx.enclosing.is_empty() {
         cx.read_fields_of_outermost_enum.take()
     } else {
@@ -2046,7 +2116,7 @@ fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Clo
         }
         return Refinement::top();
     }
-    if cx.use_ == FactsUse::Assumed && cx.payload_facts_by_pred && cx.enclosing.is_empty() {
+    if cx.payload_facts_by_pred && cx.enclosing.is_empty() {
         if let Some(atom) = payload_facts_atom(ty, defs) {
             return atom;
         }

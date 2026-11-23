@@ -568,6 +568,9 @@ pub struct EnumDefs {
     /// The predicate stating the payload facts of each enum type a clause assumes them of
     /// ([`rty::EnumDefProvider::payload_facts_pred`]).
     payload_facts_preds: HashMap<rty::EnumType<rty::Closed>, chc::UserDefinedPred>,
+    /// The predicate stating the domain guard of each enum type a quantified variable ranges over
+    /// ([`rty::EnumDefProvider::domain_guard_pred`]); `None` for a type without a guard.
+    domain_guard_preds: HashMap<rty::EnumType<rty::Closed>, Option<chc::UserDefinedPred>>,
     /// The definitions of those predicates not yet in the system: each predicate, the sort of
     /// its argument and its body ([`Analyzer::define_payload_facts_preds`]).
     pending_payload_facts: Vec<(chc::UserDefinedPred, chc::Sort, chc::Formula)>,
@@ -599,6 +602,14 @@ impl EnumDefs {
     }
 }
 
+/// Whether the facts and domain guards of enums are stated in place rather than by the predicates
+/// defining them: for z3, whose Spacer answers `unknown` on the selector form of assumed payload
+/// facts that the predicates' definitions take, as on the goals of `checked_variant_facts`.
+fn facts_in_place() -> bool {
+    static IN_PLACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *IN_PLACE.get_or_init(|| chc::Config::from_env().is_z3())
+}
+
 impl refine::EnumDefProvider for Rc<RefCell<EnumDefs>> {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> rty::EnumDatatypeDef {
         self.borrow().find_by_name(name).unwrap().clone()
@@ -609,6 +620,9 @@ impl refine::EnumDefProvider for Rc<RefCell<EnumDefs>> {
         ty: &rty::EnumType<rty::Closed>,
         facts: &dyn Fn() -> chc::Formula,
     ) -> Option<chc::UserDefinedPred> {
+        if facts_in_place() {
+            return None;
+        }
         if let Some(pred) = self.borrow().payload_facts_preds.get(ty) {
             return Some(pred.clone());
         }
@@ -620,6 +634,34 @@ impl refine::EnumDefProvider for Rc<RefCell<EnumDefs>> {
                 .named(format!("payload facts of {}", ty.symbol));
         let sort = rty::Type::Enum(ty.clone()).to_sort();
         defs.payload_facts_preds.insert(ty.clone(), pred.clone());
+        defs.pending_payload_facts.push((pred.clone(), sort, body));
+        Some(pred)
+    }
+
+    fn domain_guard_pred(
+        &self,
+        ty: &rty::EnumType<rty::Closed>,
+        guard: &dyn Fn() -> Option<chc::Formula>,
+    ) -> Option<chc::UserDefinedPred> {
+        if facts_in_place() {
+            return None;
+        }
+        if let Some(pred) = self.borrow().domain_guard_preds.get(ty) {
+            return pred.clone();
+        }
+        // Built before the registry is borrowed mutably: the guard reads the enums' definitions.
+        let body = guard();
+        let mut defs = self.borrow_mut();
+        let Some(body) = body else {
+            defs.domain_guard_preds.insert(ty.clone(), None);
+            return None;
+        };
+        let pred =
+            chc::UserDefinedPred::new(format!("domain_guard_{}", defs.domain_guard_preds.len()))
+                .named(format!("domain of {}", ty.symbol));
+        let sort = rty::Type::Enum(ty.clone()).to_sort();
+        defs.domain_guard_preds
+            .insert(ty.clone(), Some(pred.clone()));
         defs.pending_payload_facts.push((pred.clone(), sort, body));
         Some(pred)
     }
