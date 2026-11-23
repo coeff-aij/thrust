@@ -359,6 +359,10 @@ pub(super) fn collect_sorts(system: &chc::System) -> BTreeSet<chc::Sort> {
     sorts
 }
 
+/// The number of instances of a datatype, each named by a selector of the one before, past which
+/// the declarations are taken not to end.
+const NESTED_INSTANCES_LIMIT: usize = 8;
+
 fn monomorphize_datatype(
     sort: &chc::DatatypeSort,
     datatypes: &[chc::Datatype],
@@ -520,9 +524,18 @@ impl FormatContext {
             }
         }
 
-        let mut pending: Vec<_> = sorts.clone().into_iter().collect();
-        while let Some(sort) = pending.pop() {
+        // Each pending sort with the number of instances of its own datatype it was reached
+        // through, so that a datatype whose selectors name it at ever larger arguments
+        // (`Nest<(T, T)>` in `Nest<T>`) is reported rather than declared without end.
+        let mut pending: Vec<_> = sorts.clone().into_iter().map(|sort| (sort, 0)).collect();
+        while let Some((sort, depth)) = pending.pop() {
             if let Some(datatype_sort) = sort.as_datatype() {
+                assert!(
+                    depth <= NESTED_INSTANCES_LIMIT,
+                    "thrust: the datatype `{}` is declared at ever larger arguments, as a \
+                     polymorphically recursive enum is, which is not supported",
+                    datatype_sort.symbol
+                );
                 let datatype = match monomorphize_datatype(datatype_sort, &datatypes, &resolver) {
                     Some(mono_datatype) => {
                         datatypes.push(mono_datatype.clone());
@@ -535,9 +548,12 @@ impl FormatContext {
                         .clone(),
                 };
                 for selector in datatype.selectors() {
-                    selector.sort.walk(|sort| {
-                        if sorts.insert(sort.clone()) {
-                            pending.push(sort.clone());
+                    selector.sort.walk(|inner| {
+                        if sorts.insert(inner.clone()) {
+                            let same = inner
+                                .as_datatype()
+                                .is_some_and(|d| d.symbol == datatype_sort.symbol);
+                            pending.push((inner.clone(), if same { depth + 1 } else { 0 }));
                         }
                     });
                 }

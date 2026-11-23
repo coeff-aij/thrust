@@ -1062,6 +1062,19 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .extract_binding_mode(self.tcx.sess, hir_id, span)
     }
 
+    /// The typing environment of the item the formula belongs to, over its own type parameters.
+    fn written_typing_env(&self) -> mir_ty::TypingEnv<'tcx> {
+        let root = self.tcx.typeck_root_def_id(self.local_def_id.to_def_id());
+        mir_ty::TypingEnv::non_body_analysis(self.tcx, root)
+    }
+
+    /// Whether no value has `written`, a type as the item writes it, as rustc decides it: a type
+    /// parameter has values there, so an instance at a type without values (`g::<Infallible>`)
+    /// keeps the generic item's meaning, over which it is verified.
+    fn written_ty_is_uninhabited(&self, written: mir_ty::Ty<'tcx>) -> bool {
+        written.is_privately_uninhabited(self.tcx, self.written_typing_env())
+    }
+
     fn normalized_ty(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let instantiated = self
             .instantiate_generics(ty, self.generic_args)
@@ -2429,12 +2442,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
+            let written_ty = self.written_ty(param.pat);
+            let excluded = self.type_builder.excluded_variants(
+                written_ty,
+                &param_rty.ty,
+                self.written_typing_env(),
+            );
             domains.push((
                 var,
-                self.type_builder.is_uninhabited(param_ty),
+                self.written_ty_is_uninhabited(written_ty),
                 param_rty.ty,
                 term.clone(),
-                self.type_builder.uninhabited_at_instance(param_ty),
+                excluded,
             ));
             inner_translator.env.insert(hir_id, term);
             vars.push((var, sort));
@@ -2442,14 +2461,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let body_formula = inner_translator.to_formula(closure.value);
         let range = domains
             .into_iter()
-            .filter_map(|(var, uninhabited, ty, term, uninhabited_variants)| {
+            .filter_map(|(var, uninhabited, ty, term, excluded)| {
                 if uninhabited {
                     return Some(chc::Formula::bottom());
                 }
                 self.quantified_var_domain(
                     &ty,
                     term,
-                    &uninhabited_variants,
+                    &excluded,
                     &FieldReads::of(&body_formula, var),
                 )
             })
@@ -2465,7 +2484,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         &self,
         ty: &rty::Type<rty::Closed>,
         var: chc::Term<rty::FunctionParamIdx>,
-        uninhabited: &rty::UninhabitedAtInstance,
+        excluded: &rty::ExcludedVariants,
         reads: &FieldReads,
     ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
         let defs = &self.analyzer.enum_defs;
@@ -2494,7 +2513,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 FieldReads::Fields(_) | FieldReads::Whole,
             ) => None,
         };
-        rty::domain_guard_of_variable::<_, chc::Formula<_>>(ty, var, defs, uninhabited, read)
+        rty::domain_guard_of_variable::<_, chc::Formula<_>>(ty, var, defs, excluded, read)
     }
 
     /// The body of a one-parameter closure as a term, with the parameter bound to a fresh
