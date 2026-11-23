@@ -947,13 +947,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         FormulaOrTerm::Term(chc::Term::App(fun, vec![lhs, rhs]))
     }
 
-    /// Whether a quantified variable ranges over nothing: its type, as the item writes it, has no
-    /// values, as rustc decides it in the item's typing environment, where a type parameter, or a
-    /// projection on one, has values: so a generic item's contract means at an instance
-    /// (`g::<Infallible>`) what it means over its type parameters, where the item is verified. A
-    /// type that holds a type without values elsewhere (`Result<u64, Infallible>`) is an error:
-    /// its model has values that are no Rust value's (`Err(())`).
-    fn binder_ranges_over_nothing(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> bool {
+    /// The type of the quantified variable `pat` as the item writes it, normalized in the item's
+    /// typing environment, where a type parameter, or a projection on one, has values; and that
+    /// environment.
+    fn binder_written_ty(
+        &self,
+        pat: &'tcx rustc_hir::Pat<'tcx>,
+    ) -> (mir_ty::Ty<'tcx>, mir_ty::TypingEnv<'tcx>) {
         let root = self.tcx.typeck_root_def_id(self.local_def_id.to_def_id());
         let typing_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, root);
         let ty = self.typeck.pat_ty(pat);
@@ -961,10 +961,24 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .tcx
             .try_normalize_erasing_regions(typing_env, ty)
             .unwrap_or(ty);
-        if ty.is_privately_uninhabited(self.tcx, typing_env) {
-            return true;
-        }
-        if let Some(found) = self.type_builder.uninhabited_type_argument(ty, typing_env) {
+        (ty, typing_env)
+    }
+
+    /// Whether a quantified variable ranges over nothing: its written type
+    /// ([`Self::binder_written_ty`]) has no values, as rustc decides it in the item's typing
+    /// environment, so a generic item's contract means at an instance (`g::<Infallible>`) what it
+    /// means over its type parameters, where the item is verified.
+    fn binder_ranges_over_nothing(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> bool {
+        let (ty, typing_env) = self.binder_written_ty(pat);
+        ty.is_privately_uninhabited(self.tcx, typing_env)
+    }
+
+    /// Stops with an error when the written type of a quantified variable holds a type without
+    /// values inside ([`TypeBuilder::uninhabited_type_inside`]: `Result<u64, Infallible>`), since
+    /// its model has values that are no Rust value's (`Err(())`).
+    fn reject_binder_holding_type_without_values(&self, pat: &'tcx rustc_hir::Pat<'tcx>) {
+        let (ty, typing_env) = self.binder_written_ty(pat);
+        if let Some(found) = self.type_builder.uninhabited_type_inside(ty, typing_env) {
             self.tcx.dcx().span_fatal(
                 pat.span,
                 format!(
@@ -972,7 +986,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 ),
             );
         }
-        false
     }
 
     fn pat_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
@@ -2357,6 +2370,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             };
             let param_ty = self.pat_ty(param.pat);
             let ranges_over_nothing = self.binder_ranges_over_nothing(param.pat);
+            if !ranges_over_nothing {
+                self.reject_binder_holding_type_without_values(param.pat);
+            }
             // The enums in the variable's type may occur nowhere else in the function or
             // predicate, yet the query declares their datatypes.
             self.analyzer
