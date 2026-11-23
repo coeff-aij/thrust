@@ -2232,7 +2232,7 @@ impl<'tcx> Analyzer<'tcx> {
         guard: chc::Term,
         body: chc::Term,
     ) -> chc::Term {
-        let witness = rty::fact_witness(ret, body.clone(), &self.enum_defs).unwrap_or_else(|| {
+        let witness = rty::fact_witness(ret, Some(body.clone()), &self.enum_defs).unwrap_or_else(|| {
             self.tcx.dcx().span_fatal(
                 span,
                 format!(

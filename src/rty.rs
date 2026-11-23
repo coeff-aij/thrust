@@ -2021,18 +2021,19 @@ fn conj_guard<V, G: DomainGuard<V>>(a: Option<G>, b: Option<G>) -> Option<G> {
 
 /// A value of `ty` that has the facts of its type (`type_fact_checks`), for the value of a logic
 /// function at arguments outside its domain (`Analyzer::checked_logic_fn_body`), whose value
-/// elsewhere is `value`. A part of `ty` that holds no integer with facts ([`has_range_facts`]) may
-/// be anything, so it is the matching part of `value`. Otherwise: zero for an integer, the empty
+/// elsewhere is `value`, or for a `match` no Rust value reaches, without a `value`. A part of `ty`
+/// that holds no integer with facts ([`has_range_facts`]) may be anything, so it is the matching
+/// part of `value`, or some value of its sort. Otherwise: zero for an integer, the empty
 /// sequence, a tuple, box or `&mut` (its current and final values) of such values, and the first
 /// variant of an enum whose fields have such values, a field without facts being any value of its
 /// sort. `None` when an enum has no such variant without going through itself, or a field of a
 /// constructed variant is of a sort with no value to take (a type parameter's, a function's).
 pub fn fact_witness<V: Clone>(
     ty: &Type<Closed>,
-    value: chc::Term<V>,
+    value: Option<chc::Term<V>>,
     defs: &dyn EnumDefProvider,
 ) -> Option<chc::Term<V>> {
-    fact_witness_within(ty, Some(value), defs, &mut Vec::new())
+    fact_witness_within(ty, value, defs, &mut Vec::new())
 }
 
 fn fact_witness_within<V: Clone>(
