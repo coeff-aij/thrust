@@ -1691,6 +1691,27 @@ struct DomainCx<'a> {
     ints: IntDomain,
     enclosing: Vec<EnumType<Closed>>,
     seq_depth: usize,
+    /// The variants without values at an instance though not in the enum's definition
+    /// ([`UninhabitedAtInstance`]).
+    uninhabited_at_instance: &'a UninhabitedAtInstance,
+}
+
+/// The variants of enum types that have no values at the instance a type names, though their
+/// definition gives them values (`Result<u64, Infallible>`'s `Err`, whose model is `Err(())`): for
+/// each enum type, by variant, whether every instance of it in the type has no value of that
+/// variant. Read from rustc where the type is built ([`crate::refine::TypeBuilder`]); empty where
+/// it is not known.
+#[derive(Debug, Clone, Default)]
+pub struct UninhabitedAtInstance(pub Vec<(EnumType<Closed>, Vec<bool>)>);
+
+impl UninhabitedAtInstance {
+    fn variant(&self, enum_ty: &EnumType<Closed>, index: usize) -> bool {
+        let enum_ty = enum_ty.clone().strip_refinement();
+        self.0
+            .iter()
+            .find(|(ty, _)| *ty == enum_ty)
+            .is_some_and(|(_, variants)| variants.get(index).copied().unwrap_or(false))
+    }
 }
 
 /// The index variable of the guard of a sequence's elements at nesting `depth`
@@ -1723,11 +1744,29 @@ where
     V: Clone,
     G: DomainGuard<V>,
 {
+    domain_guard_at_instance(ty, value, defs, ints, &UninhabitedAtInstance::default())
+}
+
+/// [`domain_guard`] that also excludes the variants without values at the instance the type
+/// names (`uninhabited`), as a quantifier in Verus or Creusot ranges over the values of the
+/// instantiated type.
+pub fn domain_guard_at_instance<V, G>(
+    ty: &Type<Closed>,
+    value: chc::Term<V>,
+    defs: &dyn EnumDefProvider,
+    ints: IntDomain,
+    uninhabited: &UninhabitedAtInstance,
+) -> Option<G>
+where
+    V: Clone,
+    G: DomainGuard<V>,
+{
     let mut cx = DomainCx {
         defs,
         ints,
         enclosing: Vec::new(),
         seq_depth: 0,
+        uninhabited_at_instance: uninhabited,
     };
     domain_guard_within(ty, value, &mut cx)
 }
@@ -1806,10 +1845,10 @@ where
     let variants = enum_ty.variants(cx.defs);
     let single_variant = variants.len() == 1;
     let mut guard = None;
-    for variant in variants {
+    for (index, variant) in variants.into_iter().enumerate() {
         let discr = chc::Term::datatype_discr(enum_ty.symbol.clone(), value.clone());
         let is_other_variant = G::other_variant(discr, variant.discr.clone());
-        if variant.uninhabited {
+        if variant.uninhabited || cx.uninhabited_at_instance.variant(enum_ty, index) {
             guard = conj_guard(guard, Some(is_other_variant));
             continue;
         }

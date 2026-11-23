@@ -589,6 +589,85 @@ impl<'tcx> TypeBuilder<'tcx> {
         ty.is_privately_uninhabited(self.tcx, self.typing_env)
     }
 
+    /// The variants of the enums `ty` holds that have no values at their instance in `ty`, as
+    /// rustc decides it (`Result<u64, Infallible>`'s `Err`), though their definition gives them
+    /// values. The enums are found through generic arguments, references, tuples, arrays and the
+    /// fields of the enums and structs whose model is their own datatype or the tuple of their
+    /// fields; an enum type built from several such instances excludes a variant only where
+    /// every one of them does.
+    pub fn uninhabited_at_instance(&self, ty: mir_ty::Ty<'tcx>) -> rty::UninhabitedAtInstance {
+        let mut seen = std::collections::HashSet::new();
+        let mut work = vec![ty];
+        let mut instances: Vec<(rty::EnumType<rty::Closed>, Vec<bool>)> = Vec::new();
+        while let Some(ty) = work.pop() {
+            for arg in ty.walk() {
+                let Some(t) = arg.as_type() else {
+                    continue;
+                };
+                if !seen.insert(t) {
+                    continue;
+                }
+                let mir_ty::TyKind::Adt(adt, args) = t.kind() else {
+                    continue;
+                };
+                let structural = match self.build(t).ty {
+                    rty::Type::Enum(enum_ty)
+                        if adt.is_enum()
+                            && enum_ty.symbol == refine::datatype_symbol(self.tcx, adt.did()) =>
+                    {
+                        let variants = adt
+                            .variants()
+                            .iter()
+                            .map(|variant| {
+                                variant
+                                    .fields
+                                    .iter()
+                                    .any(|field| self.is_uninhabited(field.ty(self.tcx, args)))
+                            })
+                            .collect();
+                        instances.push((enum_ty.strip_refinement(), variants));
+                        true
+                    }
+                    rty::Type::Tuple(_) => adt.is_struct(),
+                    rty::Type::Int(_)
+                    | rty::Type::UInt(_)
+                    | rty::Type::BitVec(_)
+                    | rty::Type::Bool
+                    | rty::Type::String
+                    | rty::Type::Opaque
+                    | rty::Type::Never
+                    | rty::Type::Param(_)
+                    | rty::Type::Alias(_)
+                    | rty::Type::Pointer(_)
+                    | rty::Type::Function(_)
+                    | rty::Type::Array(_)
+                    | rty::Type::Seq(_)
+                    | rty::Type::Enum(_) => false,
+                };
+                if structural {
+                    for variant in adt.variants() {
+                        for field in &variant.fields {
+                            work.push(field.ty(self.tcx, args));
+                        }
+                    }
+                }
+            }
+        }
+        let mut merged: Vec<(rty::EnumType<rty::Closed>, Vec<bool>)> = Vec::new();
+        for (enum_ty, variants) in instances {
+            match merged.iter_mut().find(|(ty, _)| *ty == enum_ty) {
+                Some((_, known)) => {
+                    for (known, now) in known.iter_mut().zip(variants) {
+                        *known = *known && now;
+                    }
+                }
+                None => merged.push((enum_ty, variants)),
+            }
+        }
+        merged.retain(|(_, variants)| variants.iter().any(|uninhabited| *uninhabited));
+        rty::UninhabitedAtInstance(merged)
+    }
+
     pub fn resolve_model_ty(&self, orig_ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
         let replaced = self.replace_closure_model(orig_ty);
 

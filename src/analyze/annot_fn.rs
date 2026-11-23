@@ -2341,11 +2341,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             let fact = if self.type_builder.is_uninhabited(param_ty) {
                 Some(chc::Formula::bottom())
             } else {
-                rty::domain_guard::<_, chc::Formula<_>>(
+                rty::domain_guard_at_instance::<_, chc::Formula<_>>(
                     &param_rty.ty,
                     term.clone(),
                     &self.analyzer.enum_defs,
                     rty::IntDomain::Range,
+                    &self.type_builder.uninhabited_at_instance(param_ty),
                 )
             };
             if let Some(fact) = fact {
