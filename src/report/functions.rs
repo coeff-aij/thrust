@@ -126,10 +126,8 @@ fn whole_span(tcx: TyCtxt<'_>, def: LocalDefId) -> Span {
 }
 
 fn callees(tcx: TyCtxt<'_>, input: &Input<'_>, called: Option<&HashSet<DefId>>) -> Vec<Callee> {
-    let mut callees: Vec<Callee> = called
-        .into_iter()
-        .flatten()
-        .filter(|callee| !is_formula_closure(tcx, input, **callee))
+    let mut callees: Vec<Callee> = written_callees(tcx, input, called)
+        .iter()
         .map(|callee| Callee {
             name: tcx.def_path_str(*callee),
             span: callee.as_local().map(|def| whole_span(tcx, def)),
@@ -137,6 +135,34 @@ fn callees(tcx: TyCtxt<'_>, input: &Input<'_>, called: Option<&HashSet<DefId>>) 
         .collect();
     callees.sort_by_key(|c| (c.name.clone(), c.span.map(|s| (s.lo(), s.hi()))));
     callees
+}
+
+/// The callees of a body as the report names functions: a closure a macro generated has no
+/// function line of its own, so the functions it can make run stand in its place, transitively.
+fn written_callees(
+    tcx: TyCtxt<'_>,
+    input: &Input<'_>,
+    called: Option<&HashSet<DefId>>,
+) -> HashSet<DefId> {
+    let mut todo: Vec<DefId> = called.into_iter().flatten().copied().collect();
+    let mut expanded = HashSet::new();
+    let mut written = HashSet::new();
+    while let Some(callee) = todo.pop() {
+        if is_formula_closure(tcx, input, callee) {
+            continue;
+        }
+        match callee.as_local() {
+            Some(def) if tcx.is_closure_like(callee) && !super::user_written(tcx, def) => {
+                if expanded.insert(callee) {
+                    todo.extend(input.called_fns.get(&def).into_iter().flatten().copied());
+                }
+            }
+            Some(_) | None => {
+                written.insert(callee);
+            }
+        }
+    }
+    written
 }
 
 /// A closure that only states a formula (in a contract, `proof_assert!`, `invariant!`, ...): its
