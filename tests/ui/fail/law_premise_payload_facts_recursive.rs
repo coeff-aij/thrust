@@ -7,7 +7,7 @@
 // enum's own payloads: the proof of `absurd` reads the second element of a list, non-negative, so
 // its premise is false of every value, and the law gives `tag` only where that premise is known.
 // The list is linked by references, which both a formula and the proof read through. The twin of
-// `pass/law_premise_payload_facts_recursive.rs`: without the premise, nothing gives `tag`.
+// `pass/law_premise_payload_facts_recursive.rs`, whose premise a list meets.
 use thrust_models::Model;
 
 enum L<'a> {

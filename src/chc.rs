@@ -4971,6 +4971,67 @@ mod tests {
         assert!(!smt.contains("(Tuple<a0-Int>"));
     }
 
+    /// A system defining, in this order, `f` calling `g`, `g` calling `f`, `h` calling nothing and
+    /// `k` calling `f`, each over one integer.
+    fn mutually_recursive_system() -> System {
+        let mut system = System::default();
+        let calls = |callee: &str| {
+            Formula::Atom(Atom::new(
+                UserDefinedPred::new(callee.into()).into(),
+                vec![Term::var(TermVarIdx::from(0usize))],
+            ))
+        };
+        for (name, body) in [
+            ("f", calls("g")),
+            ("g", calls("f")),
+            ("h", Formula::top()),
+            ("k", calls("f")),
+        ] {
+            system.push_pred_define_formula(
+                UserDefinedPred::new(name.into()),
+                IndexVec::from_raw(vec![Sort::int()]),
+                body,
+            );
+        }
+        system
+    }
+
+    #[test]
+    fn groups_definitions_calling_one_another_after_what_they_call() {
+        let system = mutually_recursive_system();
+        let groups: Vec<Vec<String>> = system
+            .user_defined_preds_in_dependency_order()
+            .into_iter()
+            .map(|group| group.iter().map(|def| def.symbol.to_string()).collect())
+            .collect();
+        assert_eq!(groups, vec![vec!["h"], vec!["f", "g"], vec!["k"]]);
+    }
+
+    #[test]
+    fn a_definition_calls_one_another_only_with_what_calls_it_back() {
+        let system = mutually_recursive_system();
+        let defs: Vec<_> = system.user_defined_pred_defs.iter().collect();
+        let names = |group: Vec<&UserDefinedPredDef>| -> Vec<String> {
+            group.iter().map(|def| def.symbol.to_string()).collect()
+        };
+        assert_eq!(
+            names(System::calling_one_another(&defs, defs[0])),
+            ["f", "g"]
+        );
+        assert_eq!(names(System::calling_one_another(&defs, defs[3])), ["k"]);
+    }
+
+    #[test]
+    fn prints_definitions_calling_one_another_as_one_define_funs_rec() {
+        let smt = mutually_recursive_system().smtlib2(PCSAT).to_string();
+        let h = smt.find("(define-fun h ").expect("h defined alone");
+        let group = smt
+            .find("(define-funs-rec ((f ((v0 Int)) Bool) (g ((v0 Int)) Bool)) ((g v0) (f v0)))")
+            .expect("f and g defined together");
+        let k = smt.find("(define-fun k ").expect("k defined alone");
+        assert!(h < group && group < k);
+    }
+
     #[test]
     fn declares_sorts_used_only_in_user_defined_pred_signatures() {
         let mut system = System::default();

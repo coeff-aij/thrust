@@ -3,9 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A variable a quantifier binds ranges over the values of its type at every depth of its enum
-// payloads: the `u8` under nine enums is non-negative, as each enum's predicate applies that of the
-// enum in its payload. The twin of `pass/quantifier_payload_facts_deep.rs`: no value has a negative
-// one.
+// payloads: the `u8` under nine enums is non-negative. The twin of
+// `pass/quantifier_payload_facts_deep.rs`: no value has a negative one.
 use thrust_models::exists;
 
 enum E0 { W(E1), Z }

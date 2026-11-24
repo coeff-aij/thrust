@@ -400,6 +400,23 @@ mod tests {
     }
 
     #[test]
+    fn a_group_of_definitions_is_kept_when_one_of_its_symbols_is_named() {
+        let query = "(define-funs-rec ((f ((x Int)) Bool) (g ((x Int)) Bool)) ((g x) (f x)))
+(define-funs-rec ((u ((x Int)) Bool) (w ((x Int)) Bool)) ((w x) (u x)))
+(declare-fun p0 (Int) Bool)
+(assert (forall ((v Int)) (=> (g v) (p0 v))))
+";
+        assert_eq!(
+            kept_commands(query),
+            vec![
+                "(define-funs-rec ((f ((x Int)) Bool) (g ((x Int)) Bool)) ((g x) (f x)))",
+                "(declare-fun p0 (Int) Bool)",
+                "(assert (forall ((v Int)) (=> (g v) (p0 v))))",
+            ]
+        );
+    }
+
+    #[test]
     fn a_selector_keeps_its_datatype_and_a_law_its_symbols() {
         let query = "(declare-datatypes ((T 0)) ((par () ((t (t_0 Int))))))
 (declare-forall-fun r (Int) Bool)
