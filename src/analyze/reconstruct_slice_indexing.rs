@@ -245,6 +245,11 @@ fn reconstruct_at_mut_ref_read<'tcx>(
     read: mir::Location,
     place: mir::Place<'tcx>,
 ) {
+    assert!(
+        two_phase_borrow::moved_creation_point(tcx, body, read).is_none(),
+        "two-phase reborrow of {place:?} read out of a sequence would be created before its \
+         activation"
+    );
     let reservation = reborrow_before(tcx, body, read, place);
     let Some((access, uses)) = find_slice_access(tcx, body, &bounds_check, region) else {
         panic!("{place:?} is read as a `&mut` out of a shared sequence")

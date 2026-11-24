@@ -1,7 +1,7 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 
-// The reserved place `(*p).0` outlives the overwrite of `p`; the read after it is of the new place.
+// The argument overwrites `p`, which the reserved place `(*p).0` goes through, between the
+// reservation and the activation.
 
 struct C(i32);
 
@@ -22,9 +22,9 @@ fn main() {
     let mut b = P(C(5), 0);
     let mut p = &mut a;
     p.0.set({
-        p = &mut b;
+        p = &mut b; //~ ERROR: this may change which place a two-phase borrow names
         p.0.get() + 1
     });
-    assert!(a.0 .0 == 1);
+    assert!(a.0 .0 == 6);
     assert!(b.0 .0 == 5);
 }

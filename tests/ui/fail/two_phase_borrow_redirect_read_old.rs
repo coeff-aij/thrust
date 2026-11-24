@@ -1,8 +1,7 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 
-// The pointer the reserved place goes through is overwritten before the activation, after the
-// reserved place is read.
+// The argument overwrites `p`, which the reserved place `*p` goes through, between the
+// reservation and the activation.
 
 struct C(i32);
 
@@ -22,9 +21,9 @@ fn main() {
     let mut p = &mut a;
     p.set({
         let x = p.get();
-        p = &mut b;
+        p = &mut b; //~ ERROR: this may change which place a two-phase borrow names
         x + p.get()
     });
-    assert!(a.0 == 10);
+    assert!(a.0 == 6);
     assert!(b.0 == 5);
 }

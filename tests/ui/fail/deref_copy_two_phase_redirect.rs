@@ -1,8 +1,7 @@
-//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 
-// The receiver `deref_copy s.0` of `set` is kept, since the argument overwrites `s.0`, and
-// its reservation reads the old `s.0`.
+// The argument overwrites `s.0`, which the receiver `*s.0` of `set` goes through, between the
+// reservation and the activation.
 
 struct C(i32);
 
@@ -22,9 +21,9 @@ fn main() {
     let mut s = (&mut a, 0);
     s.0.set({
         let x = s.0.get();
-        s.0 = &mut b;
+        s.0 = &mut b; //~ ERROR: this may change which place a two-phase borrow names
         x + 1
     });
     s.1 += 1;
-    assert!(b.0 == 2);
+    assert!(b.0 == 10);
 }

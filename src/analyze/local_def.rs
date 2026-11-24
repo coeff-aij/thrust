@@ -1497,8 +1497,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// Whether writing `written`, of the local of `place`, may change the value read at
-    /// `place`: it does unless it is a disjoint field or is reached through a pointer `place`
-    /// holds.
+    /// `place`: it does unless it is a disjoint field, also of two elements of one sequence that
+    /// may be the same, or is reached through a pointer `place` holds.
     fn changes_place(&self, written: &mir::Place<'tcx>, place: &mir::Place<'tcx>) -> bool {
         let common = written.projection.len().min(place.projection.len());
         for i in 0..common {
@@ -1511,6 +1511,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 projection: &place.projection[..i],
             };
             let is_union = base.ty(&self.body.local_decls, self.tcx).ty.is_union();
+            let is_element = |elem: mir::PlaceElem<'tcx>| {
+                matches!(
+                    elem,
+                    mir::ProjectionElem::Index(_) | mir::ProjectionElem::ConstantIndex { .. }
+                )
+            };
+            if is_element(ew) && is_element(ep) {
+                continue;
+            }
             return match (ew, ep) {
                 (mir::ProjectionElem::Field(fw, _), mir::ProjectionElem::Field(fp, _)) => {
                     fw == fp || is_union
@@ -3015,6 +3024,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .record(self.local_def_id, analyze::BodyCheck::Checked);
         self.ctx.enter_body(self.local_def_id);
         self.unelaborate_derefs();
+        analyze::two_phase_borrow::reject_reserved_place_changes(self.tcx, &self.body);
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
         self.normalize_switch_int_discriminant_order();

@@ -1,4 +1,5 @@
-//! Creates each two-phase mutable borrow at its activation, as Creusot does.
+//! Creates each two-phase mutable borrow at its activation, as Creusot does, and refuses one
+//! whose reserved place may change before it.
 //!
 //! A two-phase borrow `_t = &mut place` (an autoref'd receiver) only reserves `place` until `_t`
 //! is used, and code in between may read `place`, as in `c.set(c.get() + 1)`. Thrust replaces
@@ -6,10 +7,21 @@
 //! right before the activation, the unique use of `_t`, when the code in between reads the
 //! lender (the local `place` starts from). `InstSimplify` turns a reborrow `&mut *p` into
 //! `copy p`, which Thrust reborrows as well; such a copy into a local used once is moved the same
-//! way. When a pointer `place` goes through is overwritten before the activation
-//! (`p.0.set({ p = &mut b; 5 })`), the borrow is created before the first such write instead.
-//! The borrow of a slice element (`s[0].bump(s[1])`) is created at the same point by the
-//! reconstruction of its `IndexMut::index_mut` call, which runs first.
+//! way. The borrow of a slice element (`s[0].bump(s[1])`) is created at the same point by the
+//! reconstruction of its `IndexMut::index_mut` call.
+//!
+//! Soundness: rustc evaluates `place` once, at the reservation, and until the activation allows
+//! only reads of it and writes that do not overlap it. [`reject_reserved_place_changes`] refuses
+//! a write in between that may overlap a pointer `place` goes through (a prefix ending before a
+//! `Deref`, also through the copies of `&mut` that compute it) or an index local of `place`.
+//! Without one, `place` names the same memory at both points, so the borrow created at the
+//! activation is the one rustc makes and the reads in between see the current value; a borrow
+//! left at its reservation, with no read of the lender in between, is the same borrow.
+//!
+//! - rustc: two-phase borrows in the rustc dev guide; the overlap is `place_projection_conflict`
+//!   with `PlaceConflictBias::Overlap` (elements of one sequence may overlap).
+//! - Creusot creates the borrow at the activation too: `activate_two_phases` in
+//!   `creusot/src/analysis.rs`, applied in `translation/function/statement.rs`.
 
 use std::collections::{HashMap, HashSet};
 
@@ -36,6 +48,66 @@ struct Move {
 pub fn move_to_activation<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
     let moves = plan(body, reservations(tcx, body));
     apply(body, moves);
+}
+
+/// Stops with an error at a write between a two-phase borrow's reservation and its activation
+/// that may change which place the borrow names: a write that may overlap a pointer the borrowed
+/// place goes through, or one of its index locals. Runs before the slice indexing the borrowed
+/// place goes through is reconstructed into calls, while its writes still name the place.
+pub fn reject_reserved_place_changes<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) {
+    let reservations = reservations(tcx, body);
+    let temp_uses = temp_uses(body, &reservations);
+    let activations: Vec<_> = reservations
+        .iter()
+        .map(|reservation| two_phase_activation(body, reservation, &temp_uses))
+        .collect();
+    for (reservation, activation) in reservations.iter().zip(&activations) {
+        let Some(activation) = *activation else {
+            continue;
+        };
+        let (from, place) = reserved_through_copies(tcx, &reservations, &activations, reservation);
+        let between = Between::visit(body, from, place, activation);
+        if let Some(&write) = between.address_writes.first() {
+            tcx.dcx().span_fatal(
+                body.source_info(write).span,
+                "thrust: this may change which place a two-phase borrow names before the borrow \
+                 is used, which is not supported",
+            );
+        }
+    }
+}
+
+/// Where the reservation starts and the place it reserves, through the copies of `&mut`
+/// references activated by it: of `_18 = copy (*_17)` after `_17 = copy (*s)[i]`, which compute
+/// the receiver of `(**s[i]).bump(..)`, the place `**(*s)[i]` reserved from the first copy on.
+fn reserved_through_copies<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    reservations: &[Reservation<'tcx>],
+    activations: &[Option<Location>],
+    reservation: &Reservation<'tcx>,
+) -> (Location, Place<'tcx>) {
+    let mut from = reservation.location;
+    let mut place = reservation.place;
+    loop {
+        let Some((copy, _)) = reservations
+            .iter()
+            .zip(activations)
+            .find(|(copy, activation)| {
+                copy.copied && copy.temp == place.local && **activation == Some(from)
+            })
+        else {
+            break;
+        };
+        // A copy `_u = copy q` reserves `*q`; `place` goes through `*_u`, which is `*q`.
+        let (_, q) = copy.place.projection.split_last().unwrap();
+        let q = Place {
+            local: copy.place.local,
+            projection: tcx.mk_place_elems(q),
+        };
+        place = q.project_deeper(place.projection, tcx);
+        from = copy.location;
+    }
+    (from, place)
 }
 
 fn reservations<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Reservation<'tcx>> {
@@ -88,14 +160,14 @@ fn is_mut_ref<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>, place: &Place<'tcx>) -
     )
 }
 
-/// Where [`move_to_activation`] creates the two-phase borrow `_t = &mut place` at `location`, when
-/// it moves the borrow there.
+/// Where [`move_to_activation`] creates the two-phase borrow `_t = &mut place` or reborrow
+/// `_t = copy p` at `location`, its activation, when it moves the borrow there.
 pub fn moved_creation_point<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     location: Location,
 ) -> Option<Location> {
-    let reservation = reservation_at(tcx, body, location).filter(|r| !r.copied)?;
+    let reservation = reservation_at(tcx, body, location)?;
     let temp_uses = temp_uses(body, std::slice::from_ref(&reservation));
     planned_move(body, &reservation, &temp_uses)?.to
 }
@@ -114,6 +186,40 @@ fn planned_move<'tcx>(
     reservation: &Reservation<'tcx>,
     temp_uses: &HashMap<Local, Vec<Location>>,
 ) -> Option<Move> {
+    let Some(activation) = two_phase_activation(body, reservation, temp_uses) else {
+        return (!reservation.copied).then_some(Move {
+            from: reservation.location,
+            to: None,
+        });
+    };
+    let between = Between::visit(body, reservation.location, reservation.place, activation);
+    if !between.reads_lender {
+        return None;
+    }
+    assert!(
+        !repeats_without(body, reservation.location, activation),
+        "two-phase borrow of {:?}: it would be created again in a loop",
+        reservation.place
+    );
+    assert!(
+        !reads_overlapping_at(body, reservation.place, activation),
+        "two-phase borrow of {:?}: the borrowed place is read where the borrow is created",
+        reservation.place
+    );
+    Some(Move {
+        from: reservation.location,
+        to: Some(activation),
+    })
+}
+
+/// The activation of the reservation's borrow, or `None` when its temporary is never used or,
+/// for a copy, when the copy may not be a two-phase borrow: its temporary has several uses, or
+/// the use may run again without the copy.
+fn two_phase_activation<'tcx>(
+    body: &Body<'tcx>,
+    reservation: &Reservation<'tcx>,
+    temp_uses: &HashMap<Local, Vec<Location>>,
+) -> Option<Location> {
     let uses: Vec<Location> = temp_uses[&reservation.temp]
         .iter()
         .copied()
@@ -122,39 +228,11 @@ fn planned_move<'tcx>(
     if reservation.copied && uses.len() != 1 {
         return None;
     }
-    let Some(activation) = activation(body, reservation, &uses) else {
-        return Some(Move {
-            from: reservation.location,
-            to: None,
-        });
-    };
+    let activation = activation(body, reservation, &uses)?;
     if reservation.copied && repeats_without(body, reservation.location, activation) {
         return None;
     }
-    let between = Between::visit(body, reservation, activation);
-    if !between.reads_lender {
-        return None;
-    }
-    let to = creation_point(body, &between.address_writes, activation).unwrap_or_else(|| {
-        unimplemented!(
-            "two-phase borrow of {:?}: the pointers it goes through are overwritten on several paths",
-            reservation.place
-        )
-    });
-    assert!(
-        !repeats_without(body, reservation.location, to),
-        "two-phase borrow of {:?}: it would be created again in a loop",
-        reservation.place
-    );
-    assert!(
-        !reads_overlapping_at(body, reservation.place, to),
-        "two-phase borrow of {:?}: the borrowed place is read where the borrow is created",
-        reservation.place
-    );
-    Some(Move {
-        from: reservation.location,
-        to: Some(to),
-    })
+    Some(activation)
 }
 
 /// Whether `to` can run again after itself without `from` running in between, as in a loop
@@ -234,27 +312,6 @@ fn activation(
     first
 }
 
-/// Where the moved borrow is created: before the first overwrite of a pointer the borrowed place
-/// goes through, so that the place still names the reserved one, or at the activation when there
-/// is none. The first overwrite must come before the others and the activation.
-fn creation_point(
-    body: &Body<'_>,
-    address_writes: &[Location],
-    activation: Location,
-) -> Option<Location> {
-    if address_writes.is_empty() {
-        return Some(activation);
-    }
-    let dominators = body.basic_blocks.dominators();
-    let dominates_rest = |first: &Location| {
-        address_writes
-            .iter()
-            .chain([&activation])
-            .all(|other| first.dominates(*other, dominators))
-    };
-    address_writes.iter().copied().find(dominates_rest)
-}
-
 /// The places whose value decides which place `place` names: each pointer it dereferences and
 /// each index local.
 fn address_places<'tcx>(place: Place<'tcx>) -> Vec<PlaceRef<'tcx>> {
@@ -297,14 +354,20 @@ struct Between<'tcx> {
 }
 
 impl<'tcx> Between<'tcx> {
-    fn visit(body: &Body<'tcx>, reservation: &Reservation<'tcx>, activation: Location) -> Self {
+    /// What the code from `reservation`, which reserves `place`, to `activation` does.
+    fn visit(
+        body: &Body<'tcx>,
+        reservation: Location,
+        place: Place<'tcx>,
+        activation: Location,
+    ) -> Self {
         let mut between = Between {
-            lender: reservation.place.local,
-            address_places: address_places(reservation.place),
+            lender: place.local,
+            address_places: address_places(place),
             reads_lender: false,
             address_writes: Vec::new(),
         };
-        for location in locations_between(body, reservation.location, activation) {
+        for location in locations_between(body, reservation, activation) {
             visit_location(body, &mut between, location);
         }
         between
