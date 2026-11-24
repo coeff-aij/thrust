@@ -56,6 +56,9 @@ struct IndexedPlaceFinder<'a, 'tcx> {
     /// The slice the bounds check compares with, when known ([`checked_slice`]): a place that
     /// indexes another sequence is not the access the check guards.
     checked_slice: Option<mir::Place<'tcx>>,
+    /// The constant length the bounds check compares with, an array's: a place that indexes a
+    /// sequence of another type is not the access the check guards.
+    checked_len: Option<u64>,
     found: Option<mir::Place<'tcx>>,
     use_locations: Vec<mir::Location>,
     mutating_locations: Vec<mir::Location>,
@@ -96,6 +99,12 @@ impl<'tcx> mir::visit::Visitor<'tcx> for IndexedPlaceFinder<'_, 'tcx> {
                 return;
             }
             if self.checked_slice.is_some_and(|slice| slice != base) {
+                return;
+            }
+            if self
+                .checked_len
+                .is_some_and(|len| array_len(self.tcx, self.body, base) != Some(len))
+            {
                 return;
             }
             self.found = Some(indexed);
@@ -382,7 +391,9 @@ fn find_bounds_check<'tcx>(body: &Body<'tcx>, block: BasicBlock) -> Option<Bound
 /// the same index that may check the same sequence, in depth-first order. The block that ends in
 /// that check belongs to the region, for the statements before the check, but the blocks after it
 /// are reached through the call that the check is reconstructed into. A check of the same index
-/// against another slice, such as the inner one of `s[i][i]`, does not end the region.
+/// against another slice, such as the inner one of `s[i][i]`, does not end the region, nor does
+/// one against a constant length in a block that does nothing else ([`checks_only`]), such as the
+/// inner one of `a[i][i]` of `[[T; N]; M]`.
 fn access_region<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
@@ -399,7 +410,8 @@ fn access_region<'tcx>(
         let other_slice = checked.is_some_and(|checked| {
             checked_slice(tcx, body, &check).is_some_and(|slice| slice != checked)
         });
-        !other_slice
+        let other_array = checked_len(tcx, &check).is_some() && checks_only(body, &check);
+        !other_slice && !other_array
     };
     let dominators = body.basic_blocks.dominators();
     let mut region = Vec::new();
@@ -434,6 +446,7 @@ fn find_slice_access<'tcx>(
         tcx,
         index: bounds_check.index_local,
         checked_slice: checked_slice(tcx, body, bounds_check),
+        checked_len: checked_len(tcx, bounds_check),
         found: None,
         use_locations: Vec::new(),
         mutating_locations: Vec::new(),
@@ -733,15 +746,47 @@ fn checks_length_of<'tcx>(
     check: &BoundsCheck<'tcx>,
     sequence: mir::Place<'tcx>,
 ) -> bool {
-    if let mir_ty::TyKind::Array(_, len) = sequence.ty(&body.local_decls, tcx).ty.kind() {
-        let check_len = check
-            .len
-            .constant()
-            .and_then(|c| c.const_.try_to_scalar_int())
-            .map(|len| len.to_target_usize(tcx));
-        return check_len.is_some() && check_len == len.try_to_target_usize(tcx);
+    if let Some(len) = array_len(tcx, body, sequence) {
+        return checked_len(tcx, check) == Some(len);
     }
     checked_slice(tcx, body, check) == Some(sequence)
+}
+
+/// The constant length `check` compares its index with, an array's.
+fn checked_len<'tcx>(tcx: TyCtxt<'tcx>, check: &BoundsCheck<'tcx>) -> Option<u64> {
+    let len = check.len.constant()?.const_.try_to_scalar_int()?;
+    Some(len.to_target_usize(tcx))
+}
+
+/// The length of `sequence` when it is an array of a known length.
+fn array_len<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    sequence: mir::Place<'tcx>,
+) -> Option<u64> {
+    let mir_ty::TyKind::Array(_, len) = sequence.ty(&body.local_decls, tcx).ty.kind() else {
+        return None;
+    };
+    len.try_to_target_usize(tcx)
+}
+
+/// Whether the block of `check` does nothing but compute the check's condition, so that the
+/// check sees the state its block starts in. A bounds check against a constant length that follows
+/// another one this way checks either the same sequence in the same state, which the first check
+/// covers, or an element the first one's access reaches into (`a[i][i]`).
+fn checks_only(body: &Body<'_>, check: &BoundsCheck<'_>) -> bool {
+    body.basic_blocks[check.block]
+        .statements
+        .iter()
+        .all(|statement| match &statement.kind {
+            StatementKind::Assign(assign) => {
+                Some(assign.0.local) == check.condition_local && assign.0.projection.is_empty()
+            }
+            StatementKind::StorageLive(_) | StatementKind::StorageDead(_) | StatementKind::Nop => {
+                true
+            }
+            _ => false,
+        })
 }
 
 /// The slice whose length `check` compares its index with, when that length is the `PtrMetadata`
