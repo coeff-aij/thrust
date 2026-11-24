@@ -29,7 +29,7 @@ mod drop_point;
 mod trait_object;
 mod visitor;
 
-use crate::analyze::block_contract::{BlockContract, Change};
+use crate::analyze::block_contract::{self, BlockContract, Change};
 pub use drop_point::{DropPoints, MoveState, MovedOut};
 
 /// Whether a basic block needs a precondition of its own, rather than
@@ -2977,6 +2977,25 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 continue;
             }
             let old = defined.then(|| self.env.local_type(local));
+            // The fields of a local reborrowed in its `&mut` fields, as they were: the final
+            // value of each reborrowed field and every field beside it are kept.
+            let field_facts: Vec<(mir::Place<'tcx>, bool, PlaceType)> =
+                match (change, contract.changed_fields.get(&local)) {
+                    (Change::Fields, Some(paths)) if defined => {
+                        let places = block_contract::field_places(self.tcx, local, decl_ty, paths)
+                            .expect("fields that a contract reborrows are of a tuple or a struct");
+                        let reborrowed = places.reborrowed.into_iter().map(|p| (p, true));
+                        let kept = places.kept.into_iter().map(|p| (p, false));
+                        reborrowed
+                            .chain(kept)
+                            .map(|(place, reborrowed)| {
+                                let ty = self.place_type(&place);
+                                (place, reborrowed, ty)
+                            })
+                            .collect()
+                    }
+                    _ => Vec::new(),
+                };
             let mut ty = self.type_builder.build(decl_ty).vacuous().ty;
             match &old {
                 Some(old) if self.is_mut_local(local) => {
@@ -3006,6 +3025,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 None => {}
             }
             self.bind_local(local, rty::RefinedType::unrefined(ty));
+            if !field_facts.is_empty() {
+                let mut builder = PlaceTypeBuilder::default();
+                for (place, reborrowed, old_ty) in field_facts {
+                    let new_ty = self.place_type(&place);
+                    let (_, old_term) = builder.subsume(old_ty);
+                    let (_, new_term) = builder.subsume(new_ty);
+                    let fact = if reborrowed {
+                        new_term.mut_final().equal_to(old_term.mut_final())
+                    } else {
+                        new_term.equal_to(old_term)
+                    };
+                    builder.push_formula(fact);
+                }
+                self.env.assume(builder.build_assumption());
+            }
             let keeps_final = change == Change::ThroughDeref && decl_ty.is_mutable_ptr();
             if let (Some(old), true) = (old, keeps_final) {
                 let boxed = self.is_mut_local(local);
