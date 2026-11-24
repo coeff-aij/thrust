@@ -18,7 +18,7 @@ impl Check for i64 {
 fn go<'a>(s: &mut [&'a mut [i64]], b: &'a mut [i64], i: usize, j: usize) {
     s[i][0].check({
         let k = s[i][0];
-        s[j] = b; //~ ERROR: this may change which place a two-phase borrow names
+        s[j] = b; //~ ERROR: this may change which place a mutable borrow names
         k
     });
 }

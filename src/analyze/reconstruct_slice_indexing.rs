@@ -186,7 +186,7 @@ impl<'tcx> mir::visit::Visitor<'tcx> for ReadFinder {
 pub fn reconstruct<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &mut Body<'tcx>,
-    annotation_reads: &two_phase_borrow::AnnotationReads<'tcx>,
+    borrow_creation: &two_phase_borrow::BorrowCreationPlan,
 ) {
     // A block split off by `reconstruct_at_activation` may end in a bounds check.
     let mut next = 0;
@@ -222,7 +222,7 @@ pub fn reconstruct<'tcx>(
             reconstruct_at_mut_ref_read(
                 tcx,
                 body,
-                annotation_reads,
+                borrow_creation,
                 bounds_check,
                 &region,
                 read,
@@ -230,7 +230,7 @@ pub fn reconstruct<'tcx>(
             );
             continue;
         }
-        match moved_borrow(tcx, body, annotation_reads, &access, &uses) {
+        match moved_borrow(tcx, body, borrow_creation, &access, &uses) {
             Some((reservation, creation)) => reconstruct_at_activation(
                 tcx,
                 body,
@@ -248,22 +248,22 @@ pub fn reconstruct<'tcx>(
 /// Reconstructs an access whose element a `&mut` is read out of at `read` (`s[i].m()` of
 /// `s: &mut [&mut T]`), which `ReborrowVisitor` reborrows: the reborrow becomes a statement before
 /// the read ([`reborrow_before`]), where the element is borrowed through `IndexMut::index_mut`
-/// as the borrow of [`reconstruct_at_activation`] is.
+/// as the borrow of [`reconstruct_at_activation`] is. When the read is a copy `_t = copy s[i]`
+/// that `two_phase_borrow` creates at its activation, the reborrow is created there too.
 fn reconstruct_at_mut_ref_read<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &mut Body<'tcx>,
-    annotation_reads: &two_phase_borrow::AnnotationReads<'tcx>,
+    borrow_creation: &two_phase_borrow::BorrowCreationPlan,
     bounds_check: BoundsCheck<'tcx>,
     region: &[BasicBlock],
     read: mir::Location,
     place: mir::Place<'tcx>,
 ) {
-    assert!(
-        two_phase_borrow::moved_creation_point(tcx, body, annotation_reads, read).is_none(),
-        "two-phase reborrow of {place:?} read out of a sequence would be created before its \
-         activation"
-    );
     let reservation = reborrow_before(tcx, body, read, place);
+    let read = reservation.successor_within_block();
+    let creation = borrow_creation
+        .moved_creation_point(tcx, body, read)
+        .unwrap_or(reservation);
     let Some((access, uses)) = find_slice_access(tcx, body, &bounds_check, region) else {
         panic!("{place:?} is read as a `&mut` out of a shared sequence")
     };
@@ -275,7 +275,7 @@ fn reconstruct_at_mut_ref_read<'tcx>(
         access,
         &uses,
         reservation,
-        reservation,
+        creation,
     );
 }
 
@@ -286,12 +286,13 @@ fn reconstruct_at_mut_ref_read<'tcx>(
 fn moved_borrow<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
-    annotation_reads: &two_phase_borrow::AnnotationReads<'tcx>,
+    borrow_creation: &two_phase_borrow::BorrowCreationPlan,
     access: &SliceAccess<'tcx>,
     uses: &AccessUses<'tcx>,
 ) -> Option<(mir::Location, mir::Location)> {
     let (reservation, creation) = uses.locations.iter().find_map(|&location| {
-        two_phase_borrow::moved_creation_point(tcx, body, annotation_reads, location)
+        borrow_creation
+            .moved_creation_point(tcx, body, location)
             .map(|creation| (location, creation))
     })?;
     assert_reads_before(body, access, uses, reservation);

@@ -21,9 +21,9 @@ fn main() {
     let mut s = (&mut a, 0);
     s.0.set({
         let x = s.0.get();
-        s.0 = &mut b; //~ ERROR: this may change which place a two-phase borrow names
+        s.0 = &mut b; //~ ERROR: this may change which place a mutable borrow names
         x + 1
     });
     s.1 += 1;
-    assert!(b.0 == 10);
+    assert!(b.0 == 2);
 }

@@ -22,7 +22,7 @@ fn main() {
     let mut b = P(C(5), 0);
     let mut p = &mut a;
     p.0.set({
-        p = &mut b; //~ ERROR: this may change which place a two-phase borrow names
+        p = &mut b; //~ ERROR: this may change which place a mutable borrow names
         p.0.get() + 1
     });
     assert!(a.0 .0 == 6);
