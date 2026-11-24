@@ -1464,6 +1464,8 @@ fn prefix_fits_in_any_order<
         // What the set's iterator needs: its words, and its domain a `usize`.
         && DenseBitSet::<LocalIdx>::words_cover_domain(*ineligible_locals)
         && (*local_layouts).len() <= 18446744073709551615usize
+        // `picked` is an `IndexVec<u32, _>` of at most that many entries.
+        && (*local_layouts).len() <= 4294967295usize
         // `LocalIdx` reaches every local: the set's iterator's `inv`, which `Map::new` and
         // `extend_from` require.
         && forall(|k: USize| 0 <= k && k < (*local_layouts).len() ==> <LocalIdx as Idx>::can_new(k))
@@ -1589,9 +1591,38 @@ fn promote_locals<
             }
         );
         let current_before = thrust_macros::ghost!(|current: &mut IndexVec<FieldIdx, F>| -> Seq<<F as thrust_models::Model>::Ty> { *current });
+        // The two `push` calls need the next index of each vector to be buildable: `picked` has at
+        // most as many entries as the set (the iterator's `produces`), below the `u32` bound.
+        thrust_macros::proof_assert!(|picked: IndexVec<u32, LocalIdx>, current: &mut IndexVec<FieldIdx, F>|
+            <u32 as Idx>::can_new(picked.len()) && <FieldIdx as Idx>::can_new((*current).len()));
         thrust_macros::proof!(super::weight_total_push::<F>(current_before, local_layouts[local], current.len()));
+        // The weights of the entries picked so far are those of the list before this push, and the
+        // new entry's weight is the weight of the layout pushed (`ts` is `weight_seq`).
+        thrust_macros::proof!(super::weight_seq_nth::<F>((*local_layouts).len()));
+        let total_before = thrust_macros::ghost!(|current: &mut IndexVec<FieldIdx, F>| -> Int { super::weight_total::<FieldIdx, F>(&*current) });
+        let picked_before = thrust_macros::ghost!(|picked: IndexVec<u32, LocalIdx>| -> IndexVec<u32, LocalIdx> { picked });
+        let picked_len = picked.len();
         current.push(local_layouts[local]);
         picked.push(local);
+        let picked_after = thrust_macros::ghost!(|picked: IndexVec<u32, LocalIdx>| -> IndexVec<u32, LocalIdx> { picked });
+        thrust_macros::proof!(weights::weight_at_common_prefix(ts, picked_before, picked_after, picked_len));
+        // The invariant's weight equation in three steps: the layouts' total grows by the pushed
+        // layout's weight, which is the entry of `ts` at the new local, and the picked entries'
+        // weight grows by the same entry.
+        thrust_macros::proof_assert!(
+            |current: &mut IndexVec<FieldIdx, F>, total_before: thrust_models::Ghost<Int>, local: LocalIdx, local_layouts: &IndexSlice<LocalIdx, F>|
+                super::weight_total::<FieldIdx, F>(&*current)
+                    == total_before + F::weight_of((*local_layouts)[<LocalIdx as Idx>::index_logic(local)])
+        );
+        thrust_macros::proof_assert!(
+            |ts: thrust_models::Ghost<Seq<Int>>, local: LocalIdx, local_layouts: &IndexSlice<LocalIdx, F>|
+                ts[<LocalIdx as Idx>::index_logic(local)] == F::weight_of((*local_layouts)[<LocalIdx as Idx>::index_logic(local)])
+        );
+        thrust_macros::proof_assert!(
+            |ts: thrust_models::Ghost<Seq<Int>>, picked: IndexVec<u32, LocalIdx>, picked_before: thrust_models::Ghost<IndexVec<u32, LocalIdx>>, local: LocalIdx, picked_len: usize|
+                weights::weight_at::<LocalIdx>(ts, picked, picked.len())
+                    == weights::weight_at::<LocalIdx>(ts, picked_before, picked_len) + ts[<LocalIdx as Idx>::index_logic(local)]
+        );
     }
     let picked_ghost = thrust_macros::ghost!(|picked: IndexVec<u32, LocalIdx>| -> IndexVec<u32, LocalIdx> { picked });
     thrust_macros::proof!(super::weight_first_is_sum_first((*local_layouts).len()));
