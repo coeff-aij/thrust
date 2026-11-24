@@ -206,6 +206,9 @@ fn kind(
         mir::TerminatorKind::SwitchInt { .. } => "branch".to_owned(),
         mir::TerminatorKind::Assert { msg, .. } => match &**msg {
             mir::AssertKind::BoundsCheck { .. } => "bounds check".to_owned(),
+            mir::AssertKind::MisalignedPointerDereference { .. } => {
+                "index check of a two-phase borrow".to_owned()
+            }
             mir::AssertKind::Overflow(op, ..) => format!("overflow check of {op:?}"),
             mir::AssertKind::OverflowNeg(..) => "overflow check of negation".to_owned(),
             mir::AssertKind::DivisionByZero(..) => "division by zero check".to_owned(),

@@ -5,11 +5,14 @@
 //! sharing it, until its activation, the unique use of `_t`; the code in between may read `P`.
 //! Thrust replaces a borrowed place by the borrow's prophecy where the borrow is created, so every
 //! two-phase borrow is created right before its activation; the deref temporaries rustc makes for
-//! its place are already folded into the place by `unelaborate_derefs`. rustc evaluates `P` once, at the reservation, and a write in between that may
-//! change a pointer `P` goes through or one of its index locals is refused. Without one, `P` names
-//! the same memory at both points: the borrow created at the activation is rustc's borrow, and the
-//! reads in between see the current value. Thrust reads MIR without `InstSimplify`, which would
-//! turn a reborrow `&mut *p` into `copy p` and lose its two-phase kind.
+//! its place are already folded into the place by `unelaborate_derefs`. rustc evaluates `P` once,
+//! at the reservation, and a write in between that may change a pointer `P` goes through or one of
+//! its index locals is refused. Without one, `P` names the same memory at both points: the borrow
+//! created at the activation is rustc's borrow, and the reads in between see the current value.
+//! A write that reaches such a pointer only through an index (`(*s)[j] = b` while `*(*s)[i]` is
+//! reserved) leaves `P` unchanged exactly when the two indices differ, so [`assert_index_disjoint`]
+//! asserts that at the write. Thrust reads MIR without `InstSimplify`, which would turn a reborrow
+//! `&mut *p` into `copy p` and lose its two-phase kind.
 //!
 //! The borrow of a slice element (`s[0].bump(s[1])`) is created at its activation by the
 //! reconstruction of its `IndexMut::index_mut` call, which runs first and asks
@@ -27,6 +30,110 @@ struct TwoPhaseBorrow<'tcx> {
     reservation: Location,
     temp: Local,
     place: Place<'tcx>,
+}
+
+/// Asserts, before each write between a reservation and its activation that reaches a pointer of
+/// the borrowed place only through an index, that the written index differs from the reserved one:
+/// then no write in between changes a pointer on the path, and the borrow created at the
+/// activation is rustc's borrow. With equal indices the assertion fails and verification stops.
+pub fn assert_index_disjoint<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
+    let mut obligations = Vec::new();
+    for (block, data) in body.basic_blocks.iter_enumerated() {
+        for statement_index in 0..data.statements.len() {
+            let location = Location {
+                block,
+                statement_index,
+            };
+            let Some(borrow) = two_phase_borrow_at(body, location) else {
+                continue;
+            };
+            let Some(activation) = activation(tcx, body, &borrow) else {
+                continue;
+            };
+            obligations.extend(index_obligations(tcx, body, &borrow, activation));
+        }
+    }
+    obligations.sort_by_key(|(location, reserved, written)| {
+        (
+            location.block,
+            location.statement_index,
+            *reserved,
+            *written,
+        )
+    });
+    obligations.dedup();
+    // Splitting from the last location down keeps the earlier locations valid.
+    for (location, reserved, written) in obligations.into_iter().rev() {
+        assert_indices_differ(tcx, body, location, reserved, written);
+    }
+}
+
+/// The writes between the reservation and the activation whose overlap with the borrowed place is
+/// decided by two index locals: the write's location, the reserved index and the written index.
+fn index_obligations<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    borrow: &TwoPhaseBorrow<'tcx>,
+    activation: Location,
+) -> Vec<(Location, Local, Local)> {
+    let mut finder = AddressWriteFinder {
+        tcx,
+        body,
+        addresses: address_places(borrow.place),
+        write: None,
+        obligations: Vec::new(),
+    };
+    for location in locations_between(body, borrow.reservation, activation) {
+        visit_location(body, &mut finder, location);
+    }
+    finder.obligations
+}
+
+/// Splits the block at `location` and asserts `reserved != written` between the two parts.
+fn assert_indices_differ<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mut Body<'tcx>,
+    location: Location,
+    reserved: Local,
+    written: Local,
+) {
+    let source_info = *body.source_info(location);
+    let differ = body
+        .local_decls
+        .push(mir::LocalDecl::new(tcx.types.bool, source_info.span));
+    let index = |local: Local| mir::Operand::Copy(Place::from(local));
+    let compare =
+        mir::Rvalue::BinaryOp(mir::BinOp::Ne, Box::new((index(reserved), index(written))));
+    let blocks = body.basic_blocks.as_mut();
+    let data = &mut blocks[location.block];
+    let is_cleanup = data.is_cleanup;
+    let tail_statements = data.statements.split_off(location.statement_index);
+    let tail_terminator = data.terminator.take();
+    data.statements.push(mir::Statement::new(
+        source_info,
+        mir::StatementKind::Assign(Box::new((Place::from(differ), compare))),
+    ));
+    let tail = blocks.push(mir::BasicBlockData::new_stmts(
+        tail_statements,
+        tail_terminator,
+        is_cleanup,
+    ));
+    // rustc has no assertion kind for this check; a misaligned pointer check, which Thrust does
+    // not otherwise see, carries the two indices, and the report names it as this check.
+    let msg = mir::AssertKind::MisalignedPointerDereference {
+        required: index(reserved),
+        found: index(written),
+    };
+    blocks[location.block].terminator = Some(mir::Terminator {
+        source_info,
+        kind: mir::TerminatorKind::Assert {
+            cond: mir::Operand::Move(Place::from(differ)),
+            expected: true,
+            msg: Box::new(msg),
+            target: tail,
+            unwind: mir::UnwindAction::Continue,
+        },
+    });
 }
 
 pub fn move_to_activation<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
@@ -125,6 +232,7 @@ fn refuse_address_writes<'tcx>(
         body,
         addresses: address_places(borrow.place),
         write: None,
+        obligations: Vec::new(),
     };
     for location in locations_between(body, borrow.reservation, activation) {
         visit_location(body, &mut finder, location);
@@ -169,39 +277,77 @@ struct AddressWriteFinder<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     body: &'a Body<'tcx>,
     addresses: Vec<PlaceRef<'tcx>>,
+    /// A write that changes an address.
     write: Option<Location>,
+    /// Writes that change an address unless two indices differ.
+    obligations: Vec<(Location, Local, Local)>,
 }
 
 impl<'tcx> mir::visit::Visitor<'tcx> for AddressWriteFinder<'_, 'tcx> {
     fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, location: Location) {
-        let changes = |address: &PlaceRef<'tcx>| may_change(self.tcx, self.body, *place, *address);
-        if context.is_mutating_use() && self.addresses.iter().any(changes) {
-            self.write = Some(location);
+        if context.is_mutating_use() {
+            for address in &self.addresses {
+                match conflict(self.tcx, self.body, *place, *address) {
+                    Conflict::Disjoint => {}
+                    Conflict::Changes => self.write = Some(location),
+                    Conflict::UnlessIndicesDiffer(reserved, written) => {
+                        self.obligations.push((location, reserved, written));
+                    }
+                }
+            }
         }
         self.super_place(place, context, location);
     }
 }
 
-/// Whether writing `written` may change the value at `address`. A write through a dereference of
-/// `address` changes the pointee, not `address`.
-fn may_change<'tcx>(
+/// How writing `written` affects the value at `address`.
+enum Conflict {
+    /// It does not change the address; a write through a dereference of `address` changes the
+    /// pointee, not `address`.
+    Disjoint,
+    /// It may change the address.
+    Changes,
+    /// It changes the address when the two index locals are equal, and not otherwise: the
+    /// places are the same up to indices, the first of the address, the second of the write.
+    UnlessIndicesDiffer(Local, Local),
+}
+
+fn conflict<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     written: Place<'tcx>,
     address: PlaceRef<'tcx>,
-) -> bool {
+) -> Conflict {
     if written.local != address.local {
-        return false;
+        return Conflict::Disjoint;
     }
+    let mut indices = None;
+    let mut index_pairs = 0;
+    let mut other_overlap = false;
     for (i, (base, elem)) in written.iter_projections().enumerate() {
         let Some(addressed) = address.projection.get(i) else {
-            return elem != PlaceElem::Deref;
+            if elem == PlaceElem::Deref {
+                return Conflict::Disjoint;
+            }
+            break;
         };
         if !elems_may_overlap(tcx, body, base, elem, *addressed) {
-            return false;
+            return Conflict::Disjoint;
+        }
+        match (*addressed, elem) {
+            (PlaceElem::Index(reserved), PlaceElem::Index(written)) if reserved != written => {
+                indices = Some((reserved, written));
+                index_pairs += 1;
+            }
+            _ => other_overlap |= *addressed != elem,
         }
     }
-    true
+    match indices {
+        Some((reserved, written)) if index_pairs == 1 && !other_overlap => {
+            Conflict::UnlessIndicesDiffer(reserved, written)
+        }
+        _ => Conflict::Changes,
+    }
 }
 
 /// Whether two projection elements of the same base may name overlapping parts, as rustc's
