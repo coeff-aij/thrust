@@ -303,25 +303,48 @@ pub fn explicit_laws(
 /// whose parameter it is does not count: the parameter's `hist_inv!` relation and its contract at
 /// each closure trait are shared by every method of the impl.
 pub fn fn_bounded_where_declared(tcx: mir_ty::TyCtxt<'_>, param_def_id: DefId) -> bool {
-    let Some(fn_trait) = tcx.lang_items().fn_trait() else {
-        return false;
-    };
+    closure_bound_where_declared(tcx, param_def_id) == Some(mir_ty::ClosureKind::Fn)
+}
+
+/// The closure trait that bounds the type parameter `param_def_id` on the item that declares it,
+/// the most specific one when several do (`Fn` before `FnMut` before `FnOnce`), so that the
+/// parameter is a closure of that kind wherever it is in scope. As for
+/// [`fn_bounded_where_declared`], a bound written on one method of an impl does not count.
+pub fn closure_bound_where_declared(
+    tcx: mir_ty::TyCtxt<'_>,
+    param_def_id: DefId,
+) -> Option<mir_ty::ClosureKind> {
     let declaring = tcx.parent(param_def_id);
-    let Some(index) = tcx
+    let index = tcx
         .generics_of(declaring)
-        .param_def_id_to_index(tcx, param_def_id)
-    else {
-        return false;
-    };
+        .param_def_id_to_index(tcx, param_def_id)?;
     tcx.predicates_of(declaring)
         .predicates
         .iter()
         .filter_map(|(clause, _)| clause.as_trait_clause())
-        .any(|pred| {
+        .filter_map(|pred| {
             let pred = pred.skip_binder();
-            pred.def_id() == fn_trait
-                && matches!(pred.self_ty().kind(), mir_ty::TyKind::Param(p) if p.index == index)
+            match pred.self_ty().kind() {
+                mir_ty::TyKind::Param(p) if p.index == index => {
+                    tcx.fn_trait_kind_from_def_id(pred.def_id())
+                }
+                _ => None,
+            }
         })
+        .reduce(most_specific_closure_kind)
+}
+
+/// The more specific of two closure kinds that bound one type: `Fn` before `FnMut` before
+/// `FnOnce`.
+fn most_specific_closure_kind(
+    kind: mir_ty::ClosureKind,
+    other: mir_ty::ClosureKind,
+) -> mir_ty::ClosureKind {
+    if kind.extends(other) {
+        kind
+    } else {
+        other
+    }
 }
 
 /// The laws of the relation `pred` of a closure type parameter whose contract at a call through
