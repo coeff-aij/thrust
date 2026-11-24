@@ -236,7 +236,9 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
 /// Reconstructs an access whose element a `&mut` is read out of at `read` (`s[i].m()` of
 /// `s: &mut [&mut T]`), which `ReborrowVisitor` reborrows: the reborrow becomes a statement before
 /// the read ([`reborrow_before`]), where the element is borrowed through `IndexMut::index_mut`
-/// as the borrow of [`reconstruct_at_activation`] is.
+/// as the borrow of [`reconstruct_at_activation`] is. A read into a temporary used once by a call,
+/// a two-phase reborrow `&mut *t` that MIR optimizations turned into the copy `t`, moves first to
+/// where `two_phase_borrow` creates the borrow.
 fn reconstruct_at_mut_ref_read<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &mut Body<'tcx>,
@@ -245,10 +247,15 @@ fn reconstruct_at_mut_ref_read<'tcx>(
     read: mir::Location,
     place: mir::Place<'tcx>,
 ) {
-    let reservation = reborrow_before(tcx, body, read, place);
-    let Some((access, uses)) = find_slice_access(tcx, body, &bounds_check, region) else {
+    let Some((access, mut uses)) = find_slice_access(tcx, body, &bounds_check, region) else {
         panic!("{place:?} is read as a `&mut` out of a shared sequence")
     };
+    let creation = two_phase_borrow::moved_creation_point(tcx, body, read).unwrap_or(read);
+    if creation != read {
+        move_statement_before(body, read, creation);
+        uses.locations.retain(|location| *location != read);
+    }
+    let reservation = reborrow_before(tcx, body, creation, place);
     assert_reads_before(body, &access, &uses, reservation);
     reconstruct_at_activation(
         tcx,
@@ -259,6 +266,17 @@ fn reconstruct_at_mut_ref_read<'tcx>(
         reservation,
         reservation,
     );
+}
+
+/// Moves the statement at `from` before `to`, leaving a `Nop` at `from`.
+fn move_statement_before(body: &mut Body<'_>, from: mir::Location, to: mir::Location) {
+    let blocks = body.basic_blocks.as_mut();
+    let statement = &mut blocks[from.block].statements[from.statement_index];
+    let moved = statement.clone();
+    statement.make_nop();
+    blocks[to.block]
+        .statements
+        .insert(to.statement_index, moved);
 }
 
 /// The use of the access that is a two-phase `&mut` borrow which `two_phase_borrow` moves, with

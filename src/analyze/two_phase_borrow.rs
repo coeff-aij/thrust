@@ -1,18 +1,26 @@
 //! Creates each two-phase mutable borrow at its activation, as Creusot does.
 //!
 //! A two-phase borrow `_t = &mut place` (an autoref'd receiver) only reserves `place` until `_t`
-//! is used, and code in between may read `place`, as in `c.set(c.get() + 1)`. Thrust replaces
-//! a borrowed place by the borrow's prophecy where the borrow is created, so the borrow is moved
-//! right before the activation, the unique use of `_t`, when the code in between reads the
-//! lender (the local `place` starts from). `InstSimplify` turns a reborrow `&mut *p` into
-//! `copy p`, which Thrust reborrows as well; such a copy into a local used once is moved the same
-//! way. When a pointer `place` goes through is overwritten before the activation
+//! is used, and code in between may read `place`, as in `c.set(c.get() + 1)`: rustc evaluates
+//! `place` at the reservation and treats the borrow as a shared one until the activation, the
+//! first use of `_t` (rustc's `BorrowSet`, `TwoPhaseActivation`). Creusot emits such a borrow at
+//! its activation instead of its reservation (`two_phases_activated` in `creusot/src/analysis.rs`).
+//! Thrust replaces a borrowed place by the borrow's prophecy where the borrow is created, so the
+//! borrow is moved right before the activation when the code in between reads the lender (the
+//! local `place` starts from). `InstSimplify` turns a reborrow `&mut *p` into `copy p`, which
+//! Thrust reborrows as well; such a copy into a local used once is moved the same way. When a
+//! pointer `place` goes through is overwritten before the activation
 //! (`p.0.set({ p = &mut b; 5 })`), the borrow is created before the first such write instead.
-//! When that write only may overwrite such a pointer (`s[i][0].bump({ s[j] = b; s[i][0] })`), a
-//! later read of the borrowed place may name the reserved place, which the borrow has taken by
-//! then, so Thrust reports it as unsupported.
-//! The borrow of a slice element (`s[0].bump(s[1])`) is created at the same point by the
-//! reconstruction of its `IndexMut::index_mut` call, which runs first.
+//!
+//! Every borrow Thrust creates before its activation keeps one invariant: no read that may overlap
+//! the borrowed place runs between the creation and the activation, since it would read the
+//! prophecy instead of the current value. A read after a write that surely overwrites a pointer
+//! the place goes through reads the new place. Any other read after the creation, when the write
+//! there only may overwrite such a pointer (`s[i][0].bump({ s[j] = b; s[i][0] })`), is reported as
+//! unsupported. The borrow of a slice element (`s[0].bump(s[1])`) and the reborrow of a `&mut` read
+//! out of one (`(*s[i]).bump(..)` of `s: &mut [&mut T]`) are created at the point
+//! [`moved_creation_point`] gives, by the reconstruction of their `IndexMut::index_mut` calls,
+//! which runs first and asks it on the places of the source.
 
 use std::collections::{HashMap, HashSet};
 
@@ -93,14 +101,15 @@ fn is_mut_ref<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>, place: &Place<'tcx>) -
     )
 }
 
-/// Where [`move_to_activation`] creates the two-phase borrow `_t = &mut place` at `location`, when
-/// it moves the borrow there.
+/// Where [`move_to_activation`] creates the borrow made at `location`, a two-phase borrow
+/// `_t = &mut place` or a copy `_t = copy p` of a `&mut` that Thrust reborrows, when it moves the
+/// borrow there. It reports a read that would see the borrow's prophecy there as unsupported.
 pub fn moved_creation_point<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     location: Location,
 ) -> Option<Location> {
-    let reservation = reservation_at(tcx, body, location).filter(|r| !r.copied)?;
+    let reservation = reservation_at(tcx, body, location)?;
     let temp_uses = temp_uses(body, std::slice::from_ref(&reservation));
     planned_move(tcx, body, &reservation, &temp_uses)?.to
 }
@@ -402,7 +411,8 @@ fn read_after_possible_redirect<'tcx>(
 
 /// Whether the statement or terminator at `location` overwrites a pointer `borrowed` goes
 /// through, so that `borrowed` names another place after it and the reserved place is no longer
-/// reached from its local.
+/// reached from its local: it stores to or calls into that pointer or a place the pointer is part
+/// of (`p` for `p.0`).
 fn redirects_at<'tcx>(body: &Body<'tcx>, borrowed: Place<'tcx>, location: Location) -> bool {
     struct Redirect<'tcx> {
         pointers: Vec<PlaceRef<'tcx>>,
@@ -414,7 +424,8 @@ fn redirects_at<'tcx>(body: &Body<'tcx>, borrowed: Place<'tcx>, location: Locati
                 context,
                 PlaceContext::MutatingUse(MutatingUseContext::Store | MutatingUseContext::Call)
             );
-            if overwrites && self.pointers.contains(&place.as_ref()) {
+            let contains = |pointer: &PlaceRef<'tcx>| is_prefix(place.as_ref(), *pointer);
+            if overwrites && self.pointers.iter().any(contains) {
                 self.redirects = true;
             }
         }
@@ -430,6 +441,11 @@ fn redirects_at<'tcx>(body: &Body<'tcx>, borrowed: Place<'tcx>, location: Locati
     };
     visit_location(body, &mut redirect, location);
     redirect.redirects
+}
+
+/// Whether `place` is `prefix` followed by more projections, or `prefix` itself.
+fn is_prefix<'tcx>(prefix: PlaceRef<'tcx>, place: PlaceRef<'tcx>) -> bool {
+    prefix.local == place.local && place.projection.starts_with(prefix.projection)
 }
 
 fn visit_location<'tcx>(
