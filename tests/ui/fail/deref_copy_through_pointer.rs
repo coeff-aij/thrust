@@ -1,7 +1,7 @@
+//@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 
-// `q` is the temporary of `deref_copy (*x).0`, used once; one branch overwrites `x` before the
-// use, which Thrust refuses for a reborrow it cannot tell from a two-phase one.
+// `q` is the temporary of `deref_copy (*x).0`, read after one branch overwrites `x`.
 
 #[inline(never)]
 fn id(x: bool) -> bool {
@@ -16,10 +16,10 @@ fn main() {
     let mut x = &mut sa;
     let q = &mut *x.0;
     if id(true) {
-        x = &mut sb; //~ ERROR: this may change which place a two-phase borrow names
+        x = &mut sb;
     }
     *q += 1;
     *x.0 += 1;
     x.1 += 1;
-    assert!(b == 1);
+    assert!(b == 2);
 }

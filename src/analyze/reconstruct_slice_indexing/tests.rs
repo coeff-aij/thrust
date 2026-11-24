@@ -8,6 +8,7 @@ use rustc_middle::ty::TyCtxt;
 use rustc_span::source_map::Spanned;
 
 use super::{lang_item_method, reconstruct};
+use crate::analyze::two_phase_borrow::AnnotationReads;
 
 type MirInspector = dyn for<'tcx> FnOnce(TyCtxt<'tcx>, Body<'tcx>) + Send;
 
@@ -104,7 +105,7 @@ fn reconstructs_shared_slice_indexing() {
                 let mut params = body.args_iter();
                 (params.next().unwrap(), params.next().unwrap())
             };
-            reconstruct(tcx, &mut body);
+            reconstruct(tcx, &mut body, &AnnotationReads::default());
             let index_method = lang_item_method(
                 tcx,
                 rustc_hir::lang_items::LangItem::Index,
@@ -128,7 +129,7 @@ fn reconstructs_mutable_slice_indexing() {
                 let mut params = body.args_iter();
                 (params.next().unwrap(), params.next().unwrap())
             };
-            reconstruct(tcx, &mut body);
+            reconstruct(tcx, &mut body, &AnnotationReads::default());
             let index_mut = lang_item_method(
                 tcx,
                 rustc_hir::lang_items::LangItem::IndexMut,
@@ -176,7 +177,7 @@ fn reconstructs_shared_indexing_through_mutable_slice() {
                 let mut params = body.args_iter();
                 (params.next().unwrap(), params.next().unwrap())
             };
-            reconstruct(tcx, &mut body);
+            reconstruct(tcx, &mut body, &AnnotationReads::default());
             let index_method = lang_item_method(
                 tcx,
                 rustc_hir::lang_items::LangItem::Index,

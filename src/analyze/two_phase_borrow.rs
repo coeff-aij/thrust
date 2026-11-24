@@ -1,22 +1,26 @@
-//! Creates each two-phase mutable borrow at its activation, as Creusot does, and refuses one
-//! whose reserved place may change before it.
+//! Creates a two-phase mutable borrow at its activation when the code in between reads the
+//! lender, as Creusot does, and then refuses one whose reserved place may change before it.
 //!
 //! A two-phase borrow `_t = &mut place` (an autoref'd receiver) only reserves `place` until `_t`
 //! is used, and code in between may read `place`, as in `c.set(c.get() + 1)`. Thrust replaces
 //! a borrowed place by the borrow's prophecy where the borrow is created, so the borrow is moved
 //! right before the activation, the unique use of `_t`, when the code in between reads the
-//! lender (the local `place` starts from). `InstSimplify` turns a reborrow `&mut *p` into
-//! `copy p`, which Thrust reborrows as well; such a copy into a local used once is moved the same
-//! way. The borrow of a slice element (`s[0].bump(s[1])`) is created at the same point by the
-//! reconstruction of its `IndexMut::index_mut` call.
+//! lender (the local `place` starts from), in the MIR or by name in an annotation
+//! ([`AnnotationReads`]). `InstSimplify` turns a reborrow `&mut *p` into `copy p`, which Thrust
+//! reborrows as well; such a copy into a local used once is moved the same way. The borrow of a
+//! slice element (`s[0].bump(s[1])`) is created at the same point by the reconstruction of its
+//! `IndexMut::index_mut` call.
 //!
 //! Soundness: rustc evaluates `place` once, at the reservation, and until the activation allows
-//! only reads of it and writes that do not overlap it. [`reject_reserved_place_changes`] refuses
-//! a write in between that may overlap a pointer `place` goes through (a prefix ending before a
-//! `Deref`, also through the copies of `&mut` that compute it) or an index local of `place`.
-//! Without one, `place` names the same memory at both points, so the borrow created at the
-//! activation is the one rustc makes and the reads in between see the current value; a borrow
-//! left at its reservation, with no read of the lender in between, is the same borrow.
+//! only reads of it and writes that do not overlap it. When the code in between reads the lender
+//! (also of `place` computed through the copies of `&mut` that compute it, and by name in an
+//! annotation), [`reject_reserved_place_changes`] refuses a write in between that may overlap a
+//! pointer `place` goes through (a prefix ending before a `Deref`, also through those copies) or
+//! an index local of `place`. Without one, `place` names the same memory at both points, so the
+//! borrow created at the activation is the one rustc makes and the reads in between see the
+//! current value. A borrow with no such read is left at its reservation and needs no refusal: it
+//! is created where rustc evaluates `place`, so a later write cannot change what it borrows, and
+//! no read in between can see its prophecy.
 //!
 //! - rustc: two-phase borrows in the rustc dev guide; the overlap is `place_projection_conflict`
 //!   with `PlaceConflictBias::Overlap` (elements of one sequence may overlap).
@@ -45,16 +49,75 @@ struct Move {
     to: Option<Location>,
 }
 
-pub fn move_to_activation<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
-    let moves = plan(body, reservations(tcx, body));
+/// The locals that annotations (`assume!`, `proof_assert!`, a loop invariant) read by name,
+/// which the MIR does not show, keyed by the type of the marker function the annotation calls:
+/// that type names the annotation's formula, so it finds the call where the body's rewrites
+/// move it.
+#[derive(Default)]
+pub struct AnnotationReads<'tcx> {
+    by_marker: HashMap<mir_ty::Ty<'tcx>, Vec<Local>>,
+}
+
+impl<'tcx> AnnotationReads<'tcx> {
+    /// From the reads of `body` given as the local read and the location of the marker call.
+    pub fn new(
+        tcx: TyCtxt<'tcx>,
+        body: &Body<'tcx>,
+        reads: impl IntoIterator<Item = (Local, Location)>,
+    ) -> Self {
+        let mut by_marker: HashMap<_, Vec<Local>> = HashMap::new();
+        for (local, location) in reads {
+            let marker = marker_at(tcx, body, location)
+                .expect("an annotation reads its names at the call of its marker");
+            by_marker.entry(marker).or_default().push(local);
+        }
+        AnnotationReads { by_marker }
+    }
+
+    /// The locals the annotation called at `location` reads by name.
+    fn read_at(&self, tcx: TyCtxt<'tcx>, body: &Body<'tcx>, location: Location) -> &[Local] {
+        marker_at(tcx, body, location)
+            .and_then(|marker| self.by_marker.get(&marker))
+            .map_or(&[], Vec::as_slice)
+    }
+}
+
+/// The type of the function a call at `location` calls, if a call is there.
+fn marker_at<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    location: Location,
+) -> Option<mir_ty::Ty<'tcx>> {
+    let data = &body.basic_blocks[location.block];
+    if location.statement_index < data.statements.len() {
+        return None;
+    }
+    let mir::TerminatorKind::Call { func, .. } = &data.terminator().kind else {
+        return None;
+    };
+    Some(func.ty(&body.local_decls, tcx))
+}
+
+pub fn move_to_activation<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mut Body<'tcx>,
+    annotation_reads: &AnnotationReads<'tcx>,
+) {
+    let moves = plan(tcx, body, annotation_reads, reservations(tcx, body));
     apply(body, moves);
 }
 
 /// Stops with an error at a write between a two-phase borrow's reservation and its activation
 /// that may change which place the borrow names: a write that may overlap a pointer the borrowed
-/// place goes through, or one of its index locals. Runs before the slice indexing the borrowed
+/// place goes through, or one of its index locals. Only when the code in between reads the
+/// lender of the place computed through the copies of `&mut` that compute it, or the borrow or
+/// one of the copies is created at its activation. Runs before the slice indexing the borrowed
 /// place goes through is reconstructed into calls, while its writes still name the place.
-pub fn reject_reserved_place_changes<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) {
+pub fn reject_reserved_place_changes<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    annotation_reads: &AnnotationReads<'tcx>,
+) {
     let reservations = reservations(tcx, body);
     let temp_uses = temp_uses(body, &reservations);
     let activations: Vec<_> = reservations
@@ -65,8 +128,15 @@ pub fn reject_reserved_place_changes<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>)
         let Some(activation) = *activation else {
             continue;
         };
-        let (from, place) = reserved_through_copies(tcx, &reservations, &activations, reservation);
-        let between = Between::visit(body, from, place, activation);
+        let chain = chain_through_copies(&reservations, &activations, reservation, activation);
+        let (from, place) = reserved_through_copies(tcx, &chain);
+        let between = Between::visit(tcx, body, annotation_reads, from, place, activation);
+        let link_created_at_activation = chain.iter().any(|(link, link_activation)| {
+            reads_lender_before(tcx, body, annotation_reads, link, *link_activation)
+        });
+        if !between.reads_lender && !link_created_at_activation {
+            continue;
+        }
         if let Some(&write) = between.address_writes.first() {
             tcx.dcx().span_fatal(
                 body.source_info(write).span,
@@ -77,27 +147,42 @@ pub fn reject_reserved_place_changes<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>)
     }
 }
 
-/// Where the reservation starts and the place it reserves, through the copies of `&mut`
-/// references activated by it: of `_18 = copy (*_17)` after `_17 = copy (*s)[i]`, which compute
-/// the receiver of `(**s[i]).bump(..)`, the place `**(*s)[i]` reserved from the first copy on.
-fn reserved_through_copies<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    reservations: &[Reservation<'tcx>],
+/// The reservation and the copies of `&mut` references activated by it that compute its place,
+/// each with its activation, from the reservation back to the first copy: of `_18 = copy (*_17)`
+/// after `_17 = copy (*s)[i]`, which compute the receiver of `(**s[i]).bump(..)`, both copies.
+fn chain_through_copies<'a, 'tcx>(
+    reservations: &'a [Reservation<'tcx>],
     activations: &[Option<Location>],
-    reservation: &Reservation<'tcx>,
-) -> (Location, Place<'tcx>) {
-    let mut from = reservation.location;
-    let mut place = reservation.place;
+    reservation: &'a Reservation<'tcx>,
+    activation: Location,
+) -> Vec<(&'a Reservation<'tcx>, Location)> {
+    let mut chain = vec![(reservation, activation)];
     loop {
+        let (last, _) = chain[chain.len() - 1];
         let Some((copy, _)) = reservations
             .iter()
             .zip(activations)
             .find(|(copy, activation)| {
-                copy.copied && copy.temp == place.local && **activation == Some(from)
+                copy.copied && copy.temp == last.place.local && **activation == Some(last.location)
             })
         else {
             break;
         };
+        chain.push((copy, last.location));
+    }
+    chain
+}
+
+/// Where the reservation of a [`chain_through_copies`] starts and the place it reserves: of the
+/// chain of `_18 = copy (*_17)` and `_17 = copy (*s)[i]`, the place `**(*s)[i]` reserved from the
+/// first copy on.
+fn reserved_through_copies<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    chain: &[(&Reservation<'tcx>, Location)],
+) -> (Location, Place<'tcx>) {
+    let (reservation, _) = chain[0];
+    let mut place = reservation.place;
+    for (copy, _) in &chain[1..] {
         // A copy `_u = copy q` reserves `*q`; `place` goes through `*_u`, which is `*q`.
         let (_, q) = copy.place.projection.split_last().unwrap();
         let q = Place {
@@ -105,9 +190,9 @@ fn reserved_through_copies<'tcx>(
             projection: tcx.mk_place_elems(q),
         };
         place = q.project_deeper(place.projection, tcx);
-        from = copy.location;
     }
-    (from, place)
+    let (first, _) = chain[chain.len() - 1];
+    (first.location, place)
 }
 
 fn reservations<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> Vec<Reservation<'tcx>> {
@@ -165,24 +250,34 @@ fn is_mut_ref<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>, place: &Place<'tcx>) -
 pub fn moved_creation_point<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
+    annotation_reads: &AnnotationReads<'tcx>,
     location: Location,
 ) -> Option<Location> {
     let reservation = reservation_at(tcx, body, location)?;
     let temp_uses = temp_uses(body, std::slice::from_ref(&reservation));
-    planned_move(body, &reservation, &temp_uses)?.to
+    planned_move(tcx, body, annotation_reads, &reservation, &temp_uses)?.to
 }
 
-fn plan<'tcx>(body: &Body<'tcx>, reservations: Vec<Reservation<'tcx>>) -> Vec<Move> {
+fn plan<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    annotation_reads: &AnnotationReads<'tcx>,
+    reservations: Vec<Reservation<'tcx>>,
+) -> Vec<Move> {
     let temp_uses = temp_uses(body, &reservations);
     reservations
         .iter()
-        .filter_map(|reservation| planned_move(body, reservation, &temp_uses))
+        .filter_map(|reservation| {
+            planned_move(tcx, body, annotation_reads, reservation, &temp_uses)
+        })
         .collect()
 }
 
 /// The move of the reservation's borrow, or `None` when it stays where it is.
 fn planned_move<'tcx>(
+    tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
+    annotation_reads: &AnnotationReads<'tcx>,
     reservation: &Reservation<'tcx>,
     temp_uses: &HashMap<Local, Vec<Location>>,
 ) -> Option<Move> {
@@ -192,8 +287,7 @@ fn planned_move<'tcx>(
             to: None,
         });
     };
-    let between = Between::visit(body, reservation.location, reservation.place, activation);
-    if !between.reads_lender {
+    if !reads_lender_before(tcx, body, annotation_reads, reservation, activation) {
         return None;
     }
     assert!(
@@ -233,6 +327,27 @@ fn two_phase_activation<'tcx>(
         return None;
     }
     Some(activation)
+}
+
+/// Whether the code between the reservation and its activation reads the lender, in the MIR or
+/// by name in an annotation, so that the borrow is created at the activation.
+fn reads_lender_before<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    annotation_reads: &AnnotationReads<'tcx>,
+    reservation: &Reservation<'tcx>,
+    activation: Location,
+) -> bool {
+    let place = reservation.place;
+    Between::visit(
+        tcx,
+        body,
+        annotation_reads,
+        reservation.location,
+        place,
+        activation,
+    )
+    .reads_lender
 }
 
 /// Whether `to` can run again after itself without `from` running in between, as in a loop
@@ -332,7 +447,7 @@ fn address_places<'tcx>(place: Place<'tcx>) -> Vec<PlaceRef<'tcx>> {
 /// Whether two projection elements may name the same part of a place. Elements of one sequence
 /// (an index, a constant index, a subslice) may overlap whatever the index values, as in rustc's
 /// `places_conflict` with `PlaceConflictBias::Overlap`; every other element names a fixed part.
-fn elems_may_overlap<'tcx>(a: PlaceElem<'tcx>, b: PlaceElem<'tcx>) -> bool {
+pub fn elems_may_overlap<'tcx>(a: PlaceElem<'tcx>, b: PlaceElem<'tcx>) -> bool {
     let is_sequence_element = |elem: &PlaceElem<'tcx>| {
         matches!(
             elem,
@@ -356,7 +471,9 @@ struct Between<'tcx> {
 impl<'tcx> Between<'tcx> {
     /// What the code from `reservation`, which reserves `place`, to `activation` does.
     fn visit(
+        tcx: TyCtxt<'tcx>,
         body: &Body<'tcx>,
+        annotation_reads: &AnnotationReads<'tcx>,
         reservation: Location,
         place: Place<'tcx>,
         activation: Location,
@@ -369,6 +486,8 @@ impl<'tcx> Between<'tcx> {
         };
         for location in locations_between(body, reservation, activation) {
             visit_location(body, &mut between, location);
+            let read_by_name = annotation_reads.read_at(tcx, body, location);
+            between.reads_lender |= read_by_name.contains(&between.lender);
         }
         between
     }

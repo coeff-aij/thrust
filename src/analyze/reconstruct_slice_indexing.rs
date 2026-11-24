@@ -183,7 +183,11 @@ impl<'tcx> mir::visit::Visitor<'tcx> for ReadFinder {
 ///
 /// The analyzer therefore applies the registered trait-method type and remains independent of
 /// the model selected for slices.
-pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
+pub fn reconstruct<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mut Body<'tcx>,
+    annotation_reads: &two_phase_borrow::AnnotationReads<'tcx>,
+) {
     // A block split off by `reconstruct_at_activation` may end in a bounds check.
     let mut next = 0;
     while next < body.basic_blocks.len() {
@@ -215,10 +219,18 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
             "reconstructing a trait method call from slice indexing"
         );
         if let Some(&(read, place)) = uses.mut_ref_reads.first() {
-            reconstruct_at_mut_ref_read(tcx, body, bounds_check, &region, read, place);
+            reconstruct_at_mut_ref_read(
+                tcx,
+                body,
+                annotation_reads,
+                bounds_check,
+                &region,
+                read,
+                place,
+            );
             continue;
         }
-        match moved_borrow(tcx, body, &access, &uses) {
+        match moved_borrow(tcx, body, annotation_reads, &access, &uses) {
             Some((reservation, creation)) => reconstruct_at_activation(
                 tcx,
                 body,
@@ -240,13 +252,14 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
 fn reconstruct_at_mut_ref_read<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &mut Body<'tcx>,
+    annotation_reads: &two_phase_borrow::AnnotationReads<'tcx>,
     bounds_check: BoundsCheck<'tcx>,
     region: &[BasicBlock],
     read: mir::Location,
     place: mir::Place<'tcx>,
 ) {
     assert!(
-        two_phase_borrow::moved_creation_point(tcx, body, read).is_none(),
+        two_phase_borrow::moved_creation_point(tcx, body, annotation_reads, read).is_none(),
         "two-phase reborrow of {place:?} read out of a sequence would be created before its \
          activation"
     );
@@ -273,11 +286,12 @@ fn reconstruct_at_mut_ref_read<'tcx>(
 fn moved_borrow<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
+    annotation_reads: &two_phase_borrow::AnnotationReads<'tcx>,
     access: &SliceAccess<'tcx>,
     uses: &AccessUses<'tcx>,
 ) -> Option<(mir::Location, mir::Location)> {
     let (reservation, creation) = uses.locations.iter().find_map(|&location| {
-        two_phase_borrow::moved_creation_point(tcx, body, location)
+        two_phase_borrow::moved_creation_point(tcx, body, annotation_reads, location)
             .map(|creation| (location, creation))
     })?;
     assert_reads_before(body, access, uses, reservation);

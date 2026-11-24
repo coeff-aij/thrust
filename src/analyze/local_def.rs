@@ -1356,6 +1356,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         reads
     }
 
+    /// The locals the annotations of the body read by name ([`Self::formula_name_reads`]), for
+    /// the placement of two-phase borrows.
+    fn annotation_reads(&self) -> analyze::two_phase_borrow::AnnotationReads<'tcx> {
+        let reads = self.formula_name_reads(&self.body);
+        let reads = reads
+            .into_iter()
+            .map(|(local, location, _)| (local, location));
+        analyze::two_phase_borrow::AnnotationReads::new(self.tcx, &self.body, reads)
+    }
+
     fn has_unknown_aliases(&self, place: &mir::Place<'tcx>) -> bool {
         place.iter_projections().any(|(base, elem)| {
             elem == mir::ProjectionElem::Deref
@@ -1497,13 +1507,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// Whether writing `written`, of the local of `place`, may change the value read at
-    /// `place`: it does unless it is a disjoint field, also of two elements of one sequence that
-    /// may be the same, or is reached through a pointer `place` holds.
+    /// `place`: it does unless the two part at different fields of a struct, or `written` is
+    /// reached through a pointer `place` holds. Two elements of one sequence may be the same
+    /// element ([`analyze::two_phase_borrow::elems_may_overlap`]).
     fn changes_place(&self, written: &mir::Place<'tcx>, place: &mir::Place<'tcx>) -> bool {
         let common = written.projection.len().min(place.projection.len());
         for i in 0..common {
             let (ew, ep) = (written.projection[i], place.projection[i]);
-            if ew == ep {
+            if analyze::two_phase_borrow::elems_may_overlap(ew, ep) {
                 continue;
             }
             let base = mir::PlaceRef {
@@ -1511,19 +1522,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 projection: &place.projection[..i],
             };
             let is_union = base.ty(&self.body.local_decls, self.tcx).ty.is_union();
-            let is_element = |elem: mir::PlaceElem<'tcx>| {
-                matches!(
-                    elem,
-                    mir::ProjectionElem::Index(_) | mir::ProjectionElem::ConstantIndex { .. }
-                )
-            };
-            if is_element(ew) && is_element(ep) {
-                continue;
-            }
             return match (ew, ep) {
-                (mir::ProjectionElem::Field(fw, _), mir::ProjectionElem::Field(fp, _)) => {
-                    fw == fp || is_union
-                }
+                (mir::ProjectionElem::Field(..), mir::ProjectionElem::Field(..)) => is_union,
                 _ => true,
             };
         }
@@ -3024,9 +3024,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .record(self.local_def_id, analyze::BodyCheck::Checked);
         self.ctx.enter_body(self.local_def_id);
         self.unelaborate_derefs();
-        analyze::two_phase_borrow::reject_reserved_place_changes(self.tcx, &self.body);
-        analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
-        analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
+        let annotation_reads = self.annotation_reads();
+        analyze::two_phase_borrow::reject_reserved_place_changes(
+            self.tcx,
+            &self.body,
+            &annotation_reads,
+        );
+        analyze::reconstruct_slice_indexing::reconstruct(
+            self.tcx,
+            &mut self.body,
+            &annotation_reads,
+        );
+        analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body, &annotation_reads);
         self.normalize_switch_int_discriminant_order();
         analyze::block_contract::separate_entries(self.ctx, &mut self.body);
         let move_data = self.move_data();
