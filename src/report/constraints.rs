@@ -8,7 +8,7 @@ use rustc_middle::ty::TyCtxt;
 use rustc_span::def_id::{DefId, DefIndex, LocalDefId};
 use rustc_span::Span;
 
-use crate::analyze::TemplateSite;
+use crate::analyze::{LoopEntry, TemplateSite};
 use crate::chc;
 use crate::refine::{EntryValue, VarPath};
 
@@ -35,6 +35,26 @@ impl Provenance {
             .map(|i| BasicBlock::from_u32(i as u32));
         let stmt = debug_info.number("stmt_idx").map(|i| i as usize);
         Provenance { def, bb, stmt }
+    }
+
+    /// The same provenance with a loop's landing block, which is not in the function's body,
+    /// replaced by the block of the body that jumps to the loop.
+    pub fn at_loop_entry_source(
+        self,
+        loop_entries: &HashMap<(LocalDefId, BasicBlock), LoopEntry>,
+    ) -> Self {
+        let entry = self
+            .def
+            .zip(self.bb)
+            .and_then(|(def, bb)| loop_entries.get(&(def, bb)));
+        match entry {
+            Some(entry) => Provenance {
+                bb: Some(entry.source),
+                stmt: None,
+                ..self
+            },
+            None => self,
+        }
     }
 
     /// The span of the code the clause was made at: its statement or terminator (a return's,
@@ -178,11 +198,11 @@ fn kind(
         }
     };
     // The landing block the analysis put on the edge into a loop is not in the function's body.
-    if let Some(&header) = provenance
+    if let Some(entry) = provenance
         .def
         .and_then(|def| input.loop_entries.get(&(def, bb)))
     {
-        return loop_check("loop entry", header);
+        return loop_check("loop entry", entry.head);
     }
     let Some(terminator) = body.terminator(bb) else {
         return plain(span_name.to_owned());
@@ -336,7 +356,7 @@ fn candidate_names(
     def: Option<LocalDefId>,
     names: &Names,
     body: Option<&DefBody<'_>>,
-    loop_entries: &HashMap<(LocalDefId, BasicBlock), BasicBlock>,
+    loop_entries: &HashMap<(LocalDefId, BasicBlock), LoopEntry>,
 ) -> Vec<(chc::TermVarIdx, String, NameKind)> {
     let mut candidates = Vec::new();
     let atoms = clause
@@ -373,17 +393,12 @@ fn candidate_names(
         return candidates;
     };
     let provenance = Provenance::of(&clause.debug_info);
+    // The landing of a loop is not in the body: what it holds is what the block before the loop
+    // leaves.
+    let at = provenance.at_loop_entry_source(loop_entries);
     let moved = |local| {
-        let at = provenance.bb.and_then(|bb| {
-            // The landing of a loop is not in the body: what it holds is what the block before
-            // the loop leaves.
-            let landing = def.and_then(|def| loop_entries.get(&(def, bb)));
-            match landing {
-                Some(&header) => Some((body.loop_entry_source(header)?, None)),
-                None => Some((bb, provenance.stmt)),
-            }
-        });
-        at.is_some_and(|(bb, stmt)| body.moved_before(local, bb, stmt))
+        at.bb
+            .is_some_and(|bb| body.moved_before(local, bb, at.stmt))
     };
     for entry in entries {
         for mapping in entry.mappings() {
@@ -441,7 +456,8 @@ fn render(
     def: Option<LocalDefId>,
     names: &Names,
     body: Option<&DefBody<'_>>,
-    loop_entries: &HashMap<(LocalDefId, BasicBlock), BasicBlock>,
+    loop_entries: &HashMap<(LocalDefId, BasicBlock), LoopEntry>,
+    at_loop: bool,
 ) -> (Vec<Formula>, Formula, Vec<Name>) {
     let mut premises: Vec<chc::Formula> = clause
         .body
@@ -534,6 +550,14 @@ fn render(
             conclusion = last.not();
         }
     }
+    // What a loop keeps is required to equal its value on entry; both sides print as the one
+    // variable, so the entry value is named.
+    if at_loop {
+        let kept = chc::conjuncts(&conclusion)
+            .into_iter()
+            .map(entry_value_kept);
+        conclusion = formula::and(kept.collect());
+    }
     // A premise equating a term with itself says nothing, and one said before says it again.
     premises.retain(|p| !matches!(equation(p), Some((a, b)) if a == b));
     let mut said: Vec<Formula> = Vec::new();
@@ -543,6 +567,18 @@ fn render(
         !again
     });
     (premises, conclusion, var_names)
+}
+
+/// `f`, written as `entry(x) = x` when it equates a term `x` with itself: the requirement that a
+/// loop leaves `x` as it was on entry.
+fn entry_value_kept(f: Formula) -> Formula {
+    match equation(&f) {
+        Some((a, b)) if a == b => {
+            let entry = Name::new(&format!("entry({})", formula::OneLine::one_line(a)));
+            Term::Var(entry).equal_to(b.clone()).into()
+        }
+        _ => f,
+    }
 }
 
 /// The code of the template whose unknown `premise` applies, if it applies one: a contract's
@@ -591,7 +627,9 @@ pub fn constraint(
     input: &super::Input<'_>,
 ) -> Constraint {
     let provenance = Provenance::of(&clause.debug_info);
-    let span = provenance.span(tcx);
+    let span = provenance
+        .at_loop_entry_source(input.loop_entries)
+        .span(tcx);
     let at_return = body.is_some_and(|body| provenance.at_return(body.body));
     let error_span = match provenance.def {
         Some(def) if at_return => Some(tcx.def_span(def.to_def_id()).source_callsite()),
@@ -605,8 +643,15 @@ pub fn constraint(
         }
         _ => span,
     };
-    let (premises, conclusion, vars) =
-        render(id, clause, provenance.def, names, body, input.loop_entries);
+    let (premises, conclusion, vars) = render(
+        id,
+        clause,
+        provenance.def,
+        names,
+        body,
+        input.loop_entries,
+        kind.starts_with("loop "),
+    );
     let formula = show(
         &formula::and(premises.clone()).implies(conclusion.clone()),
         names,

@@ -247,7 +247,8 @@ impl BasicBlockType {
     }
 
     /// The parameter that carries the precondition: the last one that is not an entry snapshot,
-    /// which are put after it.
+    /// which are put after it. For a block that inherits the state of another, it is the last
+    /// parameter captured from that block.
     pub fn precondition_param(&self) -> rty::FunctionParamIdx {
         self.ty
             .params

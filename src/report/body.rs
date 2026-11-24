@@ -404,18 +404,6 @@ impl<'tcx> DefBody<'tcx> {
         self.loops.iter().any(|(header, _)| *header == bb)
     }
 
-    /// The block that jumps to the header `header` of a loop from outside it, when there is one.
-    pub fn loop_entry_source(&self, header: BasicBlock) -> Option<BasicBlock> {
-        let mut outside = self.body.basic_blocks.predecessors()[header]
-            .iter()
-            .copied()
-            .filter(|&pred| !self.loop_contains(header, pred));
-        let (source, None) = (outside.next()?, outside.next()) else {
-            return None;
-        };
-        Some(source)
-    }
-
     pub fn loop_contains(&self, header: BasicBlock, bb: BasicBlock) -> bool {
         self.loops
             .iter()

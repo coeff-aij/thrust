@@ -2431,8 +2431,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .collect();
         self.loop_frames = analyze::loop_frame::separate_entries(self.tcx, &mut self.body, heads);
         for frame in &self.loop_frames {
+            let entry = analyze::loop_frame::LoopEntry {
+                head: frame.head,
+                source: frame.source,
+            };
             self.ctx
-                .record_loop_entry(self.local_def_id, frame.landing, frame.head);
+                .record_loop_entry(self.local_def_id, frame.landing, entry);
         }
     }
 

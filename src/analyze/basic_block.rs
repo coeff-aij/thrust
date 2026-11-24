@@ -2052,13 +2052,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             return;
         };
         let head = frame.head;
-        let mut blocks: Vec<_> = frame
-            .blocks
-            .iter()
-            .copied()
+        let blocks: Vec<_> = frame
+            .snapshot_blocks(&self.block_contracts)
+            .into_iter()
             .filter(|&bb| needs_own_precondition(&self.body, bb))
             .collect();
-        blocks.sort();
         for bb in blocks {
             self.ctx
                 .update_basic_block_ty(self.analysis_key, bb, |bty| {

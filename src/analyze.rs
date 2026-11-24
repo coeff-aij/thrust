@@ -39,6 +39,7 @@ mod invariant_args;
 mod lemma;
 mod local_def;
 mod loop_frame;
+pub use loop_frame::LoopEntry;
 mod model_eq;
 mod pred_inst;
 mod reconstruct_slice_indexing;
@@ -736,7 +737,7 @@ pub struct Analyzer<'tcx> {
     invariant_annotations: HashMap<(LocalDefId, BasicBlock), Vec<rustc_span::Span>>,
     /// The head of the loop each landing block, put on the edge into the loop, leads to, by the
     /// function, for the report.
-    loop_entries: HashMap<(LocalDefId, BasicBlock), BasicBlock>,
+    loop_entries: HashMap<(LocalDefId, BasicBlock), loop_frame::LoopEntry>,
     /// Each `assume!` the analysis took, in the order it took them.
     assumptions: Vec<AssumeSite>,
     /// The fn-like defs whose bodies are trusted rather than analyzed.
@@ -3798,8 +3799,13 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// Keeps that the block `landing` of `def` is the entry into the loop headed by `head`.
-    pub fn record_loop_entry(&mut self, def: LocalDefId, landing: BasicBlock, head: BasicBlock) {
-        self.loop_entries.insert((def, landing), head);
+    pub fn record_loop_entry(
+        &mut self,
+        def: LocalDefId,
+        landing: BasicBlock,
+        entry: loop_frame::LoopEntry,
+    ) {
+        self.loop_entries.insert((def, landing), entry);
     }
 
     /// Where a contract is annotated, from the companions it is read from: `requires`,

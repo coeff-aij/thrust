@@ -2,8 +2,8 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// The inner loop is entered after the outer body changes `i`, and keeps what holds of `i` and of
-// the unchanged `n` at that entry.
+// The inner loop is entered after the outer body changes `i`, and keeps what holds of `i`
+// after that change, and of the unchanged `n`. `i >= 2` does not hold at that entry.
 
 #[thrust_macros::requires(n > 0)]
 #[thrust_macros::ensures(true)]

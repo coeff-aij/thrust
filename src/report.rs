@@ -33,6 +33,7 @@ use rustc_span::Span;
 
 use crate::analyze::selection::Selection;
 use crate::analyze::ContractAnnotations;
+use crate::analyze::LoopEntry;
 use crate::chc;
 use crate::refine::BasicBlockType;
 use crate::rty;
@@ -186,7 +187,7 @@ pub struct Input<'a> {
     /// Where the written invariant of each loop, by its function and header, is annotated.
     pub invariant_annotations: &'a HashMap<(LocalDefId, BasicBlock), Vec<Span>>,
     /// The head of the loop each landing block leads to, by its function.
-    pub loop_entries: &'a HashMap<(LocalDefId, BasicBlock), BasicBlock>,
+    pub loop_entries: &'a HashMap<(LocalDefId, BasicBlock), LoopEntry>,
     /// Each `assume!` the analysis took.
     pub assumptions: &'a [crate::analyze::AssumeSite],
     /// What the analysis did with the body of each function.

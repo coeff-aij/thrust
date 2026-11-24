@@ -54,10 +54,20 @@ pub struct LoopFrame {
     pub head: BasicBlock,
     /// The block on the edge into the head from outside the loop.
     pub landing: BasicBlock,
+    /// The block of the original body that jumped to the head, before the landing was put in.
+    pub source: BasicBlock,
     /// The blocks of the loop that run, the head included.
     pub blocks: HashSet<BasicBlock>,
     /// The locals the loop leaves as they were.
     pub kept: BTreeMap<Local, Kept>,
+}
+
+/// What the report keeps of the entry into a loop: its head, and the block of the original body
+/// that jumps to it.
+#[derive(Debug, Clone, Copy)]
+pub struct LoopEntry {
+    pub head: BasicBlock,
+    pub source: BasicBlock,
 }
 
 impl LoopFrame {
@@ -127,16 +137,20 @@ pub fn separate_entries<'tcx>(
     heads.sort();
     let landings: Vec<_> = heads
         .into_iter()
-        .filter_map(|head| Some((head, put_landing_before(body, head)?)))
+        .filter_map(|head| {
+            let (landing, source) = put_landing_before(body, head)?;
+            Some((head, landing, source))
+        })
         .collect();
     landings
         .into_iter()
-        .map(|(head, landing)| {
+        .map(|(head, landing, source)| {
             let blocks = running_blocks(body, head).expect("a head with a landing heads a loop");
             let kept = kept_locals(tcx, body, &blocks);
             LoopFrame {
                 head,
                 landing,
+                source,
                 blocks,
                 kept,
             }
@@ -169,7 +183,10 @@ fn outside_entry(
 }
 
 /// Puts a landing on the edge into `head` from outside its loop, when there is one such edge only.
-fn put_landing_before<'tcx>(body: &mut Body<'tcx>, head: BasicBlock) -> Option<BasicBlock> {
+fn put_landing_before<'tcx>(
+    body: &mut Body<'tcx>,
+    head: BasicBlock,
+) -> Option<(BasicBlock, BasicBlock)> {
     let blocks = running_blocks(body, head)?;
     let outside = outside_entry(body, head, &blocks)?;
     let source_info = body.basic_blocks[outside].terminator().source_info;
@@ -187,7 +204,7 @@ fn put_landing_before<'tcx>(body: &mut Body<'tcx>, head: BasicBlock) -> Option<B
                 *target = landing;
             }
         });
-    Some(landing)
+    Some((landing, outside))
 }
 
 /// The locals of `body` that the code of `blocks` leaves as they were: those it does not write,
