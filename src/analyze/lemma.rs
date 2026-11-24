@@ -862,8 +862,8 @@ fn passes_own_entries(
     })
 }
 
-/// The local that `local` holds a shared reference to, following copies, when each local on
-/// the way is assigned once.
+/// The local that `local` holds a shared reference to, following copies and reborrows `&*r` of
+/// a shared reference `r`, when each local on the way is assigned once.
 fn referent(body: &mir::Body<'_>, mut local: mir::Local) -> Option<mir::Local> {
     loop {
         let mut assignments = body.basic_blocks.iter().flat_map(|data| {
@@ -884,13 +884,27 @@ fn referent(body: &mir::Body<'_>, mut local: mir::Local) -> Option<mir::Local> {
             return None;
         }
         match rvalue {
-            mir::Rvalue::Ref(_, mir::BorrowKind::Shared, place) => return place.as_local(),
+            mir::Rvalue::Ref(_, mir::BorrowKind::Shared, place) => {
+                let Some(reborrowed) = shared_ref_reborrowed(body, place) else {
+                    return place.as_local();
+                };
+                local = reborrowed;
+            }
             mir::Rvalue::Use(mir::Operand::Copy(place) | mir::Operand::Move(place)) => {
                 local = place.as_local()?;
             }
             _ => return None,
         }
     }
+}
+
+/// The shared reference `r` that `place` dereferences, when it is `*r`.
+fn shared_ref_reborrowed(body: &mir::Body<'_>, place: &mir::Place<'_>) -> Option<mir::Local> {
+    let [mir::ProjectionElem::Deref] = place.projection.as_slice() else {
+        return None;
+    };
+    let ty = body.local_decls[place.local].ty;
+    (ty.ref_mutability() == Some(mir::Mutability::Not)).then_some(place.local)
 }
 
 fn is_marker(kind: &mir::StatementKind<'_>) -> bool {
