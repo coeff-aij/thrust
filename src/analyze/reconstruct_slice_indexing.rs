@@ -25,12 +25,23 @@ struct BoundsCheck<'tcx> {
     source_info: mir::SourceInfo,
 }
 
+/// What the receiver of a [`SliceAccess`] is, which says how the call gets a reference to the
+/// slice from it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReceiverKind {
+    /// The reference to the slice, passed on.
+    Reference,
+    /// An array place, borrowed and unsized to a slice.
+    Array,
+    /// The slice a `Box<[T]>` holds (`*b`), borrowed, as Creusot reads a `Box<T>` as its content.
+    BoxedSlice,
+}
+
 /// The slice access in the target of a [`BoundsCheck`].
 struct SliceAccess<'tcx> {
     indexed_place: mir::Place<'tcx>,
-    /// The reference to the slice, or the array place that is borrowed and unsized to one.
     receiver: mir::Place<'tcx>,
-    receiver_is_array: bool,
+    receiver_kind: ReceiverKind,
     receiver_mutability: mir_ty::Mutability,
     slice_ty: Ty<'tcx>,
     elem_ty: Ty<'tcx>,
@@ -461,7 +472,7 @@ fn slice_access<'tcx>(
         return Some(SliceAccess {
             indexed_place,
             receiver: base,
-            receiver_is_array: true,
+            receiver_kind: ReceiverKind::Array,
             receiver_mutability: mutability_of(mutable),
             slice_ty: Ty::new_slice(tcx, *elem_ty),
             elem_ty: *elem_ty,
@@ -475,6 +486,21 @@ fn slice_access<'tcx>(
         local: indexed_place.local,
         projection: tcx.mk_place_elems(&receiver_projection),
     };
+    if receiver.ty(&body.local_decls, tcx).ty.is_box() {
+        let slice_ty = base.ty(&body.local_decls, tcx).ty;
+        let mir_ty::TyKind::Slice(elem_ty) = slice_ty.kind() else {
+            return None;
+        };
+        return Some(SliceAccess {
+            indexed_place,
+            receiver: base,
+            receiver_kind: ReceiverKind::BoxedSlice,
+            receiver_mutability: mutability_of(mutable),
+            slice_ty,
+            elem_ty: *elem_ty,
+            mutable,
+        });
+    }
     let mir_ty::TyKind::Ref(_, slice_ty, receiver_mutability) =
         receiver.ty(&body.local_decls, tcx).ty.kind()
     else {
@@ -490,7 +516,7 @@ fn slice_access<'tcx>(
     Some(SliceAccess {
         indexed_place,
         receiver,
-        receiver_is_array: false,
+        receiver_kind: ReceiverKind::Reference,
         receiver_mutability: *receiver_mutability,
         slice_ty: *slice_ty,
         elem_ty: *elem_ty,
@@ -878,8 +904,22 @@ fn receiver_operand<'tcx>(
     block: BasicBlock,
     region: mir_ty::Region<'tcx>,
 ) -> Operand<'tcx> {
-    if access.receiver_is_array {
-        return array_receiver_operand(tcx, body, bounds_check, access, mutable, block, region);
+    match access.receiver_kind {
+        ReceiverKind::Array => {
+            return array_receiver_operand(tcx, body, bounds_check, access, mutable, block, region);
+        }
+        ReceiverKind::BoxedSlice => {
+            return boxed_slice_receiver_operand(
+                tcx,
+                body,
+                bounds_check,
+                access,
+                mutable,
+                block,
+                region,
+            );
+        }
+        ReceiverKind::Reference => {}
     }
     if !mutable && access.receiver_mutability.is_mut() {
         let ty = mir_ty::Ty::new_ref(tcx, region, access.slice_ty, mir_ty::Mutability::Not);
@@ -959,6 +999,41 @@ fn array_receiver_operand<'tcx>(
                 StatementKind::Assign(Box::new((local.into(), rvalue))),
             ));
     }
+    Operand::Move(slice_ref.into())
+}
+
+/// Borrows the slice a `Box<[T]>` holds at the end of `block`, as `boxed[index]` does through
+/// `Box`'s `Deref` and `[T]`'s `Index` impl.
+fn boxed_slice_receiver_operand<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mut Body<'tcx>,
+    bounds_check: &BoundsCheck<'tcx>,
+    access: &SliceAccess<'tcx>,
+    mutable: bool,
+    block: BasicBlock,
+    region: mir_ty::Region<'tcx>,
+) -> Operand<'tcx> {
+    let span = bounds_check.source_info.span;
+    let slice_ref_ty = Ty::new_ref(tcx, region, access.slice_ty, mutability_of(mutable));
+    let slice_ref = body
+        .local_decls
+        .push(mir::LocalDecl::new(slice_ref_ty, span).immutable());
+    let borrow_kind = if mutable {
+        mir::BorrowKind::Mut {
+            kind: mir::MutBorrowKind::Default,
+        }
+    } else {
+        mir::BorrowKind::Shared
+    };
+    body.basic_blocks.as_mut()[block]
+        .statements
+        .push(mir::Statement::new(
+            bounds_check.source_info,
+            StatementKind::Assign(Box::new((
+                slice_ref.into(),
+                Rvalue::Ref(region, borrow_kind, access.receiver),
+            ))),
+        ));
     Operand::Move(slice_ref.into())
 }
 
