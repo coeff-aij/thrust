@@ -31,7 +31,7 @@
      let mut v: IndexVec<usize, i64> = IndexVec::new();
      let mut i = 0;
      while i < n {
-@@ -74,12 +73,22 @@
+@@ -74,7 +73,9 @@
                      && i <= n.at_entry()
                      && forall(|k: USize| 0 <= k && k < i ==> v[k] == elem.at_entry())
          );
@@ -42,20 +42,7 @@
          i += 1;
      }
      v
- }
- 
-+// `<[T]>::fill`, at the word type, for `insert_all`.
-+#[thrust::extern_spec_fn]
-+#[thrust_macros::ensures((!slice).len() == (*slice).len())]
-+#[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < (*slice).len() ==> (!slice)[k] == value))]
-+fn _extern_spec_slice_fill_word(slice: &mut [u64], value: u64) {
-+    <[u64]>::fill(slice, value)
-+}
-+
- // The count of members, through `insert`'s contract: inserting 1 twice counts once.
- #[thrust_macros::ensures(DenseBitSet::<usize>::card(result) == 2)]
- fn two_members() -> DenseBitSet<usize> {
-@@ -95,15 +104,16 @@
+@@ -95,15 +96,16 @@
  #[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5
      && BitMatrix::<usize, usize>::cols_below(*m, *(*m).col_bound))]
  #[thrust_macros::ensures(true)]
@@ -75,7 +62,7 @@
      drive_iterators();
      drive_index_vec();
      drive_bit_sets();
-@@ -116,7 +126,8 @@
+@@ -116,7 +118,8 @@
      // Verified via the `next` contract above: `Idx for usize` reads
      // `index_is(self, i)` as `self == i`, so the k-th call yields `Some(k)`.
      let a = range.next();
