@@ -194,7 +194,8 @@ fn pre_upvars_term<V>(upvars: chc::Term<V>, closure_kind: mir_ty::ClosureKind) -
 /// parameter by `Fn` and by `FnMut` declares it once; a call through `&` reads it at two equal
 /// states (Creusot's `fn_mut` law). A call by value reads a relation of its own (Creusot's
 /// `postcondition_once`), except at a parameter that is `Fn` wherever it is in scope, where it is
-/// an `Fn` call (Creusot's `fn_once` law).
+/// an `Fn` call (Creusot's `fn_once` law), and at one that is `FnMut` wherever it is in scope,
+/// where it is a call through `&mut` to the consumed state (Creusot's `fn_mut_once` law).
 #[derive(Clone, Copy)]
 enum PostReading {
     /// `q_post` at the receiver, the `Mut` pair of a call through `&mut`.
@@ -204,17 +205,31 @@ enum PostReading {
     /// `q_post` at the pair of two equal states, the state a call by value consumes of a
     /// parameter that is `Fn` wherever it is in scope.
     UnchangedConsumed,
+    /// `q_post` at the pair of the state a call by value consumes and some final state, of a
+    /// parameter that is `FnMut` wherever it is in scope. Creusot's `fn_mut_once` law also
+    /// resolves the final state, which has no resolution at a type parameter.
+    ConsumedThroughMut,
     /// `q_post_once` at the receiver.
     Consumed,
 }
 
 impl PostReading {
-    fn of(closure_kind: mir_ty::ClosureKind, fn_where_declared: bool) -> Self {
-        match closure_kind {
-            mir_ty::ClosureKind::FnMut => PostReading::Pair,
-            mir_ty::ClosureKind::Fn => PostReading::UnchangedShared,
-            mir_ty::ClosureKind::FnOnce if fn_where_declared => PostReading::UnchangedConsumed,
-            mir_ty::ClosureKind::FnOnce => PostReading::Consumed,
+    fn of(
+        closure_kind: mir_ty::ClosureKind,
+        bound_where_declared: Option<mir_ty::ClosureKind>,
+    ) -> Self {
+        match (closure_kind, bound_where_declared) {
+            (mir_ty::ClosureKind::FnMut, _) => PostReading::Pair,
+            (mir_ty::ClosureKind::Fn, _) => PostReading::UnchangedShared,
+            (mir_ty::ClosureKind::FnOnce, Some(mir_ty::ClosureKind::Fn)) => {
+                PostReading::UnchangedConsumed
+            }
+            (mir_ty::ClosureKind::FnOnce, Some(mir_ty::ClosureKind::FnMut)) => {
+                PostReading::ConsumedThroughMut
+            }
+            (mir_ty::ClosureKind::FnOnce, Some(mir_ty::ClosureKind::FnOnce) | None) => {
+                PostReading::Consumed
+            }
         }
     }
 
@@ -224,18 +239,35 @@ impl PostReading {
         match self {
             PostReading::Pair | PostReading::Consumed => receiver,
             PostReading::UnchangedShared => chc::Sort::mut_(receiver.deref()),
-            PostReading::UnchangedConsumed => chc::Sort::mut_(receiver),
+            PostReading::UnchangedConsumed | PostReading::ConsumedThroughMut => {
+                chc::Sort::mut_(receiver)
+            }
         }
     }
 
-    /// The receiver term matching [`Self::receiver_sort`].
-    fn receiver_term<V: chc::Var>(self, receiver: chc::Term<V>) -> chc::Term<V> {
-        let unchanged = |state: chc::Term<V>| chc::Term::mut_(state.clone(), state);
-        match self {
-            PostReading::Pair | PostReading::Consumed => receiver,
-            PostReading::UnchangedShared => unchanged(receiver.box_current()),
-            PostReading::UnchangedConsumed => unchanged(receiver),
-        }
+    /// The postcondition `post_pred` at the arguments `args` of a call, whose first is the
+    /// receiver of the call's sort `receiver`, read as [`Self::receiver_sort`] takes it.
+    fn postcondition(
+        self,
+        post_pred: chc::ForallPred,
+        mut args: Vec<chc::Term<rty::RefinedTypeVar<rty::FunctionParamIdx>>>,
+        receiver: chc::Sort,
+    ) -> rty::Refinement<rty::FunctionParamIdx> {
+        let unchanged = |state: chc::Term<_>| chc::Term::mut_(state.clone(), state);
+        let mut existentials = IndexVec::new();
+        args[0] = match self {
+            PostReading::Pair | PostReading::Consumed => args[0].clone(),
+            PostReading::UnchangedShared => unchanged(args[0].clone().box_current()),
+            PostReading::UnchangedConsumed => unchanged(args[0].clone()),
+            PostReading::ConsumedThroughMut => {
+                let final_state = existentials.push(receiver);
+                chc::Term::mut_(
+                    args[0].clone(),
+                    chc::Term::var(rty::RefinedTypeVar::Existential(final_state)),
+                )
+            }
+        };
+        rty::Formula::new(existentials, chc::Atom::new(post_pred.into(), args).into())
     }
 }
 
@@ -1374,20 +1406,22 @@ impl<'tcx> TypeBuilder<'tcx> {
             .register_forall_pred(pre_pred.clone());
         let post_reading = PostReading::of(
             closure_kind,
-            analyze::fn_bounded_where_declared(self.tcx, contract_owner),
+            analyze::closure_bound_where_declared(self.tcx, contract_owner),
         );
-        params_sort[0] = post_reading.receiver_sort(params_sort[0].clone());
+        let receiver_sort = params_sort[0].clone();
+        params_sort[0] = post_reading.receiver_sort(receiver_sort.clone());
         params_sort.push(ret_sort);
         let post_pred = match post_reading {
-            PostReading::Pair | PostReading::UnchangedShared | PostReading::UnchangedConsumed => {
-                refine::closure_post_forall_pred(
-                    self.tcx,
-                    contract_owner,
-                    type_args,
-                    type_params,
-                    params_sort,
-                )
-            }
+            PostReading::Pair
+            | PostReading::UnchangedShared
+            | PostReading::UnchangedConsumed
+            | PostReading::ConsumedThroughMut => refine::closure_post_forall_pred(
+                self.tcx,
+                contract_owner,
+                type_args,
+                type_params,
+                params_sort,
+            ),
             PostReading::Consumed => refine::closure_post_once_forall_pred(
                 self.tcx,
                 contract_owner,
@@ -1416,9 +1450,8 @@ impl<'tcx> TypeBuilder<'tcx> {
             });
 
         let mut post_args = args;
-        post_args[0] = post_reading.receiver_term(post_args[0].clone());
         post_args.push(value);
-        ret.extend_refinement(chc::Atom::new(post_pred.into(), post_args).into());
+        ret.extend_refinement(post_reading.postcondition(post_pred, post_args, receiver_sort));
         let ret = Box::new(ret);
 
         Some(rty::FunctionType {

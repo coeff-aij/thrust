@@ -393,7 +393,9 @@ impl FunctionType {
     /// `fn_mut_once` law). The dropped state is resolved ([`Type::resolution`]), the payloads of
     /// its enums through variables `parts` makes, bound with the final state.
     /// `final_state_relation`, if any, holds of the final state too (Creusot's
-    /// `postcondition_mut_hist_inv`).
+    /// `postcondition_mut_hist_inv`). The existentials of the contract's postcondition, the final
+    /// state of a call by value of a type parameter that is `FnMut` where it is declared, are
+    /// bound to variables `parts` makes.
     pub fn once_postcondition_formula<W>(
         &self,
         args: &[chc::Term<W>],
@@ -405,9 +407,25 @@ impl FunctionType {
     where
         W: chc::Var,
     {
-        let post = self.postcondition_formula(args, result);
+        let mut contract_vars = Vec::new();
+        let existentials: Vec<_> = self
+            .ret
+            .refinement
+            .existentials
+            .iter()
+            .map(|sort| parts.fresh_term(sort.clone(), &mut contract_vars))
+            .collect();
+        let post = refinement_formula_at(
+            &self.ret.refinement,
+            result,
+            &self.param_terms(args),
+            &existentials,
+        );
         let Some((final_, sort)) = final_state else {
-            return post;
+            if contract_vars.is_empty() {
+                return post;
+            }
+            return chc::Formula::exists(contract_vars, post);
         };
         let post = match final_state_relation {
             Some(relation) => post.and(relation),
@@ -421,19 +439,62 @@ impl FunctionType {
             .ty;
         let state = chc::Term::UserQuantifiedVar(sort.clone(), final_);
         let mut vars = vec![(final_, sort)];
-        let dropped = state_ty.resolution(state, parts.defs, &mut |sort| {
-            parts.fresh_term(sort, &mut vars)
-        });
-        let post = dropped
+        vars.extend(contract_vars);
+        let post = post.and_resolution(state_ty, state, parts, &mut vars);
+        chc::Formula::exists(vars, post)
+    }
+
+    /// The resolution of the state `state` of a closure whose contract takes it through `&`, when
+    /// a call by value consumes it: Creusot's `fn_once` law,
+    /// `postcondition_once(self, args, res) == postcondition(self, args, res) && resolve(self)`.
+    /// An `Fn` closure reads its captures only, so nothing changes the referent of a `&mut` it
+    /// owns, and dropping the state resolves it. `None` when the contract takes no `&`.
+    pub fn consumed_shared_state_resolution<W>(
+        &self,
+        state: chc::Term<W>,
+        parts: &mut PartVars<'_>,
+    ) -> Option<chc::Formula<W>>
+    where
+        W: chc::Var,
+    {
+        let receiver = self.params[FunctionParamIdx::from_usize(0)]
+            .ty
+            .as_pointer()?;
+        if receiver.kind != PointerKind::Ref(RefKind::Immut) {
+            return None;
+        }
+        let mut vars = Vec::new();
+        let resolution =
+            chc::Formula::top().and_resolution(&receiver.elem.ty, state, parts, &mut vars);
+        if resolution.is_top() {
+            return None;
+        }
+        Some(chc::Formula::exists(vars, resolution))
+    }
+}
+
+impl<W: chc::Var> chc::Formula<W> {
+    /// This formula and the resolution of the value `state` of type `state_ty`
+    /// ([`Type::resolution`]), the payloads of its enums through variables `parts` makes, pushed
+    /// onto `vars` for the caller to bind.
+    fn and_resolution<T: chc::Var>(
+        self,
+        state_ty: &Type<T>,
+        state: chc::Term<W>,
+        parts: &mut PartVars<'_>,
+        vars: &mut QuantifiedVars,
+    ) -> Self {
+        let dropped =
+            state_ty.resolution(state, parts.defs, &mut |sort| parts.fresh_term(sort, vars));
+        let formula = dropped
             .atoms
             .into_iter()
-            .fold(post, |post, atom| post.and(atom.into()));
-        let post = if dropped.formula.is_top() {
-            post
+            .fold(self, |formula, atom| formula.and(atom.into()));
+        if dropped.formula.is_top() {
+            formula
         } else {
-            post.and(dropped.formula)
-        };
-        chc::Formula::exists(vars, post)
+            formula.and(dropped.formula)
+        }
     }
 }
 
@@ -682,7 +743,8 @@ where
 /// [`RefinedTypeVar::Free`] with the corresponding entry of `param_terms`.
 ///
 /// Closure parameter/return refinements are predicate-variable templates without existentials, so
-/// [`RefinedTypeVar::Existential`] is not expected here.
+/// [`RefinedTypeVar::Existential`] is not expected here; the postcondition of a call by value,
+/// which may have one, is lowered by [`FunctionType::once_postcondition_formula`].
 fn refinement_to_chc_formula<W>(
     refinement: &Refinement<FunctionParamIdx>,
     value: chc::Term<W>,
