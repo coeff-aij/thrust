@@ -1,5 +1,5 @@
 //@error-in-other-file: Unsat
-//@compile-flags: -Adead_code -C debug-assertions=off
+//@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A law's variable ranges over the values its proof assumes of the parameter, at every depth of
