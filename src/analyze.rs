@@ -38,6 +38,7 @@ mod fn_mut_reuse;
 mod invariant_args;
 mod lemma;
 mod local_def;
+mod loop_frame;
 mod model_eq;
 mod pred_inst;
 mod reconstruct_slice_indexing;
@@ -2742,6 +2743,21 @@ impl<'tcx> Analyzer<'tcx> {
 
     pub fn basic_block_ty(&self, key: AnalysisKey<'tcx>, bb: BasicBlock) -> &BasicBlockType {
         &self.basic_blocks[&key][&bb].ty
+    }
+
+    pub fn update_basic_block_ty(
+        &mut self,
+        key: AnalysisKey<'tcx>,
+        bb: BasicBlock,
+        update: impl FnOnce(&mut BasicBlockType),
+    ) {
+        let def = self
+            .basic_blocks
+            .get_mut(&key)
+            .unwrap()
+            .get_mut(&bb)
+            .unwrap();
+        update(&mut def.ty);
     }
 
     pub fn basic_block_has_param_types(&self, key: AnalysisKey<'tcx>, bb: BasicBlock) -> bool {

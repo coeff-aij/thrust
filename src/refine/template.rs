@@ -1555,6 +1555,8 @@ where
         .build();
         BasicBlockType {
             captured_param_count: 0,
+            entry_snapshots: Vec::new(),
+            assumed_entry_state: rty::Refinement::top(),
             ty,
             locals,
             outer_fn_param_count: body.arg_count,

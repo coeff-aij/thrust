@@ -141,6 +141,7 @@ pub struct Analyzer<'tcx, 'ctx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     drop_points: HashMap<BasicBlock, analyze::basic_block::DropPoints>,
     block_contracts: Vec<analyze::block_contract::BlockContract>,
+    loop_frames: Vec<analyze::loop_frame::LoopFrame>,
     type_builder: TypeBuilder<'tcx>,
 }
 
@@ -2409,6 +2410,66 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         Some(names)
     }
 
+    /// Puts a landing block before each loop head with a written invariant, so that the loop can
+    /// keep what held on entry of the variables it does not change.
+    fn separate_loop_entries(&mut self) {
+        let heads: Vec<_> = self
+            .collect_loop_invariant_annotations()
+            .into_iter()
+            .filter(|(_, invariants)| {
+                invariants.iter().any(|invariant| {
+                    !invariant.from_enclosing_loop
+                        && invariant.kind
+                            != WrittenPreconditionKind::LoopInvariant(
+                                InvariantMarker::ForLoopHistory,
+                            )
+                })
+            })
+            .map(|(head, _)| head)
+            .collect();
+        self.loop_frames = analyze::loop_frame::separate_entries(self.tcx, &mut self.body, heads);
+    }
+
+    /// Gives each block of a loop with a landing a parameter for the entry value of each variable
+    /// the loop does not change that its head holds, and has the blocks with a precondition of
+    /// their own require each to be unchanged.
+    fn add_entry_snapshots(&mut self) {
+        for frame in &self.loop_frames {
+            let head_ty = self
+                .ctx
+                .basic_block_ty(self.analysis_key(), frame.head)
+                .clone();
+            let kept: Vec<_> = head_ty
+                .as_ref()
+                .params
+                .iter_enumerated()
+                .filter_map(|(idx, param)| {
+                    let local = head_ty.local_of_param(idx)?;
+                    let kept = *frame.kept.get(&local)?;
+                    (!param.ty.to_sort().is_singleton())
+                        .then(|| (local, kept, param.ty.clone().strip_refinement()))
+                })
+                .collect();
+            let mut blocks: Vec<_> = frame.blocks.iter().copied().collect();
+            blocks.sort();
+            for bb in blocks {
+                let requires = analyze::basic_block::needs_own_precondition(&self.body, bb);
+                let update = |bty: &mut BasicBlockType| {
+                    for (local, kept, ty) in &kept {
+                        let snapshot =
+                            bty.push_entry_snapshot_param(frame.head, *local, ty.clone());
+                        let current = bty.param_of_local(*local).filter(|_| requires);
+                        if let Some(current) = current {
+                            bty.require_of_param(snapshot, kept.equality_with(current));
+                        }
+                    }
+                };
+                self.ctx
+                    .update_basic_block_ty(self.analysis_key(), bb, update);
+            }
+        }
+    }
+
     fn refine_basic_blocks(&mut self, move_data: &MoveData<'tcx>) {
         let loop_invariants = self.collect_loop_invariant_annotations();
         for (header, invariants) in &loop_invariants {
@@ -2613,6 +2674,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             };
             self.ctx.leave_template_site(previous);
         }
+        self.add_entry_snapshots();
         for contract in &mut self.block_contracts {
             contract.ends = analyze::block_contract::drops_in_code(
                 &self.body,
@@ -2639,7 +2701,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .map(rty::FunctionParamIdx::from),
                 crate::refine::BasicBlockTypeParamKind::OuterFnParam(argument) => Some(argument),
                 crate::refine::BasicBlockTypeParamKind::Synthetic => None,
-                crate::refine::BasicBlockTypeParamKind::Captured => unreachable!(),
+                crate::refine::BasicBlockTypeParamKind::EntrySnapshot(..)
+                | crate::refine::BasicBlockTypeParamKind::Captured => unreachable!(),
             };
             if let Some(argument) = argument {
                 let ty = expected_entry.params[argument].ty.clone().map_var(|arg| {
@@ -2671,6 +2734,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .body(self.body.clone())
                 .drop_points(drop_points)
                 .block_contracts(self.block_contracts.clone())
+                .loop_frames(self.loop_frames.clone())
                 .run(&rty, expected_fn_ty);
         }
     }
@@ -2819,6 +2883,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             generic_args,
             drop_points,
             block_contracts: Vec::new(),
+            loop_frames: Vec::new(),
             type_builder,
         }
     }
@@ -2876,23 +2941,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// The blocks of the natural loops whose head is `bb`, or `None` if `bb` heads no loop.
     fn natural_loop(&self, bb: BasicBlock) -> Option<HashSet<BasicBlock>> {
-        let dominators = self.body.basic_blocks.dominators();
-        let preds = &self.body.basic_blocks.predecessors();
-        let mut pending: Vec<_> = preds[bb]
-            .iter()
-            .copied()
-            .filter(|&p| dominators.dominates(bb, p))
-            .collect();
-        if pending.is_empty() {
-            return None;
-        }
-        let mut blocks = HashSet::from([bb]);
-        while let Some(b) = pending.pop() {
-            if blocks.insert(b) {
-                pending.extend(preds[b].iter().copied());
-            }
-        }
-        Some(blocks)
+        analyze::loop_frame::natural_loop(&self.body, bb)
     }
 
     /// The predicate variable of the precondition of `bb`, when it is left to inference.
@@ -2901,7 +2950,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .ctx
             .basic_block_ty_with_precondition(self.analysis_key(), bb);
         let fn_ty = bty.to_function_ty();
-        let precondition = &fn_ty.params.raw.last()?.refinement;
+        let precondition = &fn_ty
+            .params
+            .iter()
+            .find(|param| param.refinement.has_pred_var())?
+            .refinement;
         precondition
             .body
             .atoms
@@ -2919,7 +2972,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .ctx
             .basic_block_ty_with_precondition(self.analysis_key(), bb);
         let fn_ty = bty.to_function_ty();
-        let Some(param) = fn_ty.params.raw.last() else {
+        let Some(param) = fn_ty
+            .params
+            .iter()
+            .find(|param| param.refinement.has_pred_var())
+        else {
             return Vec::new();
         };
         let body = &param.refinement.body;
@@ -3019,6 +3076,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
         self.normalize_switch_int_discriminant_order();
         analyze::block_contract::separate_entries(self.ctx, &mut self.body);
+        self.separate_loop_entries();
         let move_data = self.move_data();
         self.reassign_local_mutabilities(&move_data);
         self.refine_basic_blocks(&move_data);

@@ -30,6 +30,7 @@ mod trait_object;
 mod visitor;
 
 use crate::analyze::block_contract::{BlockContract, Change};
+use crate::analyze::loop_frame::LoopFrame;
 pub use drop_point::{DropPoints, MoveState, MovedOut};
 
 /// Whether a basic block needs a precondition of its own, rather than
@@ -765,6 +766,9 @@ pub struct Analyzer<'tcx, 'ctx> {
     analysis_key: analyze::AnalysisKey<'tcx>,
     drop_points: DropPoints,
     block_contracts: Vec<BlockContract>,
+    loop_frames: Vec<LoopFrame>,
+    /// The variables the block binds for the entry snapshots it carries.
+    snapshot_vars: HashMap<(BasicBlock, Local), Var>,
     basic_block: BasicBlock,
     body: Cow<'tcx, Body<'tcx>>,
 
@@ -1876,25 +1880,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .iter_enumerated()
             .map(|(param_idx, rty)| {
                 match bty.param_kind(param_idx) {
-                    // A local that holds no value on this edge, live only for a drop that its
-                    // drop flag skips, is passed as any value.
-                    BasicBlockTypeParamKind::Local(arg_local, _)
-                        if !self.env.contains_local(arg_local) =>
-                    {
-                        rty::RefinedType::unrefined(rty.ty.clone().assert_closed().vacuous())
-                    }
                     BasicBlockTypeParamKind::Local(arg_local, _) => {
-                        let arg_local_ty = self.env.local_type(arg_local);
-                        // TODO: should we cover "is_singleton" ness in relate_* methods or here?
-                        if !rty.ty.to_sort().is_singleton() {
-                            arg_local_ty.into()
-                        } else {
-                            rty::RefinedType::unrefined(arg_local_ty.ty)
-                        }
+                        self.local_argument(arg_local, rty)
                     }
                     BasicBlockTypeParamKind::OuterFnParam(outer_idx) => {
                         let outer_fn_param_var = outer_fn_param_vars[&outer_idx];
                         self.env.var_type(outer_fn_param_var).into()
+                    }
+                    // A block of the loop passes its snapshot on; the landing, which the loop is
+                    // entered from, takes the current value as the snapshot.
+                    BasicBlockTypeParamKind::EntrySnapshot(head, local) => {
+                        match self.snapshot_vars.get(&(head, local)) {
+                            Some(var) => self.env.var_type(*var).into(),
+                            None => self.local_argument(local, rty),
+                        }
                     }
                     BasicBlockTypeParamKind::Captured => unreachable!(),
                     BasicBlockTypeParamKind::Synthetic => {
@@ -1908,11 +1907,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let types = bty
                 .as_ref()
                 .params
-                .iter()
+                .iter_enumerated()
                 .zip(&expected_args)
-                .map(|(param, arg)| {
+                .map(|((idx, param), arg)| {
                     let mut ty = param.ty.clone();
-                    ty.inherit_pointer_types(arg.ty.clone(), &mut |var| projections[&var].clone());
+                    if !matches!(
+                        bty.param_kind(idx),
+                        BasicBlockTypeParamKind::EntrySnapshot(..)
+                    ) {
+                        ty.inherit_pointer_types(arg.ty.clone(), &mut |var| {
+                            projections[&var].clone()
+                        });
+                    }
                     ty
                 })
                 .collect();
@@ -1922,6 +1928,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let bty = self.basic_block_ty_with_precondition(bb);
         let clauses = self.relate_fn_param_sub_types(bty.as_ref().params.clone(), expected_args);
         self.ctx.extend_clauses(clauses);
+    }
+
+    /// The argument for a parameter that holds `local`, of the type `rty`.
+    fn local_argument(
+        &self,
+        local: Local,
+        rty: &rty::RefinedType<rty::FunctionParamIdx>,
+    ) -> rty::RefinedType<Var> {
+        // A local that holds no value on this edge, live only for a drop that its drop flag
+        // skips, is passed as any value.
+        if !self.env.contains_local(local) {
+            return rty::RefinedType::unrefined(rty.ty.clone().assert_closed().vacuous());
+        }
+        let local_ty = self.env.local_type(local);
+        // TODO: should we cover "is_singleton" ness in relate_* methods or here?
+        if !rty.ty.to_sort().is_singleton() {
+            local_ty.into()
+        } else {
+            rty::RefinedType::unrefined(local_ty.ty)
+        }
     }
 
     fn basic_block_var_projections(
@@ -1934,6 +1960,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let var = match bty.param_kind(idx) {
                 BasicBlockTypeParamKind::Local(local, _) => local.into(),
                 BasicBlockTypeParamKind::OuterFnParam(outer) => outer_fn_param_vars[&outer],
+                BasicBlockTypeParamKind::EntrySnapshot(head, local) => {
+                    match self.snapshot_vars.get(&(head, local)) {
+                        Some(var) => *var,
+                        None => continue,
+                    }
+                }
                 BasicBlockTypeParamKind::Synthetic | BasicBlockTypeParamKind::Captured => continue,
             };
             projections.extend(self.env.var_projections(var, chc::Term::var(idx)));
@@ -1958,6 +1990,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 BasicBlockTypeParamKind::Local(local, _) => self.env.local_type(local),
                 BasicBlockTypeParamKind::OuterFnParam(outer_idx) => {
                     self.env.var_type(outer_fn_param_vars[&outer_idx])
+                }
+                BasicBlockTypeParamKind::EntrySnapshot(head, local) => {
+                    self.env.var_type(self.snapshot_vars[&(head, local)])
                 }
                 BasicBlockTypeParamKind::Synthetic => continue,
                 BasicBlockTypeParamKind::Captured => unreachable!(),
@@ -1994,7 +2029,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         bty.set_precondition(precondition);
         bty.describe_precondition(names);
         self.ctx
-            .register_basic_block_ty_with_precondition(self.analysis_key, bb, bty);
+            .register_basic_block_ty_with_precondition(self.analysis_key, bb, bty.clone());
+        self.assume_entry_state_in_loop(bb, &bty);
+    }
+
+    /// When `landing` is the landing of a loop, lets each block of the loop that has a
+    /// precondition of its own assume what held at the landing of the entry snapshots.
+    fn assume_entry_state_in_loop(&mut self, landing: BasicBlock, landing_ty: &BasicBlockType) {
+        let Some(frame) = self
+            .loop_frames
+            .iter()
+            .find(|frame| frame.landing == landing)
+        else {
+            return;
+        };
+        let head = frame.head;
+        let mut blocks: Vec<_> = frame
+            .blocks
+            .iter()
+            .copied()
+            .filter(|&bb| needs_own_precondition(&self.body, bb))
+            .collect();
+        blocks.sort();
+        for bb in blocks {
+            self.ctx
+                .update_basic_block_ty(self.analysis_key, bb, |bty| {
+                    bty.assume_entry_state(head, landing_ty)
+                });
+        }
     }
 
     /// Gives parameter `param_idx` of a block that inherits this block's state, a value of a
@@ -4108,6 +4170,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         );
                     }
                 }
+                BasicBlockTypeParamKind::EntrySnapshot(head, local) => {
+                    let var = self.env.immut_bind_tmp(param_unrefined_rty);
+                    param_terms.insert(param_idx, chc::Term::var(var.into()));
+                    self.snapshot_vars.insert((head, local), var);
+                }
                 BasicBlockTypeParamKind::Captured => {
                     let var = self.env.immut_bind_tmp(param_unrefined_rty);
                     param_terms.insert(param_idx, chc::Term::var(var.into()));
@@ -4140,6 +4207,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 names.extend(precondition_names.map(|(ev, name)| (*ev + base, name.clone())));
             }
         }
+
+        let entry_state = bb_ty.assumed_entry_state().clone();
+        let base = assumption.existentials.len();
+        assumption
+            .body
+            .push_conj(entry_state.body.subst_var(|v| match v {
+                rty::RefinedTypeVar::Value => unreachable!("the entry state has no value variable"),
+                rty::RefinedTypeVar::Free(v) => param_terms[&v].clone(),
+                rty::RefinedTypeVar::Existential(ev) => {
+                    chc::Term::var(PlaceTypeVar::Existential(ev + base))
+                }
+            }));
+        assumption.existentials.extend(entry_state.existentials);
 
         // A name is kept only while the variable holds the value: this block does not write,
         // move or mutably borrow it, and no other variable of its name is in scope.
@@ -4237,6 +4317,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             analysis_key,
             drop_points,
             block_contracts: Vec::new(),
+            loop_frames: Vec::new(),
+            snapshot_vars: HashMap::new(),
             basic_block,
             body,
             type_builder,
@@ -4254,6 +4336,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     pub fn block_contracts(&mut self, block_contracts: Vec<BlockContract>) -> &mut Self {
         self.block_contracts = block_contracts;
+        self
+    }
+
+    pub fn loop_frames(&mut self, loop_frames: Vec<LoopFrame>) -> &mut Self {
+        self.loop_frames = loop_frames;
         self
     }
 

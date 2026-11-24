@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rustc_middle::mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor};
 use rustc_middle::mir::{self, BasicBlock, Body, Local, TerminatorKind};
+use rustc_middle::ty::TyCtxt;
 
 use crate::analyze;
 use crate::analyze::basic_block::{formula_marker_call, DropPoints, FormulaMarker, MovedOut};
@@ -195,31 +196,14 @@ fn contract_opened_at<'tcx>(
         fatal("the code under `block_requires!` is also reached by a path that does not pass it");
     }
 
-    let mut changed = ChangedLocals::default();
-    for &bb in &blocks {
-        let data = &body.basic_blocks[bb];
-        for (statement_index, statement) in data.statements.iter().enumerate() {
-            let location = mir::Location {
-                block: bb,
-                statement_index,
-            };
-            changed.visit_statement(statement, location);
-        }
-        if bb != closing {
-            let location = mir::Location {
-                block: bb,
-                statement_index: data.statements.len(),
-            };
-            changed.visit_terminator(data.terminator(), location);
-        }
-    }
+    let changed = changed_locals(ctx.tcx, body, &blocks, Some(closing));
     BlockContract {
         opening,
         entry,
         closing,
         exit,
         blocks,
-        changed: changed.0,
+        changed,
         ends: Vec::new(),
     }
 }
@@ -245,12 +229,54 @@ fn entered_from_outside(body: &Body<'_>, blocks: &HashSet<BasicBlock>, entry: Ba
         .any(|&bb| predecessors[bb].iter().any(way_in))
 }
 
-/// The locals a piece of code may change: the base local of every place it writes, borrows
-/// mutably, moves or drops.
-#[derive(Default)]
-struct ChangedLocals(BTreeMap<Local, Change>);
+/// The locals the blocks `blocks` may change, other than by the terminator of `unvisited`.
+pub fn changed_locals<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    blocks: &HashSet<BasicBlock>,
+    unvisited: Option<BasicBlock>,
+) -> BTreeMap<Local, Change> {
+    let mut changed = ChangedLocals {
+        tcx,
+        local_decls: &body.local_decls,
+        changes: BTreeMap::new(),
+    };
+    for &bb in blocks {
+        let data = &body.basic_blocks[bb];
+        for (statement_index, statement) in data.statements.iter().enumerate() {
+            let location = mir::Location {
+                block: bb,
+                statement_index,
+            };
+            changed.visit_statement(statement, location);
+        }
+        if Some(bb) != unvisited {
+            let location = mir::Location {
+                block: bb,
+                statement_index: data.statements.len(),
+            };
+            changed.visit_terminator(data.terminator(), location);
+        }
+    }
+    changed.changes
+}
 
-impl<'tcx> Visitor<'tcx> for ChangedLocals {
+/// The locals a piece of code may change: the base local of every place it writes, borrows
+/// mutably, moves or drops, or reads as a `&mut`, which the analysis reborrows.
+struct ChangedLocals<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    local_decls: &'a mir::LocalDecls<'tcx>,
+    changes: BTreeMap<Local, Change>,
+}
+
+impl ChangedLocals<'_, '_> {
+    fn record(&mut self, local: Local, change: Change) {
+        let entry = self.changes.entry(local).or_insert(change);
+        *entry = (*entry).max(change);
+    }
+}
+
+impl<'tcx> Visitor<'tcx> for ChangedLocals<'_, 'tcx> {
     fn visit_place(&mut self, place: &mir::Place<'tcx>, context: PlaceContext, _: mir::Location) {
         let change = match context {
             PlaceContext::MutatingUse(MutatingUseContext::Retag) => return,
@@ -262,8 +288,23 @@ impl<'tcx> Visitor<'tcx> for ChangedLocals {
             },
             PlaceContext::NonMutatingUse(_) | PlaceContext::NonUse(_) => return,
         };
-        let entry = self.0.entry(place.local).or_insert(change);
-        *entry = (*entry).max(change);
+        self.record(place.local, change);
+    }
+
+    /// An operand that is a `&mut` is reborrowed, which gives the place it is read from the
+    /// reborrow's final value as its current value.
+    fn visit_operand(&mut self, operand: &mir::Operand<'tcx>, location: mir::Location) {
+        if let Some(place) = operand.place() {
+            let ty = place.ty(self.local_decls, self.tcx).ty;
+            if ty.ref_mutability() == Some(rustc_middle::ty::Mutability::Mut) {
+                let change = match place.projection.first() {
+                    None | Some(mir::ProjectionElem::Deref) => Change::ThroughDeref,
+                    Some(_) => Change::Whole,
+                };
+                self.record(place.local, change);
+            }
+        }
+        self.super_operand(operand, location);
     }
 }
 

@@ -571,14 +571,19 @@ fn block_param_names(body: &DefBody<'_>, ty: &BasicBlockType) -> Vec<String> {
     fn_ty
         .params
         .indices()
-        .map(|idx| match ty.param_kind(idx) {
-            BasicBlockTypeParamKind::Local(local, _) => body.local_name(local),
+        .filter_map(|idx| match ty.param_kind(idx) {
+            BasicBlockTypeParamKind::Local(local, _) => Some(body.local_name(local)),
             BasicBlockTypeParamKind::OuterFnParam(i) => {
                 let beside = locals.contains(&body.param_name(i.index()));
-                body.entry_value_name(i.index(), beside)
+                Some(body.entry_value_name(i.index(), beside))
             }
-            BasicBlockTypeParamKind::Synthetic => format!("__tmp_thrust_synthetic{}", idx.index()),
-            BasicBlockTypeParamKind::Captured => format!("__tmp_thrust_captured{}", idx.index()),
+            BasicBlockTypeParamKind::Synthetic => {
+                Some(format!("__tmp_thrust_synthetic{}", idx.index()))
+            }
+            BasicBlockTypeParamKind::EntrySnapshot(..) => None,
+            BasicBlockTypeParamKind::Captured => {
+                Some(format!("__tmp_thrust_captured{}", idx.index()))
+            }
         })
         .collect()
 }
@@ -595,7 +600,18 @@ pub fn block_site(
     let fn_ty: &rty::FunctionType = ty.as_ref();
     let params: Vec<Param<'_>> = block_param_names(body, ty)
         .into_iter()
-        .zip(fn_ty.params.iter())
+        .zip(
+            fn_ty
+                .params
+                .iter_enumerated()
+                .filter(|(idx, _)| {
+                    !matches!(
+                        ty.param_kind(*idx),
+                        BasicBlockTypeParamKind::EntrySnapshot(..)
+                    )
+                })
+                .map(|(_, param)| param),
+        )
         .collect();
     let loop_number = body.loop_number(bb);
     let is_loop = loop_number.is_some();
