@@ -17,8 +17,8 @@ use crate::chc;
 use crate::chc::debug;
 use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{
-    Assumption, BasicBlockType, BasicBlockTypeParamKind, PlaceType, PlaceTypeBuilder, PlaceTypeVar,
-    TempVarIdx, TypeBuilder, Var,
+    array_model_type, Assumption, BasicBlockType, BasicBlockTypeParamKind, PlaceType,
+    PlaceTypeBuilder, PlaceTypeVar, TempVarIdx, TypeBuilder, Var,
 };
 use crate::rty::{
     self, ClauseBuilderExt as _, ClauseScope as _, ShiftExistential as _, Subtyping as _,
@@ -1116,10 +1116,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     let (_, elem_term) = builder.subsume(pty);
                     seq = seq.seq_concat(elem_term.seq_unit());
                 }
-                builder.build(
-                    rty::Type::Seq(Box::new(rty::RefinedType::unrefined(elem_ty))),
-                    seq,
-                )
+                builder.build(array_model_type(elem_ty, Some(len)), seq)
             }
             mir_ty::TyKind::Tuple(tys) => {
                 let pts = tys
@@ -1579,10 +1576,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                             let (_, elem_term) = builder.subsume(pty);
                             seq = seq.seq_concat(elem_term.seq_unit());
                         }
-                        builder.build(
-                            rty::Type::Seq(Box::new(rty::RefinedType::unrefined(elem_ty))),
-                            seq,
-                        )
+                        let len = fields.len() as u64;
+                        builder.build(array_model_type(elem_ty, Some(len)), seq)
                     }
                     mir::AggregateKind::Adt(did, variant_idx, args, _, _)
                         if self.tcx.def_kind(did) == DefKind::Enum =>
@@ -1683,10 +1678,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 for _ in 0..count {
                     seq = seq.seq_concat(elem_term.clone().seq_unit());
                 }
-                builder.build(
-                    rty::Type::Seq(Box::new(rty::RefinedType::unrefined(elem_ty))),
-                    seq,
-                )
+                builder.build(array_model_type(elem_ty, Some(count)), seq)
             }
             Rvalue::Cast(
                 mir::CastKind::PointerCoercion(

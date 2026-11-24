@@ -194,7 +194,7 @@ where
             );
             clauses.extend(cs);
         }
-        (Type::Seq(got), Type::Seq(expected)) => {
+        (Type::Seq { elem: got, .. }, Type::Seq { elem: expected, .. }) => {
             clauses.extend(relate_refined_type(
                 scope,
                 got,
@@ -333,7 +333,22 @@ where
                 facts.push_conj(atom.into());
             }
         }
-        (Type::Seq(got), Type::Seq(expected)) if !fits(&got.ty, &expected.ty) => {
+        (
+            Type::Seq {
+                elem: got,
+                fixed_len: got_len,
+            },
+            Type::Seq {
+                elem: expected,
+                fixed_len: expected_len,
+            },
+        ) => {
+            if let Some(len) = expected_len.filter(|len| *got_len != Some(*len)) {
+                facts.push_conj(super::seq_len_atom(len, value()).into());
+            }
+            if fits(&got.ty, &expected.ty) {
+                return facts;
+            }
             if let Some(range) = super::seq_elem_range(&expected.ty, value()) {
                 facts.push_conj(range.into());
             }
