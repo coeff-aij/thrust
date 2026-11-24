@@ -1605,10 +1605,19 @@ where
 }
 
 /// The quantifier-free part of the facts of a value of `ty`, the ranges of the integers it holds
-/// through tuples and pointers ([`int_range_bounds`]), as a Boolean term about `value`; `None`
-/// when there are none. A logic function's definition is restricted to arguments that have these
+/// through tuples and pointers ([`int_range_bounds`]) and the length of an array
+/// ([`Type::Seq::fixed_len`]), as a Boolean term about `value`; `None` when there are none. A logic
+/// function's definition is restricted to arguments that have these
 /// (`Analyzer::checked_logic_fn_body`).
 pub fn domain_guard<V>(ty: &Type<Closed>, value: chc::Term<V>) -> Option<chc::Term<V>>
+where
+    V: Clone,
+{
+    facts_guard(ty, value, true)
+}
+
+/// [`domain_guard`] with the ranges of the integers only when `ranges` is set.
+fn facts_guard<V>(ty: &Type<Closed>, value: chc::Term<V>, ranges: bool) -> Option<chc::Term<V>>
 where
     V: Clone,
 {
@@ -1617,6 +1626,7 @@ where
         (a, b) => a.or(b),
     };
     match ty {
+        Type::Int(_) | Type::UInt(_) if !ranges => None,
         Type::Int(_) | Type::UInt(_) => {
             let bounds = int_range_bounds(ty, value)?;
             // `lower` is `x >= min` and `upper` is `x < end`.
@@ -1634,18 +1644,40 @@ where
             .elems
             .iter()
             .enumerate()
-            .map(|(index, elem)| domain_guard(&elem.ty, value.clone().tuple_proj(index)))
+            .map(|(index, elem)| facts_guard(&elem.ty, value.clone().tuple_proj(index), ranges))
             .fold(None, conj),
         Type::Pointer(pointer) => {
-            let current = domain_guard(&pointer.elem.ty, pointer.kind.deref_term(value.clone()));
+            let current = facts_guard(
+                &pointer.elem.ty,
+                pointer.kind.deref_term(value.clone()),
+                ranges,
+            );
             let final_ = pointer
                 .is_mut()
-                .then(|| domain_guard(&pointer.elem.ty, value.mut_final()))
+                .then(|| facts_guard(&pointer.elem.ty, value.mut_final(), ranges))
                 .flatten();
             conj(current, final_)
         }
+        Type::Seq {
+            fixed_len: Some(len),
+            ..
+        } => Some(value.seq_len().eq(chc::Term::int(*len))),
         _ => None,
     }
+}
+
+/// The values a quantifier's binder of type `ty` ranges over, as a formula about `value`: the
+/// range of an integer type in use, and the length of an array, also through tuples and pointers,
+/// so that the binder's domain is the type's, as a binding's is. `None` when the type has none.
+pub fn binder_domain<V>(ty: &Type<Closed>, value: chc::Term<V>) -> Option<chc::Formula<V>>
+where
+    V: Clone,
+{
+    if let Some(range) = int_range_formula(ty, value.clone()) {
+        return Some(range);
+    }
+    let guard = facts_guard(ty, value, false)?;
+    Some(chc::Formula::Atom(guard.equal_to(chc::Term::bool(true))))
 }
 
 /// A value of `ty` that has the facts of its type (`type_fact_checks`), for the value of a logic
@@ -1699,6 +1731,16 @@ fn fact_witness_within<V: Clone>(
                 defs,
                 enclosing,
             )?))
+        }
+        Type::Seq {
+            elem,
+            fixed_len: Some(len),
+        } => {
+            let elem_value = fact_witness_within::<V>(&elem.ty, None, defs, enclosing)?;
+            let empty = chc::Term::seq_empty(elem.ty.to_sort());
+            Some((0..*len).fold(empty, |seq, _| {
+                seq.seq_concat(elem_value.clone().seq_unit())
+            }))
         }
         Type::Enum(enum_ty) => enum_value(enum_ty, defs, enclosing, |field_ty, enclosing| {
             fact_witness_within(field_ty, None, defs, enclosing)
@@ -1866,8 +1908,8 @@ fn enum_payload_var(depth: usize, field: usize) -> chc::UserQuantifiedVarId {
     chc::UserQuantifiedVarId::from_usize(0xFFFE_0000 + (depth << 8) + field)
 }
 
-/// Whether a value of `ty` holds an integer with facts under [`int_range_mode`], through tuples,
-/// pointers, sequences and enum payloads. An enum met again on the way (`visited`) is searched no
+/// Whether a value of `ty` has facts: an integer with a range under [`int_range_mode`] or an array
+/// of a fixed length, through tuples, pointers, sequences and enum payloads. An enum met again on the way (`visited`) is searched no
 /// further, except in its arguments: what its recursive fields add over the first visit comes from
 /// them.
 pub(super) fn has_range_facts(
@@ -1880,7 +1922,9 @@ pub(super) fn has_range_facts(
         Type::Int(_) | Type::UInt(_) => {
             int_range_atoms(ty, value).is_some_and(|atoms| !atoms.is_empty())
         }
-        Type::Seq { elem, .. } => seq_elem_range(&elem.ty, value).is_some(),
+        Type::Seq { elem, fixed_len } => {
+            fixed_len.is_some() || seq_elem_range(&elem.ty, value).is_some()
+        }
         Type::Tuple(ty) => ty
             .elems
             .iter()

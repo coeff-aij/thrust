@@ -333,22 +333,9 @@ where
                 facts.push_conj(atom.into());
             }
         }
-        (
-            Type::Seq {
-                elem: got,
-                fixed_len: got_len,
-            },
-            Type::Seq {
-                elem: expected,
-                fixed_len: expected_len,
-            },
-        ) => {
-            if let Some(len) = expected_len.filter(|len| *got_len != Some(*len)) {
-                facts.push_conj(super::seq_len_atom(len, value()).into());
-            }
-            if fits(&got.ty, &expected.ty) {
-                return facts;
-            }
+        (Type::Seq { elem: got, .. }, Type::Seq { elem: expected, .. })
+            if !fits(&got.ty, &expected.ty) =>
+        {
             if let Some(range) = super::seq_elem_range(&expected.ty, value()) {
                 facts.push_conj(range.into());
             }
