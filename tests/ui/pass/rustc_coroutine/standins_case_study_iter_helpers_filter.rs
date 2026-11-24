@@ -1,7 +1,8 @@
 //@check-pass
+//@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=case_study::iter::Map::new,case_study::iter::Map::preservation_inv_of_stable_closure,case_study::iter::Filter::new,case_study::iter::Filter::pre_all_step,case_study::iter::Filter::next_at,case_study::iter::Filter::next,case_study::iter::IterAllSpec::pre_all_step,case_study::iter::iter_all,case_study::iter::IndexVec::extend_from,case_study::iter::collect_index_vec,case_study::iter::collect_index_vec_result
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_VERIFY_ONLY=case_study::iter::Filter::new,case_study::iter::Filter::pre_all_step,case_study::iter::Filter::next_at,case_study::iter::Filter::produces_trans_at,case_study::iter::Filter::next,case_study::iter::Filter::produces_trans,case_study::iter::Filter::produces_refl
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // Generated root: the call graph of `layout()` reaches the functions of row standins in module(s) listed below; see README.md.
 #![feature(new_range_api)]

@@ -20,18 +20,29 @@ of code has a root of its own, named after it (`layout.rs`, `univariant.rs`,
 helper, a lemma, a small function, a stand-in for std that the case study writes) is selected by
 the root of its row and module, `<row>_<module>_helpers.rs`, with the row of Table 5 it counts in
 (`rustc_hashes`, `rustc_abi`, `rustc_index`, `univariant`, `univariant_biased`, `layout`, or
-`standins` for a stand-in). The other header lines of a row's roots (edition, flags, solver timeout,
-split settings) are the same for all of them. A function that has no body a root can check (a
+`standins` for a stand-in). The other header lines of a root (edition, flags, solver timeout,
+split settings) are those its functions had in the hand-written roots the generated ones replaced; a row
+and module whose functions had different settings has one root per setting, named after the earlier root. A function that has no body a root can check (a
 declaration, a trusted or an ignored function, one kept only so that the code compiles) is not
 selected. Each rustc function is in the part one root selects; functions outside the selection that
 have a contract are trusted.
 
-The roots that are written by hand are the callers: a root with test functions (`index.rs`,
-`lemmas.rs`, `scalar_pair.rs`, `simple.rs`, `univariant_caller.rs`) that call a contract and so
-check that its callers can establish the precondition. They keep their selections (`crate` and the
-functions their driver needs analyzed, such as `IndexVec::as_slice`, whose function pointer the
-driver hands to `deref`), so they also check functions a generated root selects. `indexvec_int_range.rs` is a
-check of an option and `weights.rs` selects lemmas `layout()` does not reach.
+The reached set is closed under two rules, since a function can be checked without a call that names it:
+every impl of a reached trait method (a call through a type parameter names the trait's declaration) and the rest of that
+trait, and every law proof, lemma, helper and specification of a verified function (`extern_spec_fn`) of a reached type,
+impl or module (a law proof proves a contract of the trait its type implements and no function calls it); a root also selects the laws its impls inherit from their traits (`<impl>::<law>`).
+A function whose contract Thrust infers is selected in the root of each of its callers.
+
+The roots written by hand stay where a generated root cannot say what they check; each keeps its
+header and selection, and a generated root checks the bodies they leave out:
+`index.rs` (the callers `filled`, `two_members` and `column_bound`, selected as `crate`, which call
+the contracts of rustc_index, with `IndexVec` and `IndexSlice::index`, which a function pointer the driver hands to `deref` and the read `read_entry` need analyzed), `lemmas.rs` (`split`, the caller of the counting lemmas),
+`scalar_pair.rs` (`LayoutData::scalar_pair` with the driver `drive_max_by_key` that hands `max_by_key`
+a function pointer, and `Niche::available` its callee), `simple.rs` (`drive`, the caller of
+`scalar_pair`'s contract), `univariant_caller.rs` (`univariant` with `univariant_biased` trusted on
+its contract, and its driver), `indexvec_int_range.rs` (a check of `THRUST_INT_RANGE=conversions` on
+`IndexVec` and `IndexSlice`, with its caller `filled`) and `weights.rs` (the weight lemmas, which
+`layout()` does not reach). They also check functions a generated root selects.
 
 A function without a contract is checked only where a caller the analysis reaches calls it; the roots that select a part of rustc's code and are not drafts split by goal
 (`indexvec_int_range.rs`, a check of an option, splits only into the classes of clauses that
@@ -74,7 +85,7 @@ keeping its precondition; the other law it needs, a call ends in a state `hist_i
 `postcondition_mut_hist_inv`), Thrust gives for a closure type parameter. With fptprove 16064279f (PR #377), at 60 s a part, 2 CPUs and 6 GB:
 the 38 parts of `univariant_biased.rs` that change against fork main 81a956bb are all `sat`, and the lemma's 44 parts
 (`THRUST_VERIFY_ONLY=case_study::iter::Map::preservation_inv_of_stable_closure` with this root's header;
-`univariant_biased.rs` takes the lemma on its contract, and `layout.rs`, which selects `case_study::iter`, checks it) are all `sat`.
+`univariant_biased.rs` takes the lemma on its contract, and `standins_case_study_iter_helpers_layout.rs` checks it) are all `sat`.
 The remaining `assume!`s of `univariant_biased.rs` each have a reachability root, `univariant_biased_reach_<name>.rs`
 (`--cfg thrust_univariant_biased_reach="<name>"`). On f25eb5e0, with fptprove 27431dba0 at 300 s and
 16 GB, solving the parts each twin adds to the pass root's (the goal of its `proof_assert!`), three
@@ -95,13 +106,13 @@ because the harness splits the header like a shell and drops unquoted double quo
 
 | file | selection | state |
 | --- | --- | --- |
-| `index.rs` | `rustc_index::**` (`Idx`, `IndexVec`, `IndexSlice`, the bit sets, the own iterators `IdxRange`, `WordIter`, `IterEnumerated`), and `crate`: the clients `filled`, `two_members` and `column_bound` | verified, each goal on its own |
+| `index.rs` | `crate`: the clients `filled`, `two_members` and `column_bound` of `Idx`, `IndexVec`, `IndexSlice`, the bit sets and the own iterators `IdxRange`, `WordIter`, `IterEnumerated`, whose bodies the `rustc_index_*_helpers.rs` roots check, and `IndexVec` and `IndexSlice::index`, analyzed for the function pointer and the read the clients use | verified, each goal on its own |
 | `indexvec_int_range.rs` | `rustc_index::vec`, the functions of `rustc_index::slice` but `IterEnumerated::yields_last` (assumed on its contract, which `rustc_index_*_helpers.rs` check; under this option its goal gets no answer), `filled`, under `THRUST_INT_RANGE=conversions` | verified, each class of clauses on its own (`THRUST_SPLIT`); a check of the option, not a run of the case study: with it `count_ones` of bit_set.rs has no specification of `sum` |
 | `simple.rs` | `crate`: `drive`, which reads `LayoutData::scalar_pair`'s fields as `univariant_biased` does; `scalar_pair` assumed on its contract, which the generated `univariant_biased_rustc_abi_layout_simple_helpers.rs` root checks | verified |
 | `scalar_pair.rs` | `LayoutData::scalar_pair` (layout/simple.rs), with std's `Iterator::max_by_key` on std.rs's contract; `Niche::from_scalar` and `Scalar::size` assumed on their contracts, which `rustc_abi_helpers.rs` checks | verified, each goal on its own (`THRUST_SPLIT_GOALS`); the fail twin asserts, before the niches are computed, that the second scalar is placed at 0, and false after a call of `max_by_key` on a chain of two concrete options (`drive_max_by_key`), which shows the code after such a call reachable under its contract for `u32` items; that it is reachable for `scalar_pair`'s `Niche` items is inferred from this, not run |
 | `univariant_caller.rs` | `LayoutCalculator::univariant`, `univariant_biased` trusted on its contract | verified, one part per goal (`THRUST_SPLIT_GOALS`), with the predicates its contracts pass on unchanged `#[thrust::opaque]`: `layout_pre`, which `univariant`'s body reveals, `fits_in_any_order`, `weighs`, `unsized_misplaced`, `some_field_niche` (layout.rs), `Primitive::size_in`, `FieldsShape::arbitrary_of`, `TargetDataLayout::pointer_space_ok`, `TargetDataLayout::pointer_size_is` (lib.rs); `univariant_biased`, `Primitive::size`, `layout()`, `pointer_size_in` and `pointer_align_in` reveal those they read (#132) |
 | `weights.rs` | `thrust/weights.rs`: the weighted counting lemmas, ending in `weight_at_le_distinct` (the entries of a non-negative weight sequence at the distinct indices of a selection below `n` sum to at most the first `n` entries), the bound that `BitIter`'s `produces` (its yielded indices are pairwise distinct) feeds | not reached from `layout()`, so no generated root selects it; draft until its run is recorded; its fail twin is `weight_at_le` without its bound on how often an index occurs (`--cfg thrust_weights_fail`) |
-| `lemmas.rs` | the counting lemmas of `thrust/lemmas.rs`: the permutation split that `layout()` uses and its upper bound (`permutation_split_le`), and the pigeonhole principle (`every_index_occurs`) that `univariant_biased` uses | verified |
+| `lemmas.rs` | `split`, the caller of the permutation split of `thrust/lemmas.rs` that `layout()` uses; the counting lemmas' own proofs (the split and its upper bound `permutation_split_le`, the pigeonhole principle `every_index_occurs` that `univariant_biased` uses) are checked by `layout_case_study_lemmas_helpers.rs` | verified |
 
 The roots that are not drafts answer over the module tree in the ui suite; the states of the
 drafts are those of the single-file stage files.

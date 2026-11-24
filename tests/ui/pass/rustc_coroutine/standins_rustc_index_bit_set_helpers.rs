@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::bit_set::WordIter::new,rustc_index::bit_set::WordIter::next
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::bit_set::WordIter::new,rustc_index::bit_set::WordIter::next,rustc_index::bit_set::WordIter::produces_refl,rustc_index::bit_set::WordIter::produces_trans
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // Generated root: the call graph of `layout()` reaches the functions of row standins in module(s) listed below; see README.md.
 #![feature(new_range_api)]

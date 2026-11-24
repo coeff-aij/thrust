@@ -1,13 +1,14 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::**,crate
+//@rustc-env: THRUST_VERIFY_ONLY=crate,rustc_index::vec::IndexVec,rustc_index::slice::IndexSlice::index
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
-// Stages 2 to 4 of the rustc-coroutine verification target: rustc_index (`Idx`, `IndexVec` and
-// `IndexSlice`, the bit sets, and the own iterators of rewrites.md R2 to R4), and the test code of
-// this file (`crate`): `filled`, `two_members` and `column_bound`, the callers the trusted
-// contracts are checked against (rewrites.md S5).
-// The code is the module tree under tests/rustc_coroutine/; this file selects the stages and
+// Stages 2 to 4 of the rustc-coroutine verification target, as their callers: the test code of this
+// file (`crate`), `filled`, `two_members` and `column_bound`, the callers the contracts of
+// rustc_index (`Idx`, `IndexVec` and `IndexSlice`, the bit sets, and the own iterators of
+// rewrites.md R2 to R4) are checked against (rewrites.md S5). The bodies of rustc_index are checked
+// by the generated `rustc_index_*_helpers.rs` roots.
+// The code is the module tree under tests/rustc_coroutine/; this file selects the callers and
 // drives them.
 // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
 #![feature(new_range_api)]

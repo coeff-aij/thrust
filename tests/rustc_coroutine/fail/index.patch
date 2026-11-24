@@ -1,13 +1,28 @@
 --- pass/index.rs
 +++ fail/index.rs
-@@ -1,5 +1,5 @@
+@@ -1,14 +1,13 @@
 -//@check-pass
  //@compile-flags: -Adead_code -C debug-assertions=off
 +//@no-rustfix
  //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
- //@rustc-env: THRUST_VERIFY_ONLY=rustc_index::**,crate
+-//@rustc-env: THRUST_VERIFY_ONLY=crate,rustc_index::vec::IndexVec,rustc_index::slice::IndexSlice::index
++//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::**,crate
  //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
-@@ -60,7 +60,7 @@
+-// Stages 2 to 4 of the rustc-coroutine verification target, as their callers: the test code of this
+-// file (`crate`), `filled`, `two_members` and `column_bound`, the callers the contracts of
+-// rustc_index (`Idx`, `IndexVec` and `IndexSlice`, the bit sets, and the own iterators of
+-// rewrites.md R2 to R4) are checked against (rewrites.md S5). The bodies of rustc_index are checked
+-// by the generated `rustc_index_*_helpers.rs` roots.
+-// The code is the module tree under tests/rustc_coroutine/; this file selects the callers and
++// Stages 2 to 4 of the rustc-coroutine verification target: rustc_index (`Idx`, `IndexVec` and
++// `IndexSlice`, the bit sets, and the own iterators of rewrites.md R2 to R4), and the test code of
++// this file (`crate`): `filled`, `two_members` and `column_bound`, the callers the trusted
++// contracts are checked against (rewrites.md S5).
++// The code is the module tree under tests/rustc_coroutine/; this file selects the stages and
+ // drives them.
+ // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
+ #![feature(new_range_api)]
+@@ -61,7 +60,7 @@
  #[thrust_macros::ensures(result.len() == n)]
  #[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < n ==> result[k] == elem))]
  #[thrust_macros::context]
@@ -16,7 +31,7 @@
      let mut v: IndexVec<usize, i64> = IndexVec::new();
      let mut i = 0;
      while i < n {
-@@ -73,12 +73,22 @@
+@@ -74,12 +73,22 @@
                      && i <= n.at_entry()
                      && forall(|k: USize| 0 <= k && k < i ==> v[k] == elem.at_entry())
          );
@@ -40,7 +55,7 @@
  // The count of members, through `insert`'s contract: inserting 1 twice counts once.
  #[thrust_macros::ensures(DenseBitSet::<usize>::card(result) == 2)]
  fn two_members() -> DenseBitSet<usize> {
-@@ -94,15 +104,16 @@
+@@ -95,15 +104,16 @@
  #[thrust_macros::requires(BitMatrix::<usize, usize>::wf(*m) && 0 < (*m).num_rows && *(*m).col_bound == 5
      && BitMatrix::<usize, usize>::cols_below(*m, *(*m).col_bound))]
  #[thrust_macros::ensures(true)]
@@ -60,7 +75,7 @@
      drive_iterators();
      drive_index_vec();
      drive_bit_sets();
-@@ -115,7 +126,8 @@
+@@ -116,7 +126,8 @@
      // Verified via the `next` contract above: `Idx for usize` reads
      // `index_is(self, i)` as `self == i`, so the k-th call yields `Some(k)`.
      let a = range.next();
