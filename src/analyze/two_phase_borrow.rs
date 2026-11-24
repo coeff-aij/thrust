@@ -8,13 +8,18 @@
 //! `copy p`, which Thrust reborrows as well; such a copy into a local used once is moved the same
 //! way. When a pointer `place` goes through is overwritten before the activation
 //! (`p.0.set({ p = &mut b; 5 })`), the borrow is created before the first such write instead.
+//! When that write only may overwrite such a pointer (`s[i][0].bump({ s[j] = b; s[i][0] })`), a
+//! later read of the borrowed place may name the reserved place, which the borrow has taken by
+//! then, so Thrust reports it as unsupported.
 //! The borrow of a slice element (`s[0].bump(s[1])`) is created at the same point by the
 //! reconstruction of its `IndexMut::index_mut` call, which runs first.
 
 use std::collections::{HashMap, HashSet};
 
 use rustc_middle::mir::{
-    self, visit::PlaceContext, BasicBlock, Body, Local, Location, Place, PlaceElem, PlaceRef,
+    self,
+    visit::{MutatingUseContext, PlaceContext},
+    BasicBlock, Body, Local, Location, Place, PlaceElem, PlaceRef,
 };
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 
@@ -34,7 +39,7 @@ struct Move {
 }
 
 pub fn move_to_activation<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
-    let moves = plan(body, reservations(tcx, body));
+    let moves = plan(tcx, body, reservations(tcx, body));
     apply(body, moves);
 }
 
@@ -97,19 +102,24 @@ pub fn moved_creation_point<'tcx>(
 ) -> Option<Location> {
     let reservation = reservation_at(tcx, body, location).filter(|r| !r.copied)?;
     let temp_uses = temp_uses(body, std::slice::from_ref(&reservation));
-    planned_move(body, &reservation, &temp_uses)?.to
+    planned_move(tcx, body, &reservation, &temp_uses)?.to
 }
 
-fn plan<'tcx>(body: &Body<'tcx>, reservations: Vec<Reservation<'tcx>>) -> Vec<Move> {
+fn plan<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    reservations: Vec<Reservation<'tcx>>,
+) -> Vec<Move> {
     let temp_uses = temp_uses(body, &reservations);
     reservations
         .iter()
-        .filter_map(|reservation| planned_move(body, reservation, &temp_uses))
+        .filter_map(|reservation| planned_move(tcx, body, reservation, &temp_uses))
         .collect()
 }
 
 /// The move of the reservation's borrow, or `None` when it stays where it is.
 fn planned_move<'tcx>(
+    tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     reservation: &Reservation<'tcx>,
     temp_uses: &HashMap<Local, Vec<Location>>,
@@ -151,6 +161,13 @@ fn planned_move<'tcx>(
         "two-phase borrow of {:?}: the borrowed place is read where the borrow is created",
         reservation.place
     );
+    if let Some(read) = read_after_possible_redirect(body, reservation.place, to, activation) {
+        tcx.dcx().span_fatal(
+            body.source_info(read).span,
+            "this may read the place a two-phase borrow reserves, after a write that may change \
+             which place the borrow names; Thrust supports such a read only before the write",
+        );
+    }
     Some(Move {
         from: reservation.location,
         to: Some(to),
@@ -272,6 +289,18 @@ fn address_places<'tcx>(place: Place<'tcx>) -> Vec<PlaceRef<'tcx>> {
     places
 }
 
+/// Whether `outer` may name `inner` or a place `inner` is part of, for some values of the index
+/// locals in either.
+fn may_enclose<'tcx>(outer: PlaceRef<'tcx>, inner: PlaceRef<'tcx>) -> bool {
+    outer.local == inner.local
+        && outer.projection.len() <= inner.projection.len()
+        && outer
+            .projection
+            .iter()
+            .zip(inner.projection)
+            .all(|(outer, inner)| elems_may_overlap(*outer, *inner))
+}
+
 /// Whether two projection elements may name the same part of a place. Elements of one sequence
 /// (an index, a constant index, a subslice) may overlap whatever the index values, as in rustc's
 /// `places_conflict` with `PlaceConflictBias::Overlap`; every other element names a fixed part.
@@ -313,15 +342,7 @@ impl<'tcx> Between<'tcx> {
 
 impl<'tcx> mir::visit::Visitor<'tcx> for Between<'tcx> {
     fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, location: Location) {
-        let may_name_address = |address: &PlaceRef<'tcx>| {
-            place.local == address.local
-                && place.projection.len() <= address.projection.len()
-                && place
-                    .projection
-                    .iter()
-                    .zip(address.projection)
-                    .all(|(written, addressed)| elems_may_overlap(written, *addressed))
-        };
+        let may_name_address = |address: &PlaceRef<'tcx>| may_enclose(place.as_ref(), *address);
         if context.is_mutating_use() && self.address_places.iter().any(may_name_address) {
             self.address_writes.push(location);
         }
@@ -347,9 +368,8 @@ fn reads_overlapping_at<'tcx>(
     }
     impl<'tcx> mir::visit::Visitor<'tcx> for Reader<'tcx> {
         fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, _location: Location) {
-            let overlaps = place.local == self.borrowed.local
-                && (place.projection.starts_with(self.borrowed.projection)
-                    || self.borrowed.projection.starts_with(place.projection));
+            let overlaps = may_enclose(place.as_ref(), self.borrowed.as_ref())
+                || may_enclose(self.borrowed.as_ref(), place.as_ref());
             if overlaps && matches!(context, PlaceContext::NonMutatingUse(_)) {
                 self.reads = true;
             }
@@ -361,6 +381,55 @@ fn reads_overlapping_at<'tcx>(
     };
     visit_location(body, &mut reader, location);
     reader.reads
+}
+
+/// A read that may overlap `borrowed` after its creation at `to` and before its activation, when
+/// the write at `to` may change which place `borrowed` names without surely doing so: the read
+/// then names either the reserved place, which the borrow has taken, or another one.
+fn read_after_possible_redirect<'tcx>(
+    body: &Body<'tcx>,
+    borrowed: Place<'tcx>,
+    to: Location,
+    activation: Location,
+) -> Option<Location> {
+    if to == activation || redirects_at(body, borrowed, to) {
+        return None;
+    }
+    locations_between(body, to, activation)
+        .into_iter()
+        .find(|location| reads_overlapping_at(body, borrowed, *location))
+}
+
+/// Whether the statement or terminator at `location` overwrites a pointer `borrowed` goes
+/// through, so that `borrowed` names another place after it and the reserved place is no longer
+/// reached from its local.
+fn redirects_at<'tcx>(body: &Body<'tcx>, borrowed: Place<'tcx>, location: Location) -> bool {
+    struct Redirect<'tcx> {
+        pointers: Vec<PlaceRef<'tcx>>,
+        redirects: bool,
+    }
+    impl<'tcx> mir::visit::Visitor<'tcx> for Redirect<'tcx> {
+        fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, _location: Location) {
+            let overwrites = matches!(
+                context,
+                PlaceContext::MutatingUse(MutatingUseContext::Store | MutatingUseContext::Call)
+            );
+            if overwrites && self.pointers.contains(&place.as_ref()) {
+                self.redirects = true;
+            }
+        }
+    }
+    let pointers = borrowed
+        .iter_projections()
+        .filter(|(_, elem)| *elem == PlaceElem::Deref)
+        .map(|(base, _)| base)
+        .collect();
+    let mut redirect = Redirect {
+        pointers,
+        redirects: false,
+    };
+    visit_location(body, &mut redirect, location);
+    redirect.redirects
 }
 
 fn visit_location<'tcx>(
