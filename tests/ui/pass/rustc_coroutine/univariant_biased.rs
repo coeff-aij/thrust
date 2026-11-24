@@ -2,16 +2,9 @@
 //@edition: 2024
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::univariant_biased,rustc_abi::layout::LayoutCalculator::univariant_biased_finish,case_study::iter::iter_enumerated_trusted,rustc_abi::layout::arbitrary_parts
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::univariant_biased
 //@rustc-env: THRUST_SPLIT=1 THRUST_CALL_RESULT_DIRECT=1
-// Stage 6 of the rustc-coroutine verification target: `LayoutCalculator::univariant_biased` of
-// rustc_abi's layout.rs, against the contract `univariant` relies on.
-// The code is the module tree under tests/rustc_coroutine/; this file selects the stage.
-// It also selects `univariant_biased_finish`,
-// `iter_enumerated_trusted` of thrust/iter.rs and `arbitrary_parts` of layout.rs; `univariant_biased_place` (the `place_fields` call, the size check and
-// the `Ok`) is trusted on its contract.
-// Each goal of the functions marked `#[thrust::split_goals]` is solved with the clauses it depends
-// on, the other goals in their classes.
+// Generated root: the call graph of `layout()` reaches `rustc_abi::layout::LayoutCalculator::univariant_biased`; see README.md.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]

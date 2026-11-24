@@ -5,6 +5,8 @@
 
 use crate::thrust_models;
 use thrust_models::model::BitVec;
+use thrust_models::forall;
+use super::USize;
 
 // The two methods `Niche::available` calls. Each is exact over 128-bit bit-vectors.
 #[thrust::extern_spec_fn]
@@ -74,4 +76,12 @@ where
     T: thrust_models::Model + PartialEq,
 {
     <Vec<T> as PartialEq<[T; N]>>::eq(x, y)
+}
+
+// `<[T]>::fill`, at the word type, for `insert_all`.
+#[thrust::extern_spec_fn]
+#[thrust_macros::ensures((!slice).len() == (*slice).len())]
+#[thrust_macros::ensures(forall(|k: USize| 0 <= k && k < (*slice).len() ==> (!slice)[k] == value))]
+fn _extern_spec_slice_fill_word(slice: &mut [u64], value: u64) {
+    <[u64]>::fill(slice, value)
 }

@@ -1,13 +1,9 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::coroutine::coroutine_saved_local_eligibility
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::idx::Idx::plus,rustc_index::idx::{impl}::index,rustc_index::idx::{impl}::into_slice_idx
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
-// Stage 5 of the rustc-coroutine verification target: `coroutine_saved_local_eligibility` of
-// rustc_abi's layout/coroutine.rs, whose writes to `assignments` have block contracts.
-// The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
-// drives it.
-// Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
+// Generated root: the call graph of `layout()` reaches the functions of row rustc_index in module(s) listed below; see README.md.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
