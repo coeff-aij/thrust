@@ -141,6 +141,8 @@ pub struct Analyzer<'tcx, 'ctx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     drop_points: HashMap<BasicBlock, analyze::basic_block::DropPoints>,
     block_contracts: Vec<analyze::block_contract::BlockContract>,
+    /// The index pairs a write must keep different, found before the body is rewritten.
+    index_obligations: analyze::two_phase_borrow::IndexObligations,
     type_builder: TypeBuilder<'tcx>,
 }
 
@@ -1267,7 +1269,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mentions = local_mentions(&self.body);
         let mut kept = HashSet::new();
         for (temp, def, place) in replaced {
-            self.reject_formula_read_of_changed_mut(*temp, *def, place, &formula_reads, &mentions);
             if defs[temp].len() != 1
                 || self.has_unknown_aliases(place)
                 || self.changed_before_use(place, *def, &uses[temp], &mentions)
@@ -1294,34 +1295,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         std::iter::once(*place)
             .chain(index_locals)
             .any(|read| self.written_before_use(&read, def, uses, mentions))
-    }
-
-    /// Stops at a formula that names a `&mut` deref temporary whose place may change between the
-    /// copy and the formula. The borrow checker does not see the formula's read, so the
-    /// program may write the referent through another `&mut` after the copy's last use, which
-    /// a kept copy, a second `&mut` the model keeps apart, would not see.
-    fn reject_formula_read_of_changed_mut(
-        &self,
-        temp: Local,
-        def: mir::Location,
-        place: &mir::Place<'tcx>,
-        formula_reads: &[(Local, mir::Location, rustc_span::Symbol)],
-        mentions: &HashMap<Local, Vec<mir::Location>>,
-    ) {
-        if self.body.local_decls[temp].ty.ref_mutability() != Some(mir::Mutability::Mut) {
-            return;
-        }
-        for (_, loc, name) in formula_reads.iter().filter(|(local, ..)| *local == temp) {
-            if self.changed_before_use(place, def, &[*loc], mentions) {
-                self.tcx.dcx().span_fatal(
-                    self.body.source_info(*loc).span,
-                    format!(
-                        "a formula refers to `{name}`, a `&mut` copied from a place that may \
-                         change between the copy and here"
-                    ),
-                );
-            }
-        }
     }
 
     /// The local each name of a formula over live variables resolves to in `body`, with the
@@ -2671,6 +2644,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .body(self.body.clone())
                 .drop_points(drop_points)
                 .block_contracts(self.block_contracts.clone())
+                .index_obligations(self.index_obligations.clone())
                 .run(&rty, expected_fn_ty);
         }
     }
@@ -2819,6 +2793,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             generic_args,
             drop_points,
             block_contracts: Vec::new(),
+            index_obligations: Default::default(),
             type_builder,
         }
     }
@@ -3015,7 +2990,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .record(self.local_def_id, analyze::BodyCheck::Checked);
         self.ctx.enter_body(self.local_def_id);
         self.unelaborate_derefs();
-        analyze::two_phase_borrow::assert_index_disjoint(self.tcx, &mut self.body);
+        self.index_obligations = analyze::two_phase_borrow::index_obligations(self.tcx, &self.body);
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
         self.normalize_switch_int_discriminant_order();
@@ -3025,6 +3000,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.refine_basic_blocks(&move_data);
         let checked = self.contract_checked_by_body(expected);
         self.analyze_basic_blocks(&checked);
+        self.index_obligations.require_all_emitted(self.tcx);
         self.assert_entry(expected);
         if analyze::candidate_atoms_enabled() {
             self.declare_candidate_atoms(expected);

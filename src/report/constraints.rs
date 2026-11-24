@@ -158,6 +158,9 @@ fn kind(
     let (Some(body), Some(bb)) = (body, provenance.bb) else {
         return plain(span_name.to_owned());
     };
+    if span_name == "index_check_of_two_phase_borrow" {
+        return plain("index check of a two-phase borrow".to_owned());
+    }
     if let Some(stmt) = provenance.stmt {
         let written = provenance
             .def
@@ -206,9 +209,6 @@ fn kind(
         mir::TerminatorKind::SwitchInt { .. } => "branch".to_owned(),
         mir::TerminatorKind::Assert { msg, .. } => match &**msg {
             mir::AssertKind::BoundsCheck { .. } => "bounds check".to_owned(),
-            mir::AssertKind::MisalignedPointerDereference { .. } => {
-                "index check of a two-phase borrow".to_owned()
-            }
             mir::AssertKind::Overflow(op, ..) => format!("overflow check of {op:?}"),
             mir::AssertKind::OverflowNeg(..) => "overflow check of negation".to_owned(),
             mir::AssertKind::DivisionByZero(..) => "division by zero check".to_owned(),

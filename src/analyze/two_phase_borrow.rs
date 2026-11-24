@@ -10,20 +10,23 @@
 //! its index locals is refused. Without one, `P` names the same memory at both points: the borrow
 //! created at the activation is rustc's borrow, and the reads in between see the current value.
 //! A write that reaches such a pointer only through an index (`(*s)[j] = b` while `*(*s)[i]` is
-//! reserved) leaves `P` unchanged exactly when the two indices differ, so [`assert_index_disjoint`]
-//! asserts that at the write. Thrust reads MIR without `InstSimplify`, which would turn a reborrow
+//! reserved) leaves `P` unchanged exactly when the two indices differ, so [`index_obligations`]
+//! finds the pairs the analysis asserts different at the write. Thrust reads MIR without `InstSimplify`, which would turn a reborrow
 //! `&mut *p` into `copy p` and lose its two-phase kind.
 //!
 //! The borrow of a slice element (`s[0].bump(s[1])`) is created at its activation by the
 //! reconstruction of its `IndexMut::index_mut` call, which runs first and asks
 //! [`creation_point`] where to create it.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
+use std::rc::Rc;
 
 use rustc_middle::mir::{
     self, visit::PlaceContext, BasicBlock, Body, Local, Location, Place, PlaceElem, PlaceRef,
 };
 use rustc_middle::ty::TyCtxt;
+use rustc_span::Span;
 
 /// A two-phase borrow `temp = &mut place` made at `reservation`.
 struct TwoPhaseBorrow<'tcx> {
@@ -32,12 +35,53 @@ struct TwoPhaseBorrow<'tcx> {
     place: Place<'tcx>,
 }
 
-/// Asserts, before each write between a reservation and its activation that reaches a pointer of
-/// the borrowed place only through an index, that the written index differs from the reserved one:
-/// then no write in between changes a pointer on the path, and the borrow created at the
-/// activation is rustc's borrow. With equal indices the assertion fails and verification stops.
-pub fn assert_index_disjoint<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
-    let mut obligations = Vec::new();
+/// The index pairs a write must keep different: `reserved` is the index of a reserved two-phase
+/// borrow's place, `written` the index of the write at the statement spanning `write`.
+///
+/// They are keyed by span, not location, because the reconstruction of slice indexing and
+/// [`move_to_activation`] move statements. The basic-block analysis asserts a pair where the
+/// written index is still live: at the write, or at the indexing call the reconstruction made of
+/// it, which has a span inside the write's.
+#[derive(Clone, Default)]
+pub struct IndexObligations {
+    pairs: Vec<(Span, Local, Local)>,
+    emitted: Rc<RefCell<HashSet<(Span, Local, Local)>>>,
+}
+
+impl IndexObligations {
+    /// The obligations of writes whose span contains `span`, those of `written` only.
+    pub fn at(&self, span: Span, written: impl Fn(Local) -> bool) -> Vec<(Span, Local, Local)> {
+        let found = self
+            .pairs
+            .iter()
+            .filter(|(write, _, w)| write.contains(span) && written(*w));
+        found.copied().collect()
+    }
+
+    pub fn mark_emitted(&self, obligation: (Span, Local, Local)) {
+        self.emitted.borrow_mut().insert(obligation);
+    }
+
+    /// Stops at an obligation the analysis did not assert, which would leave its write unchecked.
+    pub fn require_all_emitted(&self, tcx: TyCtxt<'_>) {
+        let emitted = self.emitted.borrow();
+        if let Some(obligation) = self.pairs.iter().find(|o| !emitted.contains(o)) {
+            tcx.dcx().span_fatal(
+                obligation.0,
+                "the index of this write to a place a two-phase mutable borrow goes through is \
+                 not checked against the borrow's index",
+            );
+        }
+    }
+}
+
+/// Finds, for each write between a reservation and its activation that reaches a pointer of the
+/// borrowed place only through an index, the pair of index locals the analysis asserts different
+/// at the write: then no write in between changes a pointer on the path, and the borrow created
+/// at the activation is rustc's borrow. With equal indices the assertion fails and verification
+/// stops. A write that is no statement (a call's destination) is refused.
+pub fn index_obligations<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> IndexObligations {
+    let mut obligations = IndexObligations::default();
     for (block, data) in body.basic_blocks.iter_enumerated() {
         for statement_index in 0..data.statements.len() {
             let location = Location {
@@ -50,27 +94,31 @@ pub fn assert_index_disjoint<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
             let Some(activation) = activation(tcx, body, &borrow) else {
                 continue;
             };
-            obligations.extend(index_obligations(tcx, body, &borrow, activation));
+            for (write, reserved, written) in index_writes(tcx, body, &borrow, activation) {
+                let in_statement =
+                    write.statement_index < body.basic_blocks[write.block].statements.len();
+                if !in_statement {
+                    fatal_at(
+                        tcx,
+                        body,
+                        write,
+                        "a write that is no statement may change which place a two-phase mutable \
+                         borrow names before the borrow is used",
+                    );
+                }
+                let obligation = (body.source_info(write).span, reserved, written);
+                if !obligations.pairs.contains(&obligation) {
+                    obligations.pairs.push(obligation);
+                }
+            }
         }
     }
-    obligations.sort_by_key(|(location, reserved, written)| {
-        (
-            location.block,
-            location.statement_index,
-            *reserved,
-            *written,
-        )
-    });
-    obligations.dedup();
-    // Splitting from the last location down keeps the earlier locations valid.
-    for (location, reserved, written) in obligations.into_iter().rev() {
-        assert_indices_differ(tcx, body, location, reserved, written);
-    }
+    obligations
 }
 
 /// The writes between the reservation and the activation whose overlap with the borrowed place is
 /// decided by two index locals: the write's location, the reserved index and the written index.
-fn index_obligations<'tcx>(
+fn index_writes<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     borrow: &TwoPhaseBorrow<'tcx>,
@@ -87,53 +135,6 @@ fn index_obligations<'tcx>(
         visit_location(body, &mut finder, location);
     }
     finder.obligations
-}
-
-/// Splits the block at `location` and asserts `reserved != written` between the two parts.
-fn assert_indices_differ<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &mut Body<'tcx>,
-    location: Location,
-    reserved: Local,
-    written: Local,
-) {
-    let source_info = *body.source_info(location);
-    let differ = body
-        .local_decls
-        .push(mir::LocalDecl::new(tcx.types.bool, source_info.span));
-    let index = |local: Local| mir::Operand::Copy(Place::from(local));
-    let compare =
-        mir::Rvalue::BinaryOp(mir::BinOp::Ne, Box::new((index(reserved), index(written))));
-    let blocks = body.basic_blocks.as_mut();
-    let data = &mut blocks[location.block];
-    let is_cleanup = data.is_cleanup;
-    let tail_statements = data.statements.split_off(location.statement_index);
-    let tail_terminator = data.terminator.take();
-    data.statements.push(mir::Statement::new(
-        source_info,
-        mir::StatementKind::Assign(Box::new((Place::from(differ), compare))),
-    ));
-    let tail = blocks.push(mir::BasicBlockData::new_stmts(
-        tail_statements,
-        tail_terminator,
-        is_cleanup,
-    ));
-    // rustc has no assertion kind for this check; a misaligned pointer check, which Thrust does
-    // not otherwise see, carries the two indices, and the report names it as this check.
-    let msg = mir::AssertKind::MisalignedPointerDereference {
-        required: index(reserved),
-        found: index(written),
-    };
-    blocks[location.block].terminator = Some(mir::Terminator {
-        source_info,
-        kind: mir::TerminatorKind::Assert {
-            cond: mir::Operand::Move(Place::from(differ)),
-            expected: true,
-            msg: Box::new(msg),
-            target: tail,
-            unwind: mir::UnwindAction::Continue,
-        },
-    });
 }
 
 pub fn move_to_activation<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
