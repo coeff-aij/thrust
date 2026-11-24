@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// An array passed by value or by reference has the length its type fixes, so a bound on the
+// An array passed by value, by reference or in a box has the length its type fixes, so a bound on the
 // index alone shows it in bounds.
 #[thrust_macros::requires(i < 2)]
 fn sum_at(a: [i64; 2], b: [i64; 2], i: usize) -> i64 {
@@ -25,6 +25,11 @@ fn first_and(a: &[i64; 2], i: usize) -> i64 {
 #[thrust_macros::requires(i < 2)]
 fn write_through(a: &mut [i64; 2], i: usize, v: i64) {
     a[i] = v;
+}
+
+#[thrust_macros::requires(i < 2)]
+fn boxed_at(a: Box<[i64; 2]>, i: usize) -> i64 {
+    a[i]
 }
 
 fn main() {}

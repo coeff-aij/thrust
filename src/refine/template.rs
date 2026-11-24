@@ -941,10 +941,12 @@ impl<'tcx> TypeBuilder<'tcx> {
             let elem_ty = self.build_ty_in(m, *elem_ty);
             return array_model_type(elem_ty, len.try_to_target_usize(self.tcx));
         }
-        // So does an array behind a reference, which the reference's model would replace by the
-        // array's.
-        let refers_to_array =
-            matches!(ty.kind(), mir_ty::TyKind::Ref(_, elem, _) if elem.is_array());
+        // So does an array behind a reference or in a box, whose model would replace the array by
+        // the array's.
+        let refers_to_array = match ty.kind() {
+            mir_ty::TyKind::Ref(_, elem, _) => elem.is_array(),
+            _ => ty.is_box() && ty.boxed_ty().is_some_and(|elem| elem.is_array()),
+        };
         let ty = if refers_to_array {
             ty
         } else {
