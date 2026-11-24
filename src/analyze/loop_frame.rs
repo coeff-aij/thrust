@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashSet};
 use rustc_middle::mir::{self, BasicBlock, Body, Local};
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 
-use crate::analyze::block_contract::{changed_locals, Change};
+use crate::analyze::block_contract::{changed_locals, BlockContract, Change};
 use crate::chc;
 use crate::rty;
 
@@ -60,6 +60,27 @@ pub struct LoopFrame {
     pub kept: BTreeMap<Local, Kept>,
 }
 
+impl LoopFrame {
+    /// The blocks of the loop that carry its entry snapshot, in order. The code under a block
+    /// contract inside the loop is left out: it starts from the contract's `requires` alone and
+    /// is not entered from the loop's blocks other than through the contract, which the code
+    /// after it passes over with the snapshot of the block that opens it.
+    pub fn snapshot_blocks(&self, contracts: &[BlockContract]) -> Vec<BasicBlock> {
+        let mut blocks: Vec<_> = self
+            .blocks
+            .iter()
+            .copied()
+            .filter(|bb| {
+                !contracts.iter().any(|contract| {
+                    contract.blocks.contains(bb) && !contract.blocks.contains(&self.head)
+                })
+            })
+            .collect();
+        blocks.sort();
+        blocks
+    }
+}
+
 /// The blocks of the natural loop whose head is `head`, or `None` if `head` heads no loop.
 pub fn natural_loop(body: &Body<'_>, head: BasicBlock) -> Option<HashSet<BasicBlock>> {
     let dominators = body.basic_blocks.dominators();
@@ -81,8 +102,22 @@ pub fn natural_loop(body: &Body<'_>, head: BasicBlock) -> Option<HashSet<BasicBl
     Some(blocks)
 }
 
+/// The blocks of the natural loop of `head` that run, or `None` if `head` heads no loop.
+fn running_blocks(body: &Body<'_>, head: BasicBlock) -> Option<HashSet<BasicBlock>> {
+    let blocks = natural_loop(body, head)?;
+    Some(
+        blocks
+            .into_iter()
+            .filter(|&bb| !body.basic_blocks[bb].is_cleanup)
+            .collect(),
+    )
+}
+
 /// Puts a landing block on the edge into each of `heads` from outside its loop, and returns the
 /// frames of the loops that have exactly one such edge.
+///
+/// Every landing is put in before any frame is computed, so that the blocks of a loop include the
+/// landings of the loops nested in it.
 pub fn separate_entries<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &mut Body<'tcx>,
@@ -90,26 +125,23 @@ pub fn separate_entries<'tcx>(
 ) -> Vec<LoopFrame> {
     let mut heads: Vec<_> = heads.into_iter().collect();
     heads.sort();
-    heads
+    let landings: Vec<_> = heads
         .into_iter()
-        .filter_map(|head| frame_of(tcx, body, head))
-        .collect()
-}
-
-fn frame_of<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>, head: BasicBlock) -> Option<LoopFrame> {
-    let blocks: HashSet<_> = natural_loop(body, head)?
-        .into_iter()
-        .filter(|&bb| !body.basic_blocks[bb].is_cleanup)
+        .filter_map(|head| Some((head, put_landing_before(body, head)?)))
         .collect();
-    let outside = outside_entry(body, head, &blocks)?;
-    let landing = put_landing_before(body, head, outside);
-    let kept = kept_locals(tcx, body, &blocks);
-    Some(LoopFrame {
-        head,
-        landing,
-        blocks,
-        kept,
-    })
+    landings
+        .into_iter()
+        .map(|(head, landing)| {
+            let blocks = running_blocks(body, head).expect("a head with a landing heads a loop");
+            let kept = kept_locals(tcx, body, &blocks);
+            LoopFrame {
+                head,
+                landing,
+                blocks,
+                kept,
+            }
+        })
+        .collect()
 }
 
 /// The block that jumps to `head` from outside its loop, when there is one such edge only.
@@ -136,11 +168,10 @@ fn outside_entry(
     (edges == 1 && !body.basic_blocks[pred].is_cleanup).then_some(pred)
 }
 
-fn put_landing_before<'tcx>(
-    body: &mut Body<'tcx>,
-    head: BasicBlock,
-    outside: BasicBlock,
-) -> BasicBlock {
+/// Puts a landing on the edge into `head` from outside its loop, when there is one such edge only.
+fn put_landing_before<'tcx>(body: &mut Body<'tcx>, head: BasicBlock) -> Option<BasicBlock> {
+    let blocks = running_blocks(body, head)?;
+    let outside = outside_entry(body, head, &blocks)?;
     let source_info = body.basic_blocks[outside].terminator().source_info;
     let landing = body.basic_blocks_mut().push(mir::BasicBlockData::new(
         Some(mir::Terminator {
@@ -156,7 +187,7 @@ fn put_landing_before<'tcx>(
                 *target = landing;
             }
         });
-    landing
+    Some(landing)
 }
 
 /// The locals of `body` that the code of `blocks` leaves as they were: those it does not write,

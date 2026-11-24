@@ -1892,7 +1892,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     BasicBlockTypeParamKind::EntrySnapshot(head, local) => {
                         match self.snapshot_vars.get(&(head, local)) {
                             Some(var) => self.env.var_type(*var).into(),
-                            None => self.local_argument(local, rty),
+                            None => {
+                                assert!(
+                                    self.is_landing_of(head),
+                                    "only the landing of the loop headed by {head:?} lacks its \
+                                     entry snapshot, not {:?}",
+                                    self.basic_block
+                                );
+                                self.local_argument(local, rty)
+                            }
                         }
                     }
                     BasicBlockTypeParamKind::Captured => unreachable!(),
@@ -1907,18 +1915,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let types = bty
                 .as_ref()
                 .params
-                .iter_enumerated()
+                .iter()
                 .zip(&expected_args)
-                .map(|((idx, param), arg)| {
+                .map(|(param, arg)| {
                     let mut ty = param.ty.clone();
-                    if !matches!(
-                        bty.param_kind(idx),
-                        BasicBlockTypeParamKind::EntrySnapshot(..)
-                    ) {
-                        ty.inherit_pointer_types(arg.ty.clone(), &mut |var| {
-                            projections[&var].clone()
-                        });
-                    }
+                    ty.inherit_pointer_types(arg.ty.clone(), &mut |var| projections[&var].clone());
                     ty
                 })
                 .collect();
@@ -1928,6 +1929,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let bty = self.basic_block_ty_with_precondition(bb);
         let clauses = self.relate_fn_param_sub_types(bty.as_ref().params.clone(), expected_args);
         self.ctx.extend_clauses(clauses);
+    }
+
+    /// Whether the current block is the landing of the loop headed by `head`.
+    fn is_landing_of(&self, head: BasicBlock) -> bool {
+        self.loop_frames
+            .iter()
+            .any(|frame| frame.head == head && frame.landing == self.basic_block)
     }
 
     /// The argument for a parameter that holds `local`, of the type `rty`.
@@ -4189,7 +4197,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             );
         }
 
-        // The precondition, which the last parameter carries, may say what its existentials hold.
+        // The precondition, which `precondition_param` carries, may say what its existentials hold.
         let mut names = crate::refine::ExistentialNames::new();
         for (idx, param) in expected_params.iter_enumerated() {
             let rty::Refinement { existentials, body } = param.refinement.clone();
@@ -4202,7 +4210,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }));
             assumption.existentials.extend(existentials);
-            if Some(idx) == expected_params.last_index() {
+            if idx == bb_ty.precondition_param() {
                 let precondition_names = bb_ty.precondition_names().iter();
                 names.extend(precondition_names.map(|(ev, name)| (*ev + base, name.clone())));
             }

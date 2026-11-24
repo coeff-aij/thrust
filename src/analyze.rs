@@ -734,6 +734,9 @@ pub struct Analyzer<'tcx> {
     contract_annotations: HashMap<DefId, ContractAnnotations>,
     /// Where the written invariant of each loop, by its header, is annotated, for the report.
     invariant_annotations: HashMap<(LocalDefId, BasicBlock), Vec<rustc_span::Span>>,
+    /// The head of the loop each landing block, put on the edge into the loop, leads to, by the
+    /// function, for the report.
+    loop_entries: HashMap<(LocalDefId, BasicBlock), BasicBlock>,
     /// Each `assume!` the analysis took, in the order it took them.
     assumptions: Vec<AssumeSite>,
     /// The fn-like defs whose bodies are trusted rather than analyzed.
@@ -1083,6 +1086,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_sites: Default::default(),
             contract_annotations: Default::default(),
             invariant_annotations: Default::default(),
+            loop_entries: Default::default(),
             assumptions: Default::default(),
             trusted_bodies: Default::default(),
             handovers: Default::default(),
@@ -3439,6 +3443,7 @@ impl<'tcx> Analyzer<'tcx> {
             template_vars: &self.template_vars,
             contract_annotations: &self.contract_annotations,
             invariant_annotations: &self.invariant_annotations,
+            loop_entries: &self.loop_entries,
             assumptions: &self.assumptions,
             body_checks: &body_checks,
             called_fns: &called_fns,
@@ -3790,6 +3795,11 @@ impl<'tcx> Analyzer<'tcx> {
             .flat_map(|f| self.written_spans(f.to_def_id()))
             .collect();
         self.invariant_annotations.insert((def, header), spans);
+    }
+
+    /// Keeps that the block `landing` of `def` is the entry into the loop headed by `head`.
+    pub fn record_loop_entry(&mut self, def: LocalDefId, landing: BasicBlock, head: BasicBlock) {
+        self.loop_entries.insert((def, landing), head);
     }
 
     /// Where a contract is annotated, from the companions it is read from: `requires`,

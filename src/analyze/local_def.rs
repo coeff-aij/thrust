@@ -2412,10 +2412,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Puts a landing block before each loop head with a written invariant, so that the loop can
     /// keep what held on entry of the variables it does not change.
-    fn separate_loop_entries(&mut self) {
-        let heads: Vec<_> = self
-            .collect_loop_invariant_annotations()
-            .into_iter()
+    fn separate_loop_entries(
+        &mut self,
+        loop_invariants: &HashMap<BasicBlock, Vec<WrittenPrecondition<'tcx>>>,
+    ) {
+        let heads: Vec<_> = loop_invariants
+            .iter()
             .filter(|(_, invariants)| {
                 invariants.iter().any(|invariant| {
                     !invariant.from_enclosing_loop
@@ -2425,9 +2427,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                             )
                 })
             })
-            .map(|(head, _)| head)
+            .map(|(head, _)| *head)
             .collect();
         self.loop_frames = analyze::loop_frame::separate_entries(self.tcx, &mut self.body, heads);
+        for frame in &self.loop_frames {
+            self.ctx
+                .record_loop_entry(self.local_def_id, frame.landing, frame.head);
+        }
     }
 
     /// Gives each block of a loop with a landing a parameter for the entry value of each variable
@@ -2450,9 +2456,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         .then(|| (local, kept, param.ty.clone().strip_refinement()))
                 })
                 .collect();
-            let mut blocks: Vec<_> = frame.blocks.iter().copied().collect();
-            blocks.sort();
-            for bb in blocks {
+            for bb in frame.snapshot_blocks(&self.block_contracts) {
                 let requires = analyze::basic_block::needs_own_precondition(&self.body, bb);
                 let update = |bty: &mut BasicBlockType| {
                     for (local, kept, ty) in &kept {
@@ -2470,9 +2474,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    fn refine_basic_blocks(&mut self, move_data: &MoveData<'tcx>) {
-        let loop_invariants = self.collect_loop_invariant_annotations();
-        for (header, invariants) in &loop_invariants {
+    fn refine_basic_blocks(
+        &mut self,
+        move_data: &MoveData<'tcx>,
+        loop_invariants: &HashMap<BasicBlock, Vec<WrittenPrecondition<'tcx>>>,
+    ) {
+        for (header, invariants) in loop_invariants {
             let formulas = invariants
                 .iter()
                 .filter(|invariant| {
@@ -2950,11 +2957,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .ctx
             .basic_block_ty_with_precondition(self.analysis_key(), bb);
         let fn_ty = bty.to_function_ty();
-        let precondition = &fn_ty
-            .params
-            .iter()
-            .find(|param| param.refinement.has_pred_var())?
-            .refinement;
+        let precondition = &fn_ty.params[bty.precondition_param()].refinement;
         precondition
             .body
             .atoms
@@ -2972,13 +2975,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .ctx
             .basic_block_ty_with_precondition(self.analysis_key(), bb);
         let fn_ty = bty.to_function_ty();
-        let Some(param) = fn_ty
-            .params
-            .iter()
-            .find(|param| param.refinement.has_pred_var())
-        else {
-            return Vec::new();
-        };
+        let param = &fn_ty.params[bty.precondition_param()];
         let body = &param.refinement.body;
         let Some(pred_atom) = body
             .atoms
@@ -3076,10 +3073,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
         self.normalize_switch_int_discriminant_order();
         analyze::block_contract::separate_entries(self.ctx, &mut self.body);
-        self.separate_loop_entries();
+        let loop_invariants = self.collect_loop_invariant_annotations();
+        self.separate_loop_entries(&loop_invariants);
         let move_data = self.move_data();
         self.reassign_local_mutabilities(&move_data);
-        self.refine_basic_blocks(&move_data);
+        self.refine_basic_blocks(&move_data, &loop_invariants);
         let checked = self.contract_checked_by_body(expected);
         self.analyze_basic_blocks(&checked);
         self.assert_entry(expected);

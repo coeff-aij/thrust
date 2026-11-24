@@ -1,7 +1,7 @@
 //! The clauses of the system as the report shows them: where in the code each was made, what
 //! obligation it stands for, and its formula over the program's variables.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rustc_middle::mir::{self, BasicBlock};
 use rustc_middle::ty::TyCtxt;
@@ -168,6 +168,22 @@ fn kind(
             None => plain("statement".to_owned()),
         };
     }
+    let loop_check = |kind: &str, header: BasicBlock| {
+        let written = provenance
+            .def
+            .and_then(|def| input.invariant_annotations.get(&(def, header)));
+        match written.filter(|_| goal) {
+            Some(spans) => (kind.to_owned(), Annotation::Checks(spans.clone())),
+            None => plain(kind.to_owned()),
+        }
+    };
+    // The landing block the analysis put on the edge into a loop is not in the function's body.
+    if let Some(&header) = provenance
+        .def
+        .and_then(|def| input.loop_entries.get(&(def, bb)))
+    {
+        return loop_check("loop entry", header);
+    }
     let Some(terminator) = body.terminator(bb) else {
         return plain(span_name.to_owned());
     };
@@ -190,17 +206,11 @@ fn kind(
         },
         mir::TerminatorKind::Goto { target } if body.is_loop_header(*target) => {
             let kind = if body.loop_contains(*target, bb) {
-                "loop preservation".to_owned()
+                "loop preservation"
             } else {
-                "loop entry".to_owned()
+                "loop entry"
             };
-            let written = provenance
-                .def
-                .and_then(|def| input.invariant_annotations.get(&(def, *target)));
-            return match written.filter(|_| goal) {
-                Some(spans) => (kind, Annotation::Checks(spans.clone())),
-                None => plain(kind),
-            };
+            return loop_check(kind, *target);
         }
         mir::TerminatorKind::Goto { target } => format!("jump to {target:?}"),
         mir::TerminatorKind::SwitchInt { .. } => "branch".to_owned(),
@@ -326,6 +336,7 @@ fn candidate_names(
     def: Option<LocalDefId>,
     names: &Names,
     body: Option<&DefBody<'_>>,
+    loop_entries: &HashMap<(LocalDefId, BasicBlock), BasicBlock>,
 ) -> Vec<(chc::TermVarIdx, String, NameKind)> {
     let mut candidates = Vec::new();
     let atoms = clause
@@ -363,7 +374,15 @@ fn candidate_names(
     };
     let provenance = Provenance::of(&clause.debug_info);
     let moved = |local| {
-        let at = provenance.bb.map(|bb| (bb, provenance.stmt));
+        let at = provenance.bb.and_then(|bb| {
+            // The landing of a loop is not in the body: what it holds is what the block before
+            // the loop leaves.
+            let landing = def.and_then(|def| loop_entries.get(&(def, bb)));
+            match landing {
+                Some(&header) => Some((body.loop_entry_source(header)?, None)),
+                None => Some((bb, provenance.stmt)),
+            }
+        });
         at.is_some_and(|(bb, stmt)| body.moved_before(local, bb, stmt))
     };
     for entry in entries {
@@ -422,6 +441,7 @@ fn render(
     def: Option<LocalDefId>,
     names: &Names,
     body: Option<&DefBody<'_>>,
+    loop_entries: &HashMap<(LocalDefId, BasicBlock), BasicBlock>,
 ) -> (Vec<Formula>, Formula, Vec<Name>) {
     let mut premises: Vec<chc::Formula> = clause
         .body
@@ -445,7 +465,7 @@ fn render(
 
     let mut class_name: BTreeMap<usize, String> = BTreeMap::new();
     let mut used = HashSet::new();
-    let mut candidates = candidate_names(clause, def, names, body);
+    let mut candidates = candidate_names(clause, def, names, body, loop_entries);
     // Of two names of one value, the better kind (see `NameKind`).
     candidates.sort_by_key(|(_, _, kind)| *kind);
     for (v, name, _) in candidates {
@@ -585,7 +605,8 @@ pub fn constraint(
         }
         _ => span,
     };
-    let (premises, conclusion, vars) = render(id, clause, provenance.def, names, body);
+    let (premises, conclusion, vars) =
+        render(id, clause, provenance.def, names, body, input.loop_entries);
     let formula = show(
         &formula::and(premises.clone()).implies(conclusion.clone()),
         names,

@@ -201,7 +201,7 @@ fn refuted_lines(fixture: &str) -> (String, String) {
 fn a_name_stands_only_for_the_value_the_variable_holds() {
     let (constraint, values) = refuted_lines("name_after_reassign.rs");
     assert!(
-        constraint.contains("(k >= n ∧ i = 5 ∧ k != n + 1) ==> k < 0"),
+        constraint.contains("k >= n ∧ i = 5 ∧ k != n + 1) ==> k < 0"),
         "{constraint}"
     );
     assert!(values.contains("i = 5"), "{values}");

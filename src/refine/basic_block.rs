@@ -197,8 +197,8 @@ impl BasicBlockType {
     /// `head`, over the entry snapshots of this block, with the values it has no snapshot of
     /// left unknown.
     pub fn assume_entry_state(&mut self, head: BasicBlock, landing: &BasicBlockType) {
-        let precondition = landing.ty.params.raw.last().unwrap().refinement.clone();
-        let last = landing.ty.params.last_index().unwrap();
+        let last = landing.precondition_param();
+        let precondition = landing.ty.params[last].refinement.clone();
         let mut existentials = precondition.existentials.clone();
         let mut value_of = Vec::new();
         for (idx, param) in landing.ty.params.iter_enumerated() {
@@ -246,10 +246,26 @@ impl BasicBlockType {
         self.ty.params[idx].ty = ty;
     }
 
+    /// The parameter that carries the precondition: the last one that is not an entry snapshot,
+    /// which are put after it.
+    pub fn precondition_param(&self) -> rty::FunctionParamIdx {
+        self.ty
+            .params
+            .indices()
+            .rev()
+            .find(|&idx| {
+                !matches!(
+                    self.param_kind(idx),
+                    BasicBlockTypeParamKind::EntrySnapshot(..)
+                )
+            })
+            .expect("a block has a parameter for its precondition")
+    }
+
     pub fn set_precondition(&mut self, refinement: rty::Refinement<rty::FunctionParamIdx>) {
-        let last_param_idx = self.ty.params.last_index().unwrap();
-        self.ty.params.raw.last_mut().unwrap().refinement = refinement.map_var(|v| {
-            if v == rty::RefinedTypeVar::Free(last_param_idx) {
+        let precondition_idx = self.precondition_param();
+        self.ty.params[precondition_idx].refinement = refinement.map_var(|v| {
+            if v == rty::RefinedTypeVar::Free(precondition_idx) {
                 rty::RefinedTypeVar::Value
             } else {
                 v
@@ -271,19 +287,15 @@ impl BasicBlockType {
     /// built for inference that is the template's predicate variable, so a written
     /// invariant then seeds inference instead of replacing it.
     pub fn conjoin_precondition(&mut self, refinement: rty::Refinement<rty::FunctionParamIdx>) {
-        let last_param_idx = self.ty.params.last_index().unwrap();
+        let precondition_idx = self.precondition_param();
         let mapped = refinement.map_var(|v| {
-            if v == rty::RefinedTypeVar::Free(last_param_idx) {
+            if v == rty::RefinedTypeVar::Free(precondition_idx) {
                 rty::RefinedTypeVar::Value
             } else {
                 v
             }
         });
-        self.ty
-            .params
-            .raw
-            .last_mut()
-            .unwrap()
+        self.ty.params[precondition_idx]
             .refinement
             .push_conj(mapped);
     }
