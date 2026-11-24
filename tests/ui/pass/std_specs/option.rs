@@ -28,6 +28,7 @@ include!("../../../../std_try.rs");
 mod std_transcriptions {
     use crate::thrust_models;
     use std::convert::Infallible;
+    use std::mem;
     use std::ops::ControlFlow;
     use thrust_models::forall;
     use thrust_models::model::{Closure, Seq};
@@ -61,6 +62,107 @@ mod std_transcriptions {
         }
     }
 
+    // std's `unwrap_failed` and `expect_failed` end in a panic. The specs' preconditions keep
+    // them unreachable, which the checks of `unwrap` and `expect` rely on.
+    fn unwrap_failed() -> ! {
+        panic!()
+    }
+
+    fn expect_failed(_msg: &str) -> ! {
+        panic!()
+    }
+
+    // std: library/core/src/option.rs, `impl<T> Option<T>`, `fn unwrap(self) -> T`
+    pub fn option_unwrap<T>(opt: Option<T>) -> T {
+        match opt {
+            Some(val) => val,
+            None => unwrap_failed(),
+        }
+    }
+
+    // std: library/core/src/option.rs, `impl<T> Option<T>`, `fn expect(self, msg: &str) -> T`
+    pub fn option_expect<T>(opt: Option<T>, msg: &str) -> T {
+        match opt {
+            Some(val) => val,
+            None => expect_failed(msg),
+        }
+    }
+
+    // std: library/core/src/option.rs, `impl<T> Option<T>`, `fn unwrap_or(self, default: T) -> T where T: [const] Destruct,`
+    pub fn option_unwrap_or<T>(opt: Option<T>, default: T) -> T {
+        match opt {
+            Some(x) => x,
+            None => default,
+        }
+    }
+
+    // std: library/core/src/option.rs, `impl<T> Option<T>`, `fn unwrap_or_else<F>(self, f: F) -> T where F: [const] FnOnce() -> T + [const] Destruct,`
+    pub fn option_unwrap_or_else<T, F>(opt: Option<T>, f: F) -> T
+    where
+        T: thrust_models::Model,
+        F: FnOnce() -> T,
+    {
+        match opt {
+            Some(x) => x,
+            None => f(),
+        }
+    }
+
+    // std: library/core/src/option.rs, `impl<T> Option<T>`, `fn map<U, F>(self, f: F) -> Option<U> where F: [const] FnOnce(T) -> U + [const] Destruct,`
+    pub fn option_map<T, U, F>(opt: Option<T>, f: F) -> Option<U>
+    where
+        T: thrust_models::Model,
+        U: thrust_models::Model,
+        F: FnOnce(T) -> U,
+    {
+        match opt {
+            Some(x) => Some(f(x)),
+            None => None,
+        }
+    }
+
+    // std: library/core/src/option.rs, `impl<T> Option<T>`, `fn map_or<U, F>(self, default: U, f: F) -> U where F: [const] FnOnce(T) -> U + [const] Destruct, U: [const] Destruct,`
+    pub fn option_map_or<T, U, F>(opt: Option<T>, default: U, f: F) -> U
+    where
+        T: thrust_models::Model,
+        U: thrust_models::Model,
+        F: FnOnce(T) -> U,
+    {
+        match opt {
+            Some(t) => f(t),
+            None => default,
+        }
+    }
+
+    // std: library/core/src/option.rs, `impl<T> Option<T>`, `fn ok_or<E: [const] Destruct>(self, err: E) -> Result<T, E>`
+    pub fn option_ok_or<T, E>(opt: Option<T>, err: E) -> Result<T, E> {
+        match opt {
+            Some(v) => Ok(v),
+            None => Err(err),
+        }
+    }
+
+    // std: library/core/src/option.rs, `impl<T> Option<T>`, `fn take(&mut self) -> Option<T>`
+    pub fn option_take<T>(opt: &mut Option<T>) -> Option<T> {
+        mem::replace(opt, None)
+    }
+
+    // std: library/core/src/option.rs, `impl<T> Option<T>`, `fn as_ref(&self) -> Option<&T>`
+    pub fn option_as_ref<T>(opt: &Option<T>) -> Option<&T> {
+        match *opt {
+            Some(ref x) => Some(x),
+            None => None,
+        }
+    }
+
+    // std: library/core/src/result.rs, `impl<T, E> Result<T, E>`, `fn ok(self) -> Option<T> where T: [const] Destruct, E: [const] Destruct,`
+    pub fn result_ok<T, E>(res: Result<T, E>) -> Option<T> {
+        match res {
+            Ok(x) => Some(x),
+            Err(_) => None,
+        }
+    }
+
     // The transcriptions of `Iterator`'s methods are methods of a trait impl, where
     // `#[thrust_macros::context]` adds no `<T as Model>::Ty: PartialEq` bounds, which the specs
     // that call them do not have.
@@ -74,7 +176,54 @@ mod std_transcriptions {
         fn iterator_any(it: &mut I, f: F) -> bool;
     }
 
+    pub trait IteratorFindMethods<I, P>
+    where
+        I: crate::IteratorSpec,
+        I::Item: thrust_models::Model,
+        P: FnMut(&I::Item) -> bool,
+    {
+        fn iterator_find(it: &mut I, predicate: P) -> Option<I::Item>;
+    }
+
     pub struct StdBodies;
+
+    #[thrust_macros::context]
+    impl<I, P> IteratorFindMethods<I, P> for StdBodies
+    where
+        I: crate::IteratorSpec,
+        I::Item: thrust_models::Model,
+        P: FnMut(&I::Item) -> bool,
+    {
+        // std: library/core/src/slice/iter/macros.rs, `impl<'a, T> Iterator for $name<'a, T>`, `fn find<P>(&mut self, mut predicate: P) -> Option<Self::Item> where Self: Sized, P: FnMut(&Self::Item) -> bool,`
+        // core's default `find` calls `try_fold` with a closure that breaks where this loop returns.
+        // The ghosts `s` and `fs` are the items taken and the predicate's states before each.
+        fn iterator_find(it: &mut I, mut predicate: P) -> Option<I::Item> {
+            let mut s = thrust_macros::ghost!(|| -> Vec<I::Item> { Seq::empty() });
+            let mut fs = thrust_macros::ghost!(|predicate: P| -> Seq<Closure<P>> { Seq::singleton(predicate) });
+            while let Some(x) = it.next() {
+                thrust_macros::invariant!(
+                    |it: &mut I, predicate: P, s: Ghost<Vec<I::Item>>, fs: Ghost<Seq<Closure<P>>>, old!(it): &mut I, old!(predicate): P|
+                    !it == !old!(it)
+                        && I::inv(*it)
+                        && crate::_iter_spec_find_chain::<I, P>(*old!(it), old!(predicate), s, *it, fs)
+                        && fs[s.len()] == predicate
+                        && forall(|s: Seq<<I::Item as thrust_models::Model>::Ty>, it1: <I as thrust_models::Model>::Ty,
+                                   fs: Seq<Closure<P>>, x: <I::Item as thrust_models::Model>::Ty,
+                                   it2: <I as thrust_models::Model>::Ty|
+                            (crate::_iter_spec_find_chain::<I, P>(*old!(it), old!(predicate), s, it1, fs)
+                                && I::produces(it1, Seq::singleton(x), it2))
+                                ==> thrust_macros::pre!(fs[s.len()](&x)))
+                );
+                let gx = thrust_macros::ghost!(|x: I::Item| -> I::Item { x });
+                if predicate(&x) {
+                    return Some(x);
+                }
+                s = thrust_macros::ghost!(|s: Ghost<Vec<I::Item>>, gx: Ghost<I::Item>| -> Vec<I::Item> { s.push(gx) });
+                fs = thrust_macros::ghost!(|fs: Ghost<Seq<Closure<P>>>, predicate: P| -> Seq<Closure<P>> { fs.push(predicate) });
+            }
+            None
+        }
+    }
 
     #[thrust_macros::context]
     impl<I, F> IteratorMethods<I, F> for StdBodies
