@@ -443,34 +443,6 @@ impl FunctionType {
         let post = post.and_resolution(state_ty, state, parts, &mut vars);
         chc::Formula::exists(vars, post)
     }
-
-    /// The resolution of the state `state` of a closure whose contract takes it through `&`, when
-    /// a call by value consumes it: Creusot's `fn_once` law,
-    /// `postcondition_once(self, args, res) == postcondition(self, args, res) && resolve(self)`.
-    /// An `Fn` closure reads its captures only, so nothing changes the referent of a `&mut` it
-    /// owns, and dropping the state resolves it. `None` when the contract takes no `&`.
-    pub fn consumed_shared_state_resolution<W>(
-        &self,
-        state: chc::Term<W>,
-        parts: &mut PartVars<'_>,
-    ) -> Option<chc::Formula<W>>
-    where
-        W: chc::Var,
-    {
-        let receiver = self.params[FunctionParamIdx::from_usize(0)]
-            .ty
-            .as_pointer()?;
-        if receiver.kind != PointerKind::Ref(RefKind::Immut) {
-            return None;
-        }
-        let mut vars = Vec::new();
-        let resolution =
-            chc::Formula::top().and_resolution(&receiver.elem.ty, state, parts, &mut vars);
-        if resolution.is_top() {
-            return None;
-        }
-        Some(chc::Formula::exists(vars, resolution))
-    }
 }
 
 impl<W: chc::Var> chc::Formula<W> {

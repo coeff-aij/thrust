@@ -2091,15 +2091,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             None => {
                 let post =
                     fn_ty.once_postcondition_formula(&param_args, result, None, None, &mut parts);
-                let post = match self.consumed_closure_state(receiver, receiver_ty) {
-                    Some(state) => {
-                        match fn_ty.consumed_shared_state_resolution(state, &mut parts) {
-                            Some(resolution) => post.and(resolution),
-                            None => post,
-                        }
-                    }
-                    None => post,
-                };
                 match self.explicit_final_state_relation(receiver, receiver_ty) {
                     Some(relation) => post.and(relation),
                     None => post,
@@ -2107,50 +2098,6 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             }
         };
         FormulaOrTerm::Formula(post)
-    }
-
-    /// The state of the closure a `post!` of a call that consumes it names: the receiver is written
-    /// as a value of a type parameter bounded by `FnOnce` alone, which a concrete closure
-    /// instantiates. `None` otherwise, as for a type parameter, whose state has no resolution.
-    fn consumed_closure_state(
-        &self,
-        receiver: &'tcx rustc_hir::Expr<'tcx>,
-        receiver_ty: mir_ty::Ty<'tcx>,
-    ) -> Option<chc::Term<rty::FunctionParamIdx>> {
-        let written = self.typeck.expr_ty(receiver);
-        let mir_ty::TyKind::Adt(adt, args) = written.kind() else {
-            return None;
-        };
-        if Some(adt.did()) != self.def_ids.closure_model() {
-            return None;
-        }
-        let mir_ty::TyKind::Param(param) = args.type_at(0).kind() else {
-            return None;
-        };
-        if self.closure_bound(*param)? != mir_ty::ClosureKind::FnOnce {
-            return None;
-        }
-        let (closure_ty, _) = self.receiver_closure_behind_refs(receiver_ty)?;
-        matches!(closure_ty.kind(), mir_ty::TyKind::Closure(..)).then(|| self.to_term(receiver))
-    }
-
-    /// The closure trait that bounds the type parameter `param` in the annotated function, the
-    /// most specific one when several do.
-    fn closure_bound(&self, param: mir_ty::ParamTy) -> Option<mir_ty::ClosureKind> {
-        let param = param.to_ty(self.tcx);
-        self.tcx
-            .predicates_of(self.local_def_id)
-            .instantiate_identity(self.tcx)
-            .predicates
-            .iter()
-            .filter_map(|clause| clause.as_trait_clause())
-            .filter_map(|pred| {
-                let trait_ref = pred.skip_binder().trait_ref;
-                (trait_ref.self_ty() == param)
-                    .then(|| self.tcx.fn_trait_kind_from_def_id(trait_ref.def_id))
-                    .flatten()
-            })
-            .reduce(analyze::closure_hist_inv::most_specific_closure_kind)
     }
 
     /// The relation `post!(Mut::new(from, to)(..))` at a concrete closure states between its

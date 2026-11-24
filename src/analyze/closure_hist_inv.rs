@@ -336,7 +336,7 @@ pub fn closure_bound_where_declared(
 
 /// The more specific of two closure kinds that bound one type: `Fn` before `FnMut` before
 /// `FnOnce`.
-pub fn most_specific_closure_kind(
+fn most_specific_closure_kind(
     kind: mir_ty::ClosureKind,
     other: mir_ty::ClosureKind,
 ) -> mir_ty::ClosureKind {
