@@ -37,6 +37,34 @@ fn shadowed_entry(k: i64) { //~ ERROR: a lemma's recursive call passes the lemma
 }
 
 #[thrust_macros::lemma]
+#[thrust_macros::variant(n)]
+#[thrust_macros::requires(n >= 0)]
+#[thrust_macros::ensures(false)]
+fn entry_repointed_through_mut(n: i64) {
+    let big = n + 1;
+    let mut r = &n;
+    {
+        let m = &mut r;
+        *m = &big;
+    }
+    _thrust_lemma_rec_entry_repointed_through_mut(r, n); //~ ERROR: a lemma's recursive call passes the lemma's own parameters as the entry values
+}
+
+#[thrust_macros::lemma]
+#[thrust_macros::variant(n)]
+#[thrust_macros::requires(n >= 0)]
+#[thrust_macros::ensures(false)]
+fn entry_reborrow_repointed_through_mut(n: i64) {
+    let big = n + 1;
+    let mut r = &n;
+    {
+        let m = &mut r;
+        *m = &big;
+    }
+    _thrust_lemma_rec_entry_reborrow_repointed_through_mut(&*r, n); //~ ERROR: a lemma's recursive call passes the lemma's own parameters as the entry values
+}
+
+#[thrust_macros::lemma]
 fn writes_through_raw(x: i64) {
     let p = &raw const x; //~ ERROR: a lemma cannot contain an `unsafe` block or a raw pointer
     unsafe { *(p as *mut i64) = 5 } //~ ERROR: a lemma cannot contain an `unsafe` block or a raw pointer

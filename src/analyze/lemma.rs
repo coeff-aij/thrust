@@ -859,11 +859,39 @@ fn passes_own_entries(
             .and_then(|place| place.as_local())
             .and_then(|local| referent(body, local))
             == Some(param)
+            && mutating_uses(body, param) == 0
     })
 }
 
+/// Counts the uses of one local that write it: assignments, mutable borrows, calls that
+/// store into it, writes through it.
+struct MutatingUses {
+    local: mir::Local,
+    count: usize,
+}
+
+impl<'tcx> Visitor<'tcx> for MutatingUses {
+    fn visit_local(
+        &mut self,
+        local: mir::Local,
+        context: mir::visit::PlaceContext,
+        _location: mir::Location,
+    ) {
+        if local == self.local && context.is_mutating_use() {
+            self.count += 1;
+        }
+    }
+}
+
+fn mutating_uses(body: &mir::Body<'_>, local: mir::Local) -> usize {
+    let mut uses = MutatingUses { local, count: 0 };
+    uses.visit_body(body);
+    uses.count
+}
+
 /// The local that `local` holds a shared reference to, following copies, when each local on
-/// the way is assigned once.
+/// the way is written only by its single assignment: any other write (a second assignment, a
+/// mutable borrow, a write through one) could re-point it.
 fn referent(body: &mir::Body<'_>, mut local: mir::Local) -> Option<mir::Local> {
     loop {
         let mut assignments = body.basic_blocks.iter().flat_map(|data| {
@@ -877,6 +905,9 @@ fn referent(body: &mir::Body<'_>, mut local: mir::Local) -> Option<mir::Local> {
         let (Some(rvalue), None) = (assignments.next(), assignments.next()) else {
             return None;
         };
+        if mutating_uses(body, local) != 1 {
+            return None;
+        }
         let assigned_by_call = body.basic_blocks.iter().any(|data| {
             matches!(&data.terminator().kind, TerminatorKind::Call { destination, .. } if destination.as_local() == Some(local))
         });
