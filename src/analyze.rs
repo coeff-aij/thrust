@@ -709,6 +709,8 @@ pub struct Analyzer<'tcx> {
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
     /// The instances of `FnMut`-bounded defs whose bodies are being analyzed, innermost last.
     fn_mut_instances_in_analysis: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
+    /// The bodies analyzed at an instance a call reached, at any type arguments.
+    instance_analyzed_bodies: RefCell<HashSet<LocalDefId>>,
     /// See [`Analyzer::contract_written`].
     contract_written: RefCell<HashMap<LocalDefId, bool>>,
     /// The generic defs of a crate with an `Invariant` impl that are verified once over their
@@ -746,6 +748,9 @@ pub struct Analyzer<'tcx> {
     assumptions: Vec<AssumeSite>,
     /// The fn-like defs whose bodies are trusted rather than analyzed.
     trusted_bodies: HashSet<LocalDefId>,
+    /// The bodies outside `THRUST_VERIFY_ONLY` trusted once the analysis has reached them at no
+    /// instance (`crate_::Analyzer::trust_unreached_unselected_generics`).
+    unreached_trusted_bodies: HashSet<LocalDefId>,
     /// What each analyzed body's calls into code Thrust does not analyze cover, by the body and
     /// the function called with its generic arguments.
     handovers: Vec<(
@@ -1078,6 +1083,7 @@ impl<'tcx> Analyzer<'tcx> {
             spec_assumptions: Default::default(),
             reused_generic_instances: Default::default(),
             fn_mut_instances_in_analysis: Default::default(),
+            instance_analyzed_bodies: Default::default(),
             contract_written: Default::default(),
             per_instance_too: Default::default(),
             called_fn_tys: Default::default(),
@@ -1094,6 +1100,7 @@ impl<'tcx> Analyzer<'tcx> {
             invariant_annotations: Default::default(),
             assumptions: Default::default(),
             trusted_bodies: Default::default(),
+            unreached_trusted_bodies: Default::default(),
             handovers: Default::default(),
             handover_counts: Default::default(),
             body_checks: Default::default(),
@@ -2637,6 +2644,9 @@ impl<'tcx> Analyzer<'tcx> {
             if fn_mut_bounded {
                 self.fn_mut_instances_in_analysis.borrow_mut().pop();
             }
+            self.instance_analyzed_bodies
+                .borrow_mut()
+                .insert(body_local_def_id);
             use mir_ty::TypeVisitableExt as _;
             if !body_args.has_param() {
                 self.concrete_instances
@@ -2659,6 +2669,32 @@ impl<'tcx> Analyzer<'tcx> {
     /// `FnMut`-bounded type parameter.
     pub fn has_concrete_instance(&self, local_def_id: LocalDefId) -> bool {
         self.concrete_instances.borrow().contains(&local_def_id)
+    }
+
+    /// Whether the body of `local_def_id` has been analyzed at some instance a call reached, at
+    /// any type arguments.
+    pub fn analyzed_at_an_instance(&self, local_def_id: LocalDefId) -> bool {
+        self.instance_analyzed_bodies
+            .borrow()
+            .contains(&local_def_id)
+    }
+
+    /// Whether the body of `def_id` has been analyzed at the concrete `generic_args`.
+    pub fn analyzed_at(&self, def_id: DefId, generic_args: mir_ty::GenericArgsRef<'tcx>) -> bool {
+        self.analyzed_instances
+            .borrow()
+            .iter()
+            .any(|(analyzed, args)| *analyzed == def_id && *args == generic_args)
+    }
+
+    /// The instances recorded as using a generic def's contract without analyzing its body there,
+    /// from the `from`-th on, in the order they were recorded: the def, its generic arguments and
+    /// the caller.
+    pub fn reused_instances_from(
+        &self,
+        from: usize,
+    ) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)> {
+        self.reused_generic_instances.borrow()[from..].to_vec()
     }
 
     /// Whether a refinement in `rty`, a contract at `generic_args` made from `caller_def_id`,
