@@ -11,7 +11,8 @@
 //! A loop with no invariant gets the same ghosts, and Thrust conjoins `inv(iter)` and
 //! `produces(iter_old, produced, iter)` to the invariant it infers where the iterator implements
 //! `IteratorSpec`, so that the inferred part can relate the loop's state to `produced`, as Creusot
-//! does for every loop. A body that starts with `no_structural_invariant!()` gets neither.
+//! does for every loop; Thrust removes the ghosts from the MIR of a loop whose iterator has no
+//! `IteratorSpec` (`erase_for_loop_ghosts_without_iterator_spec`). A body that starts with `no_structural_invariant!()` gets neither.
 //!
 //! The variables of an annotated loop get names of their own for each loop, and the invariant's
 //! `iter`, `iter_old` and `produced` are renamed to them, so the loop body sees its own variables
