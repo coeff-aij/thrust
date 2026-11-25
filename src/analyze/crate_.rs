@@ -100,6 +100,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 keys.swap_remove(local_def_id);
                 continue;
             }
+            self.ctx.collect_lemma_variant(*local_def_id);
             let analyzer = self.ctx.local_def_analyzer(*local_def_id);
             if analyzer.is_annotated_as_extern_spec_fn() {
                 let target_def_id = analyzer.extern_spec_fn_target_def_id();

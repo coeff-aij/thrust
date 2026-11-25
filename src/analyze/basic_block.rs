@@ -17,8 +17,8 @@ use crate::chc;
 use crate::chc::debug;
 use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{
-    Assumption, BasicBlockType, BasicBlockTypeParamKind, PlaceType, PlaceTypeBuilder, PlaceTypeVar,
-    TempVarIdx, TypeBuilder, Var,
+    array_model_type, Assumption, BasicBlockType, BasicBlockTypeParamKind, PlaceType,
+    PlaceTypeBuilder, PlaceTypeVar, TempVarIdx, TypeBuilder, Var,
 };
 use crate::rty::{
     self, ClauseBuilderExt as _, ClauseScope as _, ShiftExistential as _, Subtyping as _,
@@ -498,6 +498,43 @@ pub fn binding_idents(
     };
     rustc_hir::intravisit::Visitor::visit_body(&mut bindings, tcx.hir_body_owned_by(root));
     bindings.idents
+}
+
+/// The argument local the identifier `name` names ([`names_binding`]).
+pub fn function_param_local_of_name<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mir::Body<'tcx>,
+    name: rustc_span::symbol::Ident,
+) -> Option<Local> {
+    let idents = binding_idents(tcx, body);
+    let mut found: Option<Local> = None;
+    for vdi in &body.var_debug_info {
+        tracing::debug!("comparing {name:?} with {vdi:?}...");
+        if !names_binding(&idents, name, vdi) {
+            tracing::debug!("another name or another hygiene, skip.");
+            continue;
+        }
+        let mir::VarDebugInfoContents::Place(place) = vdi.value else {
+            tracing::debug!("place, skip.");
+            continue;
+        };
+        if !place.projection.is_empty() {
+            tracing::debug!("empty projection, skip.");
+            continue;
+        }
+        let local = place.local;
+        if local.index() == 0 || local.index() > body.arg_count {
+            tracing::debug!("not param of local, skip.");
+            continue;
+        }
+        tracing::debug!("found.");
+        match found {
+            None => found = Some(local),
+            Some(prev) if prev == local => {}
+            Some(_) => panic!("multiple function arguments share the name `{name}`"),
+        }
+    }
+    found
 }
 
 /// Whether the identifier `name` names the variable of `vdi` where both are in scope, as rustc
@@ -1118,10 +1155,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     let (_, elem_term) = builder.subsume(pty);
                     seq = seq.seq_concat(elem_term.seq_unit());
                 }
-                builder.build(
-                    rty::Type::Seq(Box::new(rty::RefinedType::unrefined(elem_ty))),
-                    seq,
-                )
+                builder.build(array_model_type(elem_ty, Some(len)), seq)
             }
             mir_ty::TyKind::Tuple(tys) => {
                 let pts = tys
@@ -1581,10 +1615,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                             let (_, elem_term) = builder.subsume(pty);
                             seq = seq.seq_concat(elem_term.seq_unit());
                         }
-                        builder.build(
-                            rty::Type::Seq(Box::new(rty::RefinedType::unrefined(elem_ty))),
-                            seq,
-                        )
+                        let len = fields.len() as u64;
+                        builder.build(array_model_type(elem_ty, Some(len)), seq)
                     }
                     mir::AggregateKind::Adt(did, variant_idx, args, _, _)
                         if self.tcx.def_kind(did) == DefKind::Enum =>
@@ -1685,10 +1717,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 for _ in 0..count {
                     seq = seq.seq_concat(elem_term.clone().seq_unit());
                 }
-                builder.build(
-                    rty::Type::Seq(Box::new(rty::RefinedType::unrefined(elem_ty))),
-                    seq,
-                )
+                builder.build(array_model_type(elem_ty, Some(count)), seq)
             }
             Rvalue::Cast(
                 mir::CastKind::PointerCoercion(
@@ -2826,6 +2855,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         formula_fn: FormulaFn<'tcx>,
         span: rustc_span::Span,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
         let what = match marker {
             FormulaMarker::Assert => "proof_assert!",
@@ -2844,8 +2874,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             formula_fn_def_id,
             generic_args,
             &formula_fn,
-            span,
-            scope,
+            mir::SourceInfo { span, scope },
+            outer_fn_param_vars,
         );
         let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
         if matches!(marker, FormulaMarker::Assert | FormulaMarker::BlockEnsures) {
@@ -2865,17 +2895,86 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.env.assume(formula.map_var(PlaceTypeVar::Var));
     }
 
+    /// A call of a lemma's companion in the lemma's own body is its recursive call: the lemma's
+    /// variant at the call's actual arguments has to be non-negative and smaller than at the
+    /// lemma's parameters on entry, whose values are the analysis's own. The companion carries the
+    /// variant (`#[thrust::lemma_variant_obligation]`) as a logic function of all the lemma's
+    /// parameters, which is taken at their values on entry and at the call's arguments. The lemma
+    /// then terminates, since the variant decreases along every chain of recursive calls and is
+    /// never negative.
+    fn check_lemma_variant(
+        &mut self,
+        companion: DefId,
+        companion_generic_args: mir_ty::GenericArgsRef<'tcx>,
+        args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
+    ) {
+        let (variant_def_id, variant_args) = self
+            .ctx
+            .lemma_variant_of(companion)
+            .expect("the companion of a lemma with a variant has a variant");
+        // The variant is written over the lemma's generics; the call gives them.
+        let variant_args =
+            mir_ty::EarlyBinder::bind(variant_args).instantiate(self.tcx, companion_generic_args);
+        let variant_fn = self
+            .ctx
+            .formula_fn_with_args(
+                variant_def_id.expect_local(),
+                variant_args,
+                self.type_builder.owner_fn_id(),
+            )
+            .expect("the variant is a formula function");
+        let analyze::annot_fn::FormulaFnBody::Term(variant) = variant_fn.body() else {
+            panic!("a variant is a term");
+        };
+        // The variant takes every parameter of the lemma, in order.
+        let at_entry = variant.clone().map_var(|idx| outer_fn_param_vars[&idx]);
+        let arg_vars: IndexVec<rty::FunctionParamIdx, Var> = variant_fn
+            .params()
+            .indices()
+            .map(|idx| {
+                let arg = self.operand_refined_type(args[idx.index()].node.clone());
+                self.env.immut_bind_tmp(arg)
+            })
+            .collect();
+        let at_args = variant.clone().map_var(|idx| arg_vars[idx]);
+        let non_negative = chc::Atom::new(
+            chc::KnownPred::LESS_THAN_OR_EQUAL.into(),
+            vec![chc::Term::int(0), at_entry.clone()],
+        );
+        let smaller = chc::Atom::new(chc::KnownPred::LESS_THAN.into(), vec![at_args, at_entry]);
+        self.check_formula(chc::Formula::Atom(non_negative).and(chc::Formula::Atom(smaller)));
+    }
+
+    /// The local of the function's parameter `param_name` and the variable holding its value on
+    /// entry, which `old!(param_name)` names; `not_a_param` is the error if there is no such
+    /// parameter.
+    fn entry_value_of_param(
+        &self,
+        param_name: rustc_span::symbol::Ident,
+        span: rustc_span::Span,
+        not_a_param: String,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
+    ) -> (Local, Var) {
+        let local = function_param_local_of_name(self.tcx, &self.body, param_name)
+            .unwrap_or_else(|| self.tcx.dcx().span_fatal(span, not_a_param));
+        let entry = outer_fn_param_vars[&analyze::function_param_of_local(local)];
+        (local, entry)
+    }
+
     /// The values of the variables the parameters of a formula over live variables name, each
-    /// the binding its name stands for in `scope`.
+    /// the binding its name stands for in `scope`. A parameter written `old!(x)` (a
+    /// `proof_assert!`'s) is the entry value of the function's parameter `x`.
     fn formula_vars(
         &mut self,
         what: &str,
         formula_fn_def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         formula_fn: &FormulaFn<'tcx>,
-        span: rustc_span::Span,
-        scope: mir::SourceScope,
+        source_info: mir::SourceInfo,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) -> IndexVec<rty::FunctionParamIdx, Var> {
+        let mir::SourceInfo { span, scope } = source_info;
         let sig = self
             .tcx
             .fn_sig(formula_fn_def_id)
@@ -2888,6 +2987,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .map(|(idx, written_input_ty)| {
                 let ident =
                     formula_fn.param_idents()[idx].expect("formula parameters must be named");
+                if let Some(param_name) = analyze::annot_fn::entry_value_param_name(ident) {
+                    let (local, entry) = self.entry_value_of_param(
+                        param_name,
+                        span,
+                        format!(
+                            "{what} refers to `old!({param_name})`, but `{param_name}` \
+                             is not a parameter of the function"
+                        ),
+                        outer_fn_param_vars,
+                    );
+                    let operand = Operand::Copy(local.into());
+                    self.check_spec_param_ty(
+                        what,
+                        span,
+                        rustc_span::Symbol::intern(&format!("old!({param_name})")),
+                        *written_input_ty,
+                        &operand,
+                    );
+                    return entry;
+                }
                 let name = analyze::annot_fn::lifted_param_source_name(ident);
                 let operand = self.operand_of_name_in(name, scope).unwrap_or_else(|| {
                     self.tcx.dcx().span_fatal(
@@ -3032,8 +3151,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             formula_def_id.to_def_id(),
             generic_args,
             &formula_fn,
-            closing.source_info.span,
-            closing.source_info.scope,
+            closing.source_info,
+            outer_fn_param_vars,
         );
         let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
         self.env.assume(formula.map_var(PlaceTypeVar::Var));
@@ -3806,6 +3925,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ..
         } = &term.kind
         {
+            if let Some((callee, callee_args)) = func.const_fn_def() {
+                if analyze::lemma::is_own_companion(self.tcx, self.local_def_id, callee) {
+                    self.check_lemma_variant(callee, callee_args, args, outer_fn_param_vars);
+                }
+            }
             let destination = match destination {
                 p if p.projection.is_empty() => p.local,
                 _ => unimplemented!(),
@@ -3854,6 +3978,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     args,
                     formula_fn,
                     term.source_info.span,
+                    outer_fn_param_vars,
                 );
                 self.bind_local(destination, rty::RefinedType::unrefined(rty::Type::unit()));
                 return;
