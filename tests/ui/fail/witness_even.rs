@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -A unused-variables -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::witness;
 use thrust_models::exists;
 use thrust_models::Ghost;
 
@@ -20,7 +20,7 @@ fn even(n: i64) -> bool {
 fn add_two(n: i64) -> i64 {
     let k = thrust_macros::choose!(|n: i64| -> i64 { even(n) });
     let m = n + 2;
-    thrust_macros::proof_assert!(|m: i64, k: Ghost<i64>| thrust_models::witness(even(m), k + 2));
+    thrust_macros::proof_assert!(|m: i64, k: Ghost<i64>| witness(even(m), k + 2));
     m
 }
 

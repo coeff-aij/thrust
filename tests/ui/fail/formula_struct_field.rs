@@ -1,13 +1,13 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 #[derive(PartialEq)]
 struct P {
     x: i64,
     y: i64,
 }
 
-impl thrust_models::Model for P {
+impl Model for P {
     type Ty = Self;
 }
 

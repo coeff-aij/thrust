@@ -1,16 +1,16 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1
-
+use thrust_models::Model;
 // `?` converts the error through `From::from`, here a local impl with a contract.
 struct Small(u8);
 struct Big(u8);
 
-impl thrust_models::Model for Small {
+impl Model for Small {
     type Ty = Small;
 }
 
-impl thrust_models::Model for Big {
+impl Model for Big {
     type Ty = Big;
 }
 

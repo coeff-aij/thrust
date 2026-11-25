@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // `outer` analyzes `W::step` at `P = {closure}`, whose capture has `outer`'s second type
 // parameter. The ghost term's parameter `self` has that type, so it is translated with the type
 // parameters of `outer`, the owner of the instance.
@@ -17,7 +17,7 @@ struct W<P> {
     n: i64,
 }
 
-impl<P> thrust_models::Model for W<P> {
+impl<P> Model for W<P> {
     type Ty = W<P>;
 }
 

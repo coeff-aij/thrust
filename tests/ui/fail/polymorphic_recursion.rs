@@ -4,17 +4,17 @@
 
 // `f::<T>` calls `f::<W<T>>`, so the `clone` its reused contract dispatches at `T` is recorded at
 // `W<T>`, `W<W<T>>`, ... without end. The analysis stops past the recursion limit.
-
+use thrust_models::Model;
 #[derive(Clone)]
 struct W<T>(T);
 
-impl<T: thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Model> Model for W<T> {
     type Ty = W<T::Ty>;
 }
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
-fn f<T: Clone + thrust_models::Model>(x: T, n: u32) {
+fn f<T: Clone + Model>(x: T, n: u32) {
     let _y = x.clone();
     if n > 0 {
         f(W(x), n - 1);

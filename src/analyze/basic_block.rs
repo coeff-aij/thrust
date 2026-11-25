@@ -1355,6 +1355,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         if analyze::ghost_const::ghost_consts(self.ctx(), def_id).is_empty() {
             return;
         }
+        if analyze::selection::is_extracted_block(self.tcx, def_id) {
+            self.tcx.dcx().fatal(format!(
+                "`block_contract!` in `{}` is not supported yet: the function has a const generic \
+                 parameter, which the extracted function of the block would take as an implicit \
+                 argument",
+                self.tcx.def_path_str(self.type_builder.owner_fn_id()),
+            ));
+        }
         self.tcx.dcx().fatal(format!(
             "`{}` takes its const generic parameters as implicit arguments, so it cannot be \
              used as a value in `{}` yet; call it, or wrap the call in a closure",

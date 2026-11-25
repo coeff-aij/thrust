@@ -5,10 +5,10 @@
 // the closure relies on, holds only where `S`'s `eq` meets the trait's spec, so `h::<S>` is
 // followed again when verified code reaches it, and its `==` at `T`, which dispatches on `T`,
 // runs the ignored `eq` as verified code.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -22,7 +22,7 @@ impl PartialEq for S {
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == true)]
-fn h<T: PartialEq + thrust_models::Model>(a: &T) -> bool {
+fn h<T: PartialEq + Model>(a: &T) -> bool {
     a == a
 }
 

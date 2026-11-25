@@ -1,10 +1,11 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+use thrust_models::{exists, Model, model::Mut};
 // A capture whose type names `Self`, in a default method of a trait under `context`: the clause,
 // lifted out of the trait, names `Self` under another name.
 #[thrust_macros::requires(thrust_macros::pre!(f(&x)))]
-#[thrust_macros::ensures(thrust_models::exists(|g| thrust_macros::post!(thrust_models::model::Mut::new(f, g)(&x), result)))]
+#[thrust_macros::ensures(exists(|g| thrust_macros::post!(Mut::new(f, g)(&x), result)))]
 fn call<F: FnMut(&i64) -> i64>(x: i64, mut f: F) -> i64 {
     f(&x)
 }
@@ -14,7 +15,7 @@ fn id<T>(t: &T) -> &T {
 }
 
 #[thrust_macros::context]
-trait Tr: thrust_models::Model + Sized {
+trait Tr: Model + Sized {
     #[thrust::callable]
     fn g(&self) -> i64 {
         let s = self;

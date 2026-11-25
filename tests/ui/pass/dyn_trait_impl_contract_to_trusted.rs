@@ -4,14 +4,14 @@
 
 // The twin of `fail/dyn_trait_impl_contract_to_trusted.rs`: `S::call`'s own `requires` holds of
 // every argument.
-
+use thrust_models::Model;
 trait Call {
     fn call(&self, x: &i64) -> bool;
 }
 
 struct S;
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = ();
 }
 

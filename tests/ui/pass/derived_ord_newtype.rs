@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::{Model, model::UInt};
 // The derived `PartialOrd` / `Ord` of a newtype over an integer call the integer's
 // `partial_cmp` / `cmp`; their specifications in std.rs carry the order through.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -8,8 +8,8 @@ struct Align {
     pow2: u8,
 }
 
-impl thrust_models::Model for Align {
-    type Ty = thrust_models::model::UInt;
+impl Model for Align {
+    type Ty = UInt;
 }
 
 #[thrust_macros::context]

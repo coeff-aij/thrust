@@ -3,14 +3,14 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 #![feature(specialization)]
 #![allow(incomplete_features)]
-
+use thrust_models::Model;
 // `spec_impl_law_default.rs` with a blanket impl, the form most of std's specializations take:
 // the law `lim_nonneg` holds of the blanket impl's `lim` (`x >= 0`) but not of the override for
 // `u8` (`x <= -1`), and is refuted at the blanket impl. There the self type is the impl's type
 // parameter `T`, with no `T: Lim` to assume the law from: `lim` is opaque because the blanket impl
 // marks it `default`, and takes no law.
 #[thrust_macros::context]
-trait Lim: thrust_models::Model {
+trait Lim: Model {
     #[thrust_macros::predicate]
     fn lim(x: i64) -> bool;
 
@@ -21,7 +21,7 @@ trait Lim: thrust_models::Model {
 }
 
 #[thrust_macros::context]
-impl<T: thrust_models::Model> Lim for T {
+impl<T: Model> Lim for T {
     #[thrust_macros::predicate]
     default fn lim(x: i64) -> bool {
         x >= 0

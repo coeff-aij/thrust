@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The trait's contract does not give 4 sides, which `min_sides` claims.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape {
     #[thrust_macros::ensures(result >= 3)]
@@ -12,7 +12,7 @@ trait Shape {
 
 struct Tri;
 
-impl thrust_models::Model for Tri {
+impl Model for Tri {
     type Ty = ();
 }
 
@@ -24,7 +24,7 @@ impl Shape for Tri {
 
 struct Square;
 
-impl thrust_models::Model for Square {
+impl Model for Square {
     type Ty = ();
 }
 

@@ -1,14 +1,14 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // In a crate with an `Invariant` impl, generic bodies are analyzed at each instance a call
 // reaches, and one with a written contract is verified over its type parameters as well.
 struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 
