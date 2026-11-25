@@ -23,14 +23,18 @@
 //!   dominate.
 //!
 //! Thrust reads MIR without `InstSimplify`, which would turn a reborrow `&mut *p` into `copy p`
-//! and lose its two-phase kind.
+//! and lose its two-phase kind. Whether a read or a write in the window overlaps the reserved
+//! place is rustc's `places_conflict`, a relation of places that does not depend on the borrow
+//! checker (NLL or Polonius).
 
 use std::collections::HashSet;
+
+use rustc_borrowck::consumers::{places_conflict, PlaceConflictBias};
 
 use rustc_middle::mir::{
     self,
     visit::{MutVisitor, NonMutatingUseContext, PlaceContext},
-    BasicBlock, Body, Local, Location, Place, PlaceElem, PlaceRef,
+    BasicBlock, Body, Local, Location, Place, PlaceElem,
 };
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::Span;
@@ -202,49 +206,49 @@ fn successors_in(
     successors.filter(|next| blocks.contains(next)).collect()
 }
 
-/// Whether and how `read` overlaps `reserved`: the same walk rustc's `places_conflict` makes.
+/// Whether and how `read` overlaps `reserved`. rustc's `places_conflict` rules out disjoint
+/// places (other locals, fields, variants, constant indices); of the rest, a read is of the
+/// reserved place, a part or an ancestor of it only when the two agree on their common prefix
+/// ([`same_prefix`]).
 fn overlap<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     read: Place<'tcx>,
     reserved: Place<'tcx>,
 ) -> Overlap {
-    if read.local != reserved.local {
+    if !places_conflict(tcx, body, reserved, read, PlaceConflictBias::Overlap) {
         return Overlap::Disjoint;
     }
-    let mut undecided = false;
-    let mut differing_indices = Vec::new();
-    for (i, (base, elem)) in read.iter_projections().enumerate() {
-        let Some(reserved_elem) = reserved.projection.get(i) else {
-            break;
+    match same_prefix(body, read, reserved) {
+        Some(true) if read.projection.len() >= reserved.projection.len() => {
+            Overlap::Within(Relation::Inside)
+        }
+        Some(true) => Overlap::Within(Relation::Ancestor),
+        Some(false) => Overlap::Disjoint,
+        None => Overlap::Undecided,
+    }
+}
+
+/// Whether `a` and `b` name the same place up to the shorter of the two: `Some(false)` when an
+/// index pair is two different constants, `None` when an index pair cannot be compared or two
+/// other projections differ (fields of a union, overlapping subslices).
+fn same_prefix<'tcx>(body: &Body<'tcx>, a: Place<'tcx>, b: Place<'tcx>) -> Option<bool> {
+    let mut decided = Some(true);
+    for (x, y) in a.projection.iter().zip(b.projection.iter()) {
+        if x == y {
+            continue;
+        }
+        let (PlaceElem::Index(x), PlaceElem::Index(y)) = (x, y) else {
+            decided = None;
+            continue;
         };
-        if !elems_may_overlap(tcx, body, base, elem, *reserved_elem) {
-            return Overlap::Disjoint;
-        }
-        match (*reserved_elem, elem) {
-            _ if *reserved_elem == elem => {}
-            (PlaceElem::Index(reserved_index), PlaceElem::Index(read_index)) => {
-                differing_indices.push((reserved_index, read_index));
-            }
-            _ => undecided = true,
-        }
-    }
-    for (reserved_index, read_index) in differing_indices {
-        match same_index(body, reserved_index, read_index) {
+        match same_index(body, x, y) {
+            Some(false) => return Some(false),
             Some(true) => {}
-            Some(false) => return Overlap::Disjoint,
-            None => undecided = true,
+            None => decided = None,
         }
     }
-    if undecided {
-        return Overlap::Undecided;
-    }
-    let relation = if read.projection.len() >= reserved.projection.len() {
-        Relation::Inside
-    } else {
-        Relation::Ancestor
-    };
-    Overlap::Within(relation)
+    decided
 }
 
 /// Whether two index locals hold the same value, when both are assigned one constant.
@@ -578,37 +582,53 @@ struct RepointFinder<'a, 'tcx> {
 impl<'tcx> mir::visit::Visitor<'tcx> for RepointFinder<'_, 'tcx> {
     fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, location: Location) {
         if context.is_mutating_use() {
-            for address in address_places(self.window) {
-                self.record(*place, address, location);
-            }
+            self.record(*place, location);
         }
         self.super_place(place, context, location);
     }
 }
 
 impl<'tcx> RepointFinder<'_, 'tcx> {
-    fn record(&mut self, written: Place<'tcx>, address: Address<'tcx>, location: Location) {
-        let kind = match address {
-            Address::Index(local) if written.as_local() == Some(local) => fatal_at(
+    /// rustc rejects a write in the window that reaches the reserved memory (RFC 2025), and a
+    /// write to a place the reserved one goes through ends right before a dereference: it
+    /// re-points that pointer. So a write that overlaps the reserved place re-points it, and is
+    /// shorter than it.
+    fn record(&mut self, written: Place<'tcx>, location: Location) {
+        let window = self.window;
+        let index_written = window.projection.iter().any(
+            |elem| matches!(elem, PlaceElem::Index(index) if written.as_local() == Some(index)),
+        );
+        if index_written {
+            fatal_at(
                 self.tcx,
                 self.body,
                 location,
                 "an index of a place a two-phase mutable borrow has reserved is written before \
                  the borrow is used",
-            ),
-            Address::Index(_) => return,
-            Address::Pointer(pointer) => match conflict(self.tcx, self.body, written, pointer) {
-                Conflict::Disjoint => return,
-                Conflict::Changes => Repoint::Always,
-                Conflict::MayChange => Repoint::Maybe,
-                Conflict::UnlessIndicesDiffer(reserved, written) => {
-                    match same_index(self.body, reserved, written) {
-                        Some(true) => Repoint::Always,
-                        Some(false) => return,
-                        None => Repoint::Maybe,
-                    }
-                }
-            },
+            );
+        }
+        if !places_conflict(
+            self.tcx,
+            self.body,
+            window,
+            written,
+            PlaceConflictBias::Overlap,
+        ) {
+            return;
+        }
+        if written.projection.len() >= window.projection.len() {
+            fatal_at(
+                self.tcx,
+                self.body,
+                location,
+                "this writes a place a two-phase mutable borrow has reserved before the borrow is \
+                 used",
+            );
+        }
+        let kind = match same_prefix(self.body, written, window) {
+            Some(false) => return,
+            Some(true) => Repoint::Always,
+            None => Repoint::Maybe,
         };
         self.repoints.push((location, kind));
     }
@@ -654,100 +674,6 @@ fn activation(tcx: TyCtxt<'_>, body: &Body<'_>, borrow: &TwoPhaseBorrow<'_>) -> 
             borrow.reservation,
             "a two-phase mutable borrow that is not used exactly once after it is made is not supported",
         ),
-    }
-}
-
-/// What decides which place a place names: a pointer it goes through, or an index it holds.
-#[derive(Clone, Copy)]
-enum Address<'tcx> {
-    /// The place that holds a pointer, a prefix ending right before a dereference.
-    Pointer(PlaceRef<'tcx>),
-    Index(Local),
-}
-
-fn address_places<'tcx>(place: Place<'tcx>) -> Vec<Address<'tcx>> {
-    let mut places = Vec::new();
-    for (base, elem) in place.iter_projections() {
-        match elem {
-            PlaceElem::Deref => places.push(Address::Pointer(base)),
-            PlaceElem::Index(local) => places.push(Address::Index(local)),
-            _ => {}
-        }
-    }
-    places
-}
-
-/// How writing `written` affects the pointer at `address`.
-enum Conflict {
-    /// It does not change the pointer; a write through a dereference of `address` changes the
-    /// pointee, not `address`.
-    Disjoint,
-    /// It changes the pointer.
-    Changes,
-    /// It may change the pointer, the places overlapping in a way Thrust cannot decide.
-    MayChange,
-    /// It changes the pointer when the two index locals are equal, and not otherwise: the
-    /// places are the same up to indices, the first of the address, the second of the write.
-    UnlessIndicesDiffer(Local, Local),
-}
-
-fn conflict<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    written: Place<'tcx>,
-    address: PlaceRef<'tcx>,
-) -> Conflict {
-    if written.local != address.local {
-        return Conflict::Disjoint;
-    }
-    let mut indices = None;
-    let mut index_pairs = 0;
-    let mut other_overlap = false;
-    for (i, (base, elem)) in written.iter_projections().enumerate() {
-        let Some(addressed) = address.projection.get(i) else {
-            if elem == PlaceElem::Deref {
-                return Conflict::Disjoint;
-            }
-            break;
-        };
-        if !elems_may_overlap(tcx, body, base, elem, *addressed) {
-            return Conflict::Disjoint;
-        }
-        match (*addressed, elem) {
-            (PlaceElem::Index(reserved), PlaceElem::Index(written)) if reserved != written => {
-                indices = Some((reserved, written));
-                index_pairs += 1;
-            }
-            _ => other_overlap |= *addressed != elem,
-        }
-    }
-    match indices {
-        None if !other_overlap => Conflict::Changes,
-        Some((reserved, written)) if index_pairs == 1 && !other_overlap => {
-            Conflict::UnlessIndicesDiffer(reserved, written)
-        }
-        _ => Conflict::MayChange,
-    }
-}
-
-/// Whether two projection elements of the same base may name overlapping parts, as rustc's
-/// `place_projection_conflict` decides with `PlaceConflictBias::Overlap`: distinct fields of a
-/// struct and distinct variants are disjoint, fields of a union and elements of a sequence may
-/// overlap whatever the indices. Constant indices and subslices, which rustc tells apart by their
-/// offsets, are taken to overlap.
-fn elems_may_overlap<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    base: PlaceRef<'tcx>,
-    a: PlaceElem<'tcx>,
-    b: PlaceElem<'tcx>,
-) -> bool {
-    match (a, b) {
-        (PlaceElem::Field(f, _), PlaceElem::Field(g, _)) => {
-            f == g || base.ty(body, tcx).ty.is_union()
-        }
-        (PlaceElem::Downcast(_, v), PlaceElem::Downcast(_, w)) => v == w,
-        _ => true,
     }
 }
 
