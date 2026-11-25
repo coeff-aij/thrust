@@ -15,14 +15,14 @@ impl Bump for i64 {
     }
 }
 
-fn spin(_s: &[i64]) -> i64 {
+fn spin() -> i64 {
     loop {}
 }
 
 #[thrust_macros::requires((*s).len() > 4)]
 #[thrust_macros::ensures(true)]
 fn f(s: &mut [i64]) {
-    s[5].bump(spin(s));
+    s[5].bump(spin());
 }
 
 fn main() {}

@@ -1,12 +1,12 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 // A derived `clone` of a generic type keeps the invariant at an instance that has one, as a
 // non-generic one does (`pass/type_invariant/derive_clone.rs`).
 #[derive(Clone)]
 struct W<T>(T);
 
-impl<T: thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Model> Model for W<T> {
     type Ty = T::Ty;
 }
 

@@ -1,5 +1,5 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 // `W<T>`'s `clone` is verified over `T` and at the instances verified code calls it at. std's
 // `Option::<W<C>>::clone` runs it at `C`, where nothing analyzed it, and it runs `C::clone`, which
 // assumes the invariant of a field nobody checked.
@@ -7,7 +7,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 
@@ -27,12 +27,12 @@ impl Clone for C {
 
 struct W<T>(T);
 
-impl<T: thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Model> Model for W<T> {
     type Ty = T::Ty;
 }
 
 #[thrust_macros::context]
-impl<T: Clone + thrust_models::Model> Clone for W<T> {
+impl<T: Clone + Model> Clone for W<T> {
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result == *self)]
     fn clone(&self) -> Self {

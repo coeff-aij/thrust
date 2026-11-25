@@ -1,9 +1,9 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
-
+use thrust_models::Model;
 // A model may not hold a `&str`: specifications could not tell `S`s apart.
 #[derive(Clone, Copy)]
 struct S { s: &'static str }
-impl thrust_models::Model for S { type Ty = S; } //~ ERROR: the model `S` holds `str`
+impl Model for S { type Ty = S; } //~ ERROR: the model `S` holds `str`
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result != a)]

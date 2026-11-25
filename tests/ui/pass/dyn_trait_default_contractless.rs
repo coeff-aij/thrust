@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The twin of `fail/dyn_trait_default_contractless.rs`: the trait states the contract.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape {
     #[thrust_macros::ensures(result >= 2)]
@@ -14,7 +14,7 @@ trait Shape {
 
 struct Sq;
 
-impl thrust_models::Model for Sq {
+impl Model for Sq {
     type Ty = ();
 }
 

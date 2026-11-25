@@ -1,12 +1,12 @@
 //@check-pass
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 pub enum X<T> {
     A(T),
     B(T),
 }
 
-impl<T> thrust_models::Model for X<T> {
+impl<T> Model for X<T> {
     type Ty = Self;
 }
 

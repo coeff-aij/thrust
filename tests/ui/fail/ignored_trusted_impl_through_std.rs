@@ -3,10 +3,10 @@
 
 // `Option`'s std `eq` runs `W`'s trusted `eq` at `S`, whose contract relies on `S`'s `eq`, an
 // ignored one; the trusted `t1` reaching `W::<S>::eq` first does not hide it.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -19,12 +19,12 @@ impl PartialEq for S {
 
 struct W<T>(T);
 
-impl<T: thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Model> Model for W<T> {
     type Ty = W<T::Ty>;
 }
 
 #[thrust_macros::context]
-impl<T: PartialEq + thrust_models::Model> PartialEq for W<T> {
+impl<T: PartialEq + Model> PartialEq for W<T> {
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result == (*self == *o))]

@@ -1,14 +1,14 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 #[derive(PartialEq)]
 enum Wrapped {
     Zero,
     Value(i64),
 }
 
-impl thrust_models::Model for Wrapped {
+impl Model for Wrapped {
     type Ty = Wrapped;
 }
 

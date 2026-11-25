@@ -1,14 +1,14 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 // The twin of `fail/uncontracted_trait_under_trusted.rs`.
-
+use thrust_models::Model;
 trait Tr {
     fn m(&self);
 }
 
 struct S;
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
