@@ -1,11 +1,11 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-// The block calls `f` but `requires` does not state its precondition.
+// The block calls `f` at `n == 5`, which the closure's `requires(x > 5)` does not allow.
 fn main() {
     let n = 5i64;
     let f = thrust_macros::closure!(
-        requires(x > 0),
+        requires(x > 5),
         ensures(result == x + 1),
         |x: i64| -> i64 { x + 1 },
     );
