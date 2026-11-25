@@ -4708,6 +4708,86 @@ fn _extern_spec_iterator_fold<I, B, F>(it: I, init: B, f: F) -> B
     )
 }
 
+// `try_fold` at `Option<B>`: the chain of `fold` with each step's result `Some(accs[k + 1])`, in the
+// form of tests/ui/pass/creusot/generic/std/try_fold_map.rs, which verifies std's body of `try_fold`
+// against it. The result is `Some` of the last accumulator once the iterator is completed, or `None`
+// where the closure returned it on an item, after which the iterator has produced that item and no
+// more. An iterator's own `try_fold` is not checked and is assumed to step it as `next` does.
+#[thrust_macros::predicate]
+fn _iter_spec_try_fold_chain<I, B, F>(
+    iter: I,
+    init: B,
+    f: F,
+    s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+    it: I,
+    accs: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+    fs: thrust_models::model::Seq<F>,
+) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    B: thrust_models::Model,
+    F: FnMut(B, I::Item) -> Option<B>,
+{
+    I::produces(iter, s, it)
+        && accs.len() == s.len() + 1
+        && fs.len() == s.len() + 1
+        && accs[0] == init
+        && fs[0] == f
+        && thrust_macros::hist_inv!(f, fs[s.len()])
+        && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < s.len())
+            || (thrust_macros::hist_inv!(f, fs[k])
+                && thrust_macros::post!(thrust_models::model::Mut::new(fs[k], fs[k + 1])(accs[k], s[k]), Some(accs[k + 1]))))
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    I::inv(*it)
+        && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  accs: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>,
+                                  x: <I::Item as thrust_models::Model>::Ty,
+                                  it2: <I as thrust_models::Model>::Ty|
+            (_iter_spec_try_fold_chain::<I, B, F>(*it, init, f, s, it1, accs, fs)
+                && I::produces(it1, thrust_models::model::Seq::singleton(x), it2))
+                ==> thrust_macros::pre!(fs[s.len()](accs[s.len()], x)))
+)]
+#[thrust_macros::ensures(
+    thrust_models::forall(|r: <B as thrust_models::Model>::Ty|
+        !(result == Some(r))
+            || thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                      it1: <I as thrust_models::Model>::Ty,
+                                      accs: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+                                      fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>|
+                _iter_spec_try_fold_chain::<I, B, F>(*it, init, f, s, it1, accs, fs)
+                    && accs[s.len()] == r
+                    && I::completed(thrust_models::model::Mut::new(it1, !it))))
+)]
+#[thrust_macros::ensures(
+    !(result == None)
+        || thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  accs: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>,
+                                  x: <I::Item as thrust_models::Model>::Ty,
+                                  g: thrust_models::model::Closure<F>|
+            _iter_spec_try_fold_chain::<I, B, F>(*it, init, f, s, it1, accs, fs)
+                && I::produces(it1, thrust_models::model::Seq::singleton(x), !it)
+                && thrust_macros::post!(thrust_models::model::Mut::new(fs[s.len()], g)(accs[s.len()], x), None::<<B as thrust_models::Model>::Ty>))
+)]
+fn _extern_spec_iterator_try_fold_option<I, B, F>(it: &mut I, init: B, f: F) -> Option<B>
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          B: thrust_models::Model,
+          F: FnMut(B, I::Item) -> Option<B>
+{
+    thrust_std_target!(
+        <I as std::iter::Iterator>::try_fold::<B, F, Option<B>>(it, init, f),
+        <crate::std_transcriptions::StdBodies as crate::std_transcriptions::IteratorTryFoldMethods<I, B, F>>::iterator_try_fold(it, init, f)
+    )
+}
+
 // `into_iter` is specified once, through `into_iter_is`; a type gets an `into_iter` by
 // implementing the trait. An iterator is its own `into_iter`.
 #[thrust_macros::context]
