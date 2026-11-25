@@ -1845,9 +1845,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             };
 
             let (formula_def_id, generic_args) = if marker == InvariantMarker::ForLoopHistory {
-                if !self.implements_iterator_spec(marker_args.type_at(0)) {
-                    continue;
-                }
                 let formula_def_id = self
                     .ctx
                     .def_ids()
@@ -1880,22 +1877,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         self.extend_histories_to_inner_loops(&mut loop_invariants);
         loop_invariants
-    }
-
-    /// Whether the iterator type of a `for` loop implements `IteratorSpec` in the environment of
-    /// the function: only then does the loop get the structural invariant.
-    fn implements_iterator_spec(&self, iter_ty: mir_ty::Ty<'tcx>) -> bool {
-        use rustc_infer::infer::TyCtxtInferExt as _;
-        use rustc_trait_selection::infer::InferCtxtExt as _;
-
-        let Some(iterator_spec) = self.ctx.def_ids().iterator_spec() else {
-            return false;
-        };
-        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, self.body.source.def_id());
-        let (infcx, param_env) = self.tcx.infer_ctxt().build_with_typing_env(typing_env);
-        infcx
-            .type_implements_trait(iterator_spec, [iter_ty], param_env)
-            .must_apply_modulo_regions()
     }
 
     /// Conjoins the history of each `for` loop at the heads of the loops nested in it too. A
@@ -2817,7 +2798,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn new(ctx: &'ctx mut analyze::Analyzer<'tcx>, local_def_id: LocalDefId) -> Self {
         let tcx = ctx.tcx;
-        let body = tcx.optimized_mir(local_def_id.to_def_id()).clone();
+        let mut body = tcx.optimized_mir(local_def_id.to_def_id()).clone();
+        erase_for_loop_ghosts_without_iterator_spec(ctx, &mut body, local_def_id);
         let drop_points = Default::default();
         let (owner_fn_id, owner_fn_id_args) =
             if is_annotated_as_extern_spec_fn_impl(&tcx, &local_def_id) {
@@ -3094,6 +3076,87 @@ fn with_uses_through_copies<'tcx>(
         }
     }
     uses
+}
+
+/// Removes the ghost state of each `for` loop whose iterator type does not implement
+/// `IteratorSpec` (`iter_old`, `produced` and the history marker of
+/// `thrust-macros/src/for_loop.rs`), so that the loop is analyzed as without it: the marker calls
+/// become gotos, and the statements that define the ghost locals and the temporaries that carry
+/// their arguments are removed. A loop whose iterator implements `IteratorSpec` keeps them.
+fn erase_for_loop_ghosts_without_iterator_spec<'tcx>(
+    ctx: &analyze::Analyzer<'tcx>,
+    body: &mut Body<'tcx>,
+    local_def_id: LocalDefId,
+) {
+    use rustc_infer::infer::TyCtxtInferExt as _;
+    use rustc_trait_selection::infer::InferCtxtExt as _;
+
+    let tcx = ctx.tcx;
+    let def_ids = ctx.def_ids();
+    let Some(iterator_spec) = def_ids.iterator_spec() else {
+        return;
+    };
+    let markers = [
+        def_ids.for_loop_iter_old_marker(),
+        def_ids.for_loop_produced_marker(),
+        def_ids.for_loop_produced_push_marker(),
+        def_ids.for_loop_history_marker(),
+    ];
+    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, local_def_id.to_def_id());
+    let (infcx, param_env) = tcx.infer_ctxt().build_with_typing_env(typing_env);
+    let mut ghost_locals = std::collections::HashSet::new();
+    for data in body.basic_blocks.as_mut_preserves_cfg().iter_mut() {
+        let Some(term) = &mut data.terminator else {
+            continue;
+        };
+        let mir::TerminatorKind::Call {
+            func,
+            args,
+            destination,
+            target,
+            ..
+        } = &term.kind
+        else {
+            continue;
+        };
+        let Some((def_id, marker_args)) = func.const_fn_def() else {
+            continue;
+        };
+        if !markers.contains(&Some(def_id)) {
+            continue;
+        }
+        let holds = infcx
+            .type_implements_trait(iterator_spec, [marker_args.type_at(0)], param_env)
+            .must_apply_modulo_regions();
+        if holds {
+            continue;
+        }
+        ghost_locals.insert(destination.local);
+        ghost_locals.extend(
+            args.iter()
+                .filter_map(|arg| arg.node.place())
+                .map(|p| p.local),
+        );
+        let target = target.expect("a `for` loop ghost marker returns");
+        term.kind = mir::TerminatorKind::Goto { target };
+    }
+    if ghost_locals.is_empty() {
+        return;
+    }
+    for data in body.basic_blocks.as_mut_preserves_cfg().iter_mut() {
+        for stmt in &mut data.statements {
+            let defines_ghost = match &stmt.kind {
+                mir::StatementKind::Assign(assign) => ghost_locals.contains(&assign.0.local),
+                mir::StatementKind::StorageLive(local) | mir::StatementKind::StorageDead(local) => {
+                    ghost_locals.contains(local)
+                }
+                _ => false,
+            };
+            if defines_ghost {
+                stmt.make_nop();
+            }
+        }
+    }
 }
 
 fn location_successors(body: &Body<'_>, loc: mir::Location) -> Vec<mir::Location> {
