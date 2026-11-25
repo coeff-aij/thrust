@@ -17,6 +17,10 @@ use crate::rustc_index::{Idx, IndexSlice, IndexVec};
 use crate::case_study::USize;
 use crate::case_study::lemmas;
 use crate::case_study::iter::{Filter, Map, collect_index_vec, iter_all};
+#[cfg(feature = "randomize")]
+use rand::SeedableRng;
+#[cfg(feature = "randomize")]
+use rand::seq::SliceRandom;
 
 mod coroutine;
 mod simple;
@@ -804,9 +808,6 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             if repr.can_randomize_type_layout() && cfg!(feature = "randomize") {
                 #[cfg(feature = "randomize")]
                 {
-                    use rand::SeedableRng;
-                    use rand::seq::SliceRandom;
-
                     let mut rng = rand_xoshiro::Xoshiro128StarStar::seed_from_u64(
                         field_seed.wrapping_add(repr.field_shuffle_seed).as_u64(),
                     );
@@ -1223,16 +1224,16 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // unadjusted alignment, so that what the postcondition reads reaches the return without
         // the joins of that code. Its `ensures` says nothing of them, which the postcondition
         // does not read.
+        let me = self;
         let (abi, unadjusted_abi_align) = thrust_macros::block_contract!(
+            |me: &LayoutCalculator<Cx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind, offsets: IndexVec<FieldIdx, Size>,
+             repr: &ReprOptions, sized: bool, size: Size, align: Align, unadjusted_abi_align: Align| -> (BackendRepr, Align)
             requires(
-                |self: &LayoutCalculator<Cx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind, offsets: IndexVec<FieldIdx, Size>|
-                Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind)
+                Self::layout_pre::<FieldIdx, VariantIdx, F>(*me, fields, kind)
                 && offsets.len() == (*fields).len()
                 && Self::deref_functional::<FieldIdx, VariantIdx, F>()
             ),
-            ensures(
-                |result: (BackendRepr, Align)| true
-            ),
+            ensures(true),
             {
                 let mut layout_of_single_non_zst_field = None;
                 let mut abi = BackendRepr::Memory { sized };
@@ -1302,8 +1303,8 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                             (BackendRepr::Scalar(a), BackendRepr::Scalar(b)) => {
                                 // A step of `scalar_pair`'s `requires`, before the order of the pair is
                                 // chosen.
-                                thrust_macros::proof_assert!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
-                                    forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
+                                thrust_macros::proof_assert!(|a: Scalar, b: Scalar, me: &LayoutCalculator<Cx>|
+                                    forall(|d: TargetDataLayout| !Cx::dl_of(*me, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d))));
                                 // The indexes `offsets[i]` and `offsets[j]`'s requires. They hold: `i` and `j` are
                                 // positions of `iter_enumerated(fields)`, and `offsets` has as many entries as
                                 // `fields` (the `requires`).
@@ -1317,11 +1318,11 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                     ((j, b), (i, a))
                                 };
                                 // `scalar_pair`'s requires, on the pair as ordered.
-                                thrust_macros::proof_assert!(|a: Scalar, b: Scalar, self: &LayoutCalculator<Cx>|
-                                    forall(|d: TargetDataLayout| !Cx::dl_of(*self, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d)))
+                                thrust_macros::proof_assert!(|a: Scalar, b: Scalar, me: &LayoutCalculator<Cx>|
+                                    forall(|d: TargetDataLayout| !Cx::dl_of(*me, d) || (Scalar::wf_in(a, d) && Scalar::wf_in(b, d)))
                                         && forall(|z: USize| z == 0usize ==> <VariantIdx as Idx>::can_new(z))
                                         && forall(|k: USize| k == 0usize || k == 1usize ==> <FieldIdx as Idx>::can_new(k)));
-                                let pair = LayoutData::<FieldIdx, VariantIdx>::scalar_pair(&self.cx, a, b);
+                                let pair = LayoutData::<FieldIdx, VariantIdx>::scalar_pair(&me.cx, a, b);
                                 // Checked: the match's panicking arm is unreachable, because `scalar_pair`'s
                                 // `ensures` makes the fields `Arbitrary`; this is `arbitrary_parts`'s `requires`.
                                 thrust_macros::proof_assert!(|pair: LayoutData<FieldIdx, VariantIdx>| matches!(pair.fields, FieldsShape::Arbitrary { .. }));
@@ -1544,22 +1545,14 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // and the struct alignment's maximum, which the rest of the body reads in place of the
         // results of `align_to` and `max`: the offset grows by less than the alignment's bytes,
         // and the struct's alignment's bytes by at most them.
-        let offset_before = thrust_macros::ghost!(|offset: &mut Size| -> Size { *offset });
-        let align_before = thrust_macros::ghost!(|align: &mut Align| -> Align { *align });
         thrust_macros::block_contract!(
-            requires(
-                |offset: &mut Size, align: &mut Align,
-                 offset_before: thrust_models::Ghost<Size>, align_before: thrust_models::Ghost<Align>|
-                offset_before == *offset && align_before == *align
-                && (*offset).raw <= 4611686018427387904u64
-            ),
+            |offset: &mut Size, align: &mut Align, field_align: AbiAlign| -> ()
+            requires((*offset).raw <= 4611686018427387904u64),
             ensures(
-                |offset: &mut Size, align: &mut Align, field_align: AbiAlign,
-                 offset_before: thrust_models::Ghost<Size>, align_before: thrust_models::Ghost<Align>|
-                offset_before.raw <= (*offset).raw && (*offset).raw < offset_before.raw + 9223372036854775808u64
+                (*offset).raw <= (!offset).raw && (!offset).raw < (*offset).raw + 9223372036854775808u64
                 && forall(|q: USize, q2: USize, qa: USize|
-                    !(q == align_before.pow2 && q2 == (*align).pow2 && qa == field_align.abi.pow2)
-                    || ((*offset).raw < offset_before.raw + pow2(qa) && pow2(q2) <= pow2(q) + pow2(qa)))
+                    !(q == (*align).pow2 && q2 == (!align).pow2 && qa == field_align.abi.pow2)
+                    || ((!offset).raw < (*offset).raw + pow2(qa) && pow2(q2) <= pow2(q) + pow2(qa)))
             ),
             {
                 let aligned = (*offset).align_to(field_align.abi);
@@ -1577,22 +1570,14 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // Rewrite (rewrites.md R18): a block contract on rustc's write of the offset, which the
         // rest of the body reads in place of the result of `index_mut`. The assignment evaluates
         // `*offset` before the place, as the call evaluated its argument before the body.
-        let offsets_before = thrust_macros::ghost!(|offsets: &mut IndexVec<FieldIdx, Size>| -> IndexVec<FieldIdx, Size> {
-            *offsets
-        });
         thrust_macros::block_contract!(
-            requires(
-                |offsets: &mut IndexVec<FieldIdx, Size>, i: FieldIdx, offsets_before: thrust_models::Ghost<IndexVec<FieldIdx, Size>>|
-                offsets_before == *offsets
-                && forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || j < (*offsets).len())
-            ),
+            |offsets: &mut IndexVec<FieldIdx, Size>, i: FieldIdx, offset: &mut Size| -> ()
+            requires(forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || j < (*offsets).len())),
             ensures(
-                |offsets: &mut IndexVec<FieldIdx, Size>, i: FieldIdx, offset: &mut Size,
-                 offsets_before: thrust_models::Ghost<IndexVec<FieldIdx, Size>>|
-                (*offsets).len() == offsets_before.len()
-                && forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || (*offsets)[j] == *offset)
+                (!offsets).len() == (*offsets).len()
+                && forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || (!offsets)[j] == *offset)
                 && forall(|j: USize|
-                    !(0 <= j && j < offsets_before.len() && !<FieldIdx as Idx>::index_is(i, j)) || (*offsets)[j] == offsets_before[j])
+                    !(0 <= j && j < (*offsets).len() && !<FieldIdx as Idx>::index_is(i, j)) || (!offsets)[j] == (*offsets)[j])
             ),
             {
                 offsets[i] = *offset;
