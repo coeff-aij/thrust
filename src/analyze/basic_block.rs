@@ -1332,6 +1332,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     Err(err) => panic!("failed to evaluate constant {unevaluated:?}: {err:?}"),
                 }
             }
+            // A const parameter is any value of its type, as the body is checked for every
+            // instance.
+            mir::Const::Ty(ty, ct) if matches!(ct.kind(), mir_ty::ConstKind::Param(_)) => {
+                self.unknown_value_ty(*ty)
+            }
             mir::Const::Ty(ty, _) => {
                 let scalar_int = const_
                     .try_to_scalar_int()
