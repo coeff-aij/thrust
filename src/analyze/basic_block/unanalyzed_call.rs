@@ -186,8 +186,8 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 span,
                 format!(
                     "a value of `{ty}` is handed to `{}`, which Thrust does not analyze, inside \
-                     `{held}`, where Thrust cannot follow it: pass a function item or a closure \
-                     instead, or give `{}` a contract that does not call it",
+                     `{held}`, where Thrust cannot follow it: pass a function item instead, or pass a \
+                     closure and state its `pre!` in the `requires` of `{}`",
                     self.tcx.def_path_str(contract_def_id),
                     self.tcx.def_path_str(requires_of),
                 ),
@@ -198,8 +198,8 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 span,
                 format!(
                     "`{}` is handed to `{}`, which Thrust does not analyze, and has no contract \
-                     Thrust can require of it: pass a function item or a closure instead, or give \
-                     `{}` a contract that does not call it",
+                     Thrust can require of it: pass a function item instead, or pass a closure and \
+                     state its `pre!` in the `requires` of `{}`",
                     peel_refs(ty),
                     self.tcx.def_path_str(contract_def_id),
                     self.tcx.def_path_str(requires_of),
