@@ -624,6 +624,53 @@ fn goal_cones_that_all_hold_verify_the_crate() {
     assert!(stderr.contains("inferred: fn double("), "{stderr}");
 }
 
+/// A class with a clause that is not definite (`either` analyzed at the closures of
+/// `not_definite`, with a disjunction of unknowns in the head of its `ensures`) is one part, with
+/// a note naming the function, and the class of `definite` is still split into the cones of its
+/// two assertions. The stub solver answers nothing; the verdicts are the ui twins'.
+#[test]
+fn a_class_that_is_not_definite_is_one_part_beside_the_cones() {
+    let output = run_with(
+        "cones_per_class.rs",
+        Some("2"),
+        &[
+            ("THRUST_SPLIT_GOALS", "1"),
+            ("THRUST_REPORT", "functions"),
+            ("THRUST_SOLVER", "true"),
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "`THRUST_SPLIT_GOALS`: a constraint of `either`, with the predicates it applies read \
+             as their definitions, has a disjunction of unknowns in head positions"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr
+            .contains("the clauses that share an unknown with it are one part, not split by goal"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("the parts are the classes"), "{stderr}");
+    assert!(
+        stderr.contains(
+            "5 parts solved on their own, 0 of them from earlier runs, one per goal with the \
+             clauses it depends on, and a class of clauses that share an unknown whole where one \
+             of its clauses is not definite"
+        ),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("`definite`: checked, in parts 1, 2 ("),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("`not_definite`: checked, in part 5 ("),
+        "{stderr}"
+    );
+}
+
 /// `THRUST_SPLIT_GOALS` makes each conjunct of a checked postcondition a goal of its own: the
 /// two `ensures` of `succ` are two parts, and the refuted one states only the false conjunct.
 #[test]

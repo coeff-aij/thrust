@@ -1,10 +1,11 @@
 //! The cone of each goal: the goal and, transitively, every clause whose head is an unknown the
 //! bodies of the cone apply (`THRUST_SPLIT_GOALS`).
 //!
-//! The cones are solved on their own only when every clause is definite: read as `¬body ∨ head`,
-//! it is equivalent to a conjunction of clauses each with at most one unknown in its head and the
-//! others in body positions (see [`super::prune`]), which the arguments below need. Each shape
-//! accepted rewrites to that form by an equivalence of first-order logic:
+//! The cones of a class of clauses that share an unknown are solved on their own only when every
+//! clause of the class is definite: read as `¬body ∨ head`, it is equivalent to a conjunction of
+//! clauses each with at most one unknown in its head and the others in body positions (see
+//! [`super::prune`]), which the arguments below need. Each shape accepted rewrites to that form by
+//! an equivalence of first-order logic:
 //!
 //! - `body ⇒ p(x)`, and `body ∧ ¬p(x) ⇒ ⊥`, a negated premise, which is the same clause;
 //! - `body ⇒ (g ⇒ p(x))`, a guarded atom, which is `body ∧ g ⇒ p(x)`;
@@ -38,6 +39,12 @@
 //!   which its dependency set holds in a cone as in the whole system; a goal, monotone in the
 //!   unknowns, holds in some model exactly when it holds in the least one.
 //!
+//! The check and the split are made class by class ([`super::components`]): the system has a model
+//! exactly when each class has one, and a cone stays in the class of its goal, since each clause
+//! it adds derives an unknown that a clause already in it applies. So a class whose clauses are
+//! all definite is a system of definite clauses on its own, which the arguments above split into
+//! its cones, and a class with a clause that is not is solved whole, as without the cones.
+//!
 //! A clause that applies a definition whose body applies an unknown (a call's quantified
 //! precondition, `pre_all(c) := ∀x. pre(c, x)`) is read with the definition unfolded: a
 //! non-recursive definition is a macro, so the system with every such definition replaced by its
@@ -52,8 +59,8 @@
 //! that reach them. A definition that applies an unknown and itself, directly or through
 //! others, would not unfold to a finite clause, and an unknown applied in a law, directly or
 //! through a definition, in raw SMT-LIB text through a definition it names, or a derived
-//! predicate is in positions this does not follow, so such a system is not split into cones. A
-//! cone repeats the clauses it shares with other cones.
+//! predicate is in positions this does not follow, so such a system is not split into cones in
+//! any class. A cone repeats the clauses it shares with other cones.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -95,7 +102,8 @@ pub fn goals_by_conjunct() -> bool {
     split_goals() || SPLIT_CONJUNCTS.get()
 }
 
-/// Why a system is not split into the cones of its goals.
+/// Why a system is not split into the cones of its goals in any class; a class with a clause that
+/// is not definite is kept whole instead ([`GoalParts::kept_whole`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotHorn {
     /// An unknown is applied in a law, directly or through a definition, or raw SMT-LIB text
@@ -105,9 +113,25 @@ pub enum NotHorn {
     Derived,
     /// A definition that applies an unknown applies itself, directly or through others.
     RecursiveDefinition,
-    /// The clause has a disjunction of unknowns in a head position, or an unknown under an `∃` in
-    /// a head position.
-    Clause(ClauseId),
+}
+
+/// The parts the cones of the goals make of a system: cones, or unions of them, of the classes
+/// whose clauses are all definite, and the other classes whole.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalParts {
+    /// The parts, each in the order of its clauses.
+    pub parts: Vec<Vec<ClauseId>>,
+    /// Of each class kept whole, its first clause that has a disjunction of unknowns in a head
+    /// position, or an unknown under an `∃` in a head position.
+    pub kept_whole: Vec<ClauseId>,
+}
+
+/// A class of clauses that share an unknown ([`System::components`]), read for its goals.
+struct ClassGoals {
+    clauses: Vec<ClauseId>,
+    /// Each goal with its cone, in the order of the goals, when every clause of the class is
+    /// definite; otherwise the first clause that is not.
+    cones: Result<Vec<(ClauseId, Vec<ClauseId>)>, ClauseId>,
 }
 
 /// The heads of a body read at a polarity (see [`Heads`]).
@@ -369,8 +393,9 @@ impl<'a> Definitions<'a> {
         }
     }
 
-    /// The unknowns `clause`, read as `¬body ∨ head`, derives, and whether it is a goal.
-    fn clause_heads(&self, id: ClauseId, clause: &Clause) -> Result<Heads, NotHorn> {
+    /// The unknowns `clause`, read as `¬body ∨ head`, derives, and whether it is a goal; `Err`
+    /// when it is not definite.
+    fn clause_heads(&self, clause: &Clause) -> Result<Heads, ()> {
         let premises = clause
             .body
             .atoms
@@ -378,48 +403,83 @@ impl<'a> Definitions<'a> {
             .map(|atom| self.atom_heads(atom, false))
             .chain([self.formula_heads(&clause.body.formula, false)]);
         let head = self.atom_heads(&clause.head, true);
-        any_of(premises.chain([head])).map_err(|()| NotHorn::Clause(id))
+        any_of(premises.chain([head]))
     }
 }
 
 impl System {
-    /// The cone of each goal, in the order of the goals, each in the order of its clauses.
-    pub fn goal_cones(&self) -> Result<Vec<Vec<ClauseId>>, NotHorn> {
-        let cones = self.goals_with_cones()?;
-        Ok(cones.into_iter().map(|(_, cone)| cone).collect())
+    /// The cone of each goal of a class whose clauses are all definite, in the order of the
+    /// goals, and each other class whole, at its first clause; each part in the order of its
+    /// clauses.
+    pub fn goal_cones(&self) -> Result<GoalParts, NotHorn> {
+        let mut parts = Vec::new();
+        let mut kept_whole = Vec::new();
+        for class in self.goals_by_class()? {
+            match class.cones {
+                Ok(cones) => parts.extend(cones),
+                Err(clause) => {
+                    kept_whole.push(clause);
+                    parts.push((class.clauses[0], class.clauses));
+                }
+            }
+        }
+        parts.sort_by_key(|(at, _)| at.index());
+        Ok(GoalParts {
+            parts: parts.into_iter().map(|(_, part)| part).collect(),
+            kept_whole,
+        })
     }
 
     /// The classes of clauses that share an unknown, with each goal `apart` picks set apart as a
     /// part of its own, its cone (`#[thrust::split_goals]`): a class holding such a goal keeps
     /// only the union of the cones of its other goals, and is no part when that is empty; the
-    /// other classes are parts as they are, in their order, followed by the cones set apart.
-    /// Every part is a class, which shares no unknown with the other parts, or a union of cones,
-    /// which holds every clause deriving an unknown its bodies apply, so the argument for the
-    /// cones above gives the verdict of the system from those of the parts.
-    pub fn goals_apart(
-        &self,
-        apart: impl Fn(ClauseId) -> bool,
-    ) -> Result<Vec<Vec<ClauseId>>, NotHorn> {
-        let (set_apart, kept): (Vec<_>, Vec<_>) = self
-            .goals_with_cones()?
-            .into_iter()
-            .partition(|(goal, _)| apart(*goal));
-        let goals_apart: HashSet<ClauseId> = set_apart.iter().map(|(goal, _)| *goal).collect();
-        let kept: HashSet<ClauseId> = kept.into_iter().flat_map(|(_, cone)| cone).collect();
-        let classes = self.components().into_iter().filter_map(|class| {
-            if !class.iter().any(|id| goals_apart.contains(id)) {
-                return Some(class);
+    /// other classes are parts as they are, in their order, followed by the cones set apart in
+    /// the order of their goals. A class with a clause that is not definite is a part as it is,
+    /// and is kept whole ([`GoalParts::kept_whole`]) when `apart` picks one of its clauses.
+    /// Every part is a class, which shares no unknown with the other parts, or a union of cones
+    /// of a class of definite clauses, which holds every clause deriving an unknown its bodies
+    /// apply, so the argument for the cones above gives the verdict of the system from those of
+    /// the parts.
+    pub fn goals_apart(&self, apart: impl Fn(ClauseId) -> bool) -> Result<GoalParts, NotHorn> {
+        let mut parts = Vec::new();
+        let mut set_apart = Vec::new();
+        let mut kept_whole = Vec::new();
+        for class in self.goals_by_class()? {
+            let cones = match class.cones {
+                Ok(cones) => cones,
+                Err(clause) => {
+                    if class.clauses.iter().any(|&id| apart(id)) {
+                        kept_whole.push(clause);
+                    }
+                    parts.push(class.clauses);
+                    continue;
+                }
+            };
+            let (apart_cones, other_cones): (Vec<_>, Vec<_>) =
+                cones.into_iter().partition(|(goal, _)| apart(*goal));
+            if apart_cones.is_empty() {
+                parts.push(class.clauses);
+                continue;
             }
-            let rest: Vec<ClauseId> = class.into_iter().filter(|id| kept.contains(id)).collect();
-            (!rest.is_empty()).then_some(rest)
-        });
-        Ok(classes
-            .chain(set_apart.into_iter().map(|(_, cone)| cone))
-            .collect())
+            let kept: HashSet<ClauseId> = other_cones.into_iter().flat_map(|(_, c)| c).collect();
+            let rest: Vec<ClauseId> = class
+                .clauses
+                .into_iter()
+                .filter(|id| kept.contains(id))
+                .collect();
+            if !rest.is_empty() {
+                parts.push(rest);
+            }
+            set_apart.extend(apart_cones);
+        }
+        set_apart.sort_by_key(|(goal, _)| goal.index());
+        parts.extend(set_apart.into_iter().map(|(_, cone)| cone));
+        Ok(GoalParts { parts, kept_whole })
     }
 
-    /// Each goal with its cone, in the order of the goals, each cone in the order of its clauses.
-    fn goals_with_cones(&self) -> Result<Vec<(ClauseId, Vec<ClauseId>)>, NotHorn> {
+    /// Each class of clauses that share an unknown, in the order of their first clauses, with the
+    /// cones of its goals when its clauses are all definite.
+    fn goals_by_class(&self) -> Result<Vec<ClassGoals>, NotHorn> {
         if self
             .user_defined_pred_defs
             .iter()
@@ -435,41 +495,39 @@ impl System {
             return Err(NotHorn::RecursiveDefinition);
         }
         let occurrences = self.occurrences(&definitions);
+        let defining = deriving(&occurrences);
+        let classes = self.components().into_iter().map(|clauses| {
+            let cones = self
+                .class_goals(&clauses, &definitions, &occurrences)
+                .map(|goals| {
+                    let cone = |goal| (goal, cone(goal, &occurrences, &defining));
+                    goals.into_iter().map(cone).collect()
+                });
+            ClassGoals { clauses, cones }
+        });
+        Ok(classes.collect())
+    }
+
+    /// The goals of `class`, in its order, or its first clause that is not definite.
+    fn class_goals(
+        &self,
+        class: &[ClauseId],
+        definitions: &Definitions<'_>,
+        occurrences: &HashMap<ClauseId, Vec<(PredVarId, Position)>>,
+    ) -> Result<Vec<ClauseId>, ClauseId> {
         let mut goals = Vec::new();
-        for (id, clause) in self.clauses.iter_enumerated() {
+        for &id in class {
             if !occurrences.contains_key(&id) {
                 continue;
             }
-            if definitions.clause_heads(id, clause)?.constraint {
+            let heads = definitions
+                .clause_heads(&self.clauses[id])
+                .map_err(|()| id)?;
+            if heads.constraint {
                 goals.push(id);
             }
         }
-        // Once every clause is definite, its unknowns in head positions are those it derives.
-        let defining = deriving(&occurrences);
-        let cone = |goal: ClauseId| {
-            let mut clauses = HashSet::from([goal]);
-            let mut applied = HashSet::new();
-            let mut pending = vec![goal];
-            while let Some(id) = pending.pop() {
-                let in_body = occurrences[&id]
-                    .iter()
-                    .filter(|(_, position)| *position == Position::Body);
-                for &(p, _) in in_body {
-                    if !applied.insert(p) {
-                        continue;
-                    }
-                    for &c in defining.get(&p).into_iter().flatten() {
-                        if clauses.insert(c) {
-                            pending.push(c);
-                        }
-                    }
-                }
-            }
-            let mut clauses: Vec<ClauseId> = clauses.into_iter().collect();
-            clauses.sort_by_key(|id| id.index());
-            (goal, clauses)
-        };
-        Ok(goals.into_iter().map(cone).collect())
+        Ok(goals)
     }
 
     /// The clauses other than `true ⇐ …` and `… ⇐ false` in which each unknown occurs in a head
@@ -492,6 +550,38 @@ impl System {
             .map(|(id, clause)| (id, definitions.occurrences(clause)))
             .collect()
     }
+}
+
+/// The cone of `goal`, in the order of its clauses: the goal and, transitively, the clauses
+/// `defining` gives for each unknown in a body position of a clause in it. Once every clause of
+/// the class of `goal` is definite, the unknowns in head positions of a clause are those it
+/// derives, and every clause deriving an unknown the class applies is in the class.
+fn cone(
+    goal: ClauseId,
+    occurrences: &HashMap<ClauseId, Vec<(PredVarId, Position)>>,
+    defining: &HashMap<PredVarId, HashSet<ClauseId>>,
+) -> Vec<ClauseId> {
+    let mut clauses = HashSet::from([goal]);
+    let mut applied = HashSet::new();
+    let mut pending = vec![goal];
+    while let Some(id) = pending.pop() {
+        let in_body = occurrences[&id]
+            .iter()
+            .filter(|(_, position)| *position == Position::Body);
+        for &(p, _) in in_body {
+            if !applied.insert(p) {
+                continue;
+            }
+            for &c in defining.get(&p).into_iter().flatten() {
+                if clauses.insert(c) {
+                    pending.push(c);
+                }
+            }
+        }
+    }
+    let mut clauses: Vec<ClauseId> = clauses.into_iter().collect();
+    clauses.sort_by_key(|id| id.index());
+    clauses
 }
 
 fn deriving(
@@ -553,7 +643,7 @@ mod tests {
     #[test]
     fn a_cone_holds_the_clauses_deriving_its_goal_s_unknowns() {
         let (system, [c0, c1, c2, c3, c4, _]) = two_goals();
-        let cones = system.goal_cones().unwrap();
+        let cones = system.goal_cones().unwrap().parts;
         assert_eq!(cones, vec![vec![c0, c1, c3], vec![c0, c1, c2, c4]]);
     }
 
@@ -562,7 +652,7 @@ mod tests {
     #[test]
     fn a_goal_set_apart_leaves_its_class_the_cones_of_the_others() {
         let (system, [c0, c1, c2, c3, c4, c5]) = two_goals();
-        let parts = system.goals_apart(|id| id == c4).unwrap();
+        let parts = system.goals_apart(|id| id == c4).unwrap().parts;
         assert_eq!(
             parts,
             vec![vec![c0, c1, c3], vec![c5], vec![c0, c1, c2, c4]]
@@ -580,7 +670,7 @@ mod tests {
         let c1 = system
             .push_clause(clause(Atom::bottom(), vec![atom(q)], Formula::top()))
             .unwrap();
-        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1]]);
+        assert_eq!(system.goal_cones().unwrap().parts, vec![vec![c0, c1]]);
     }
 
     #[test]
@@ -591,7 +681,7 @@ mod tests {
         let c0 = system
             .push_clause(clause(atom(p), vec![], negated))
             .unwrap();
-        assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c0)));
+        assert_eq!(system.goal_cones().unwrap().kept_whole, vec![c0]);
     }
 
     #[test]
@@ -602,7 +692,7 @@ mod tests {
         let c0 = system
             .push_clause(clause(Atom::bottom(), vec![], exists.not()))
             .unwrap();
-        assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c0)));
+        assert_eq!(system.goal_cones().unwrap().kept_whole, vec![c0]);
     }
 
     #[test]
@@ -618,7 +708,7 @@ mod tests {
         let c7 = system
             .push_clause(clause(Atom::bottom(), vec![applies], Formula::top()))
             .unwrap();
-        let cones = system.goal_cones().unwrap();
+        let cones = system.goal_cones().unwrap().parts;
         assert_eq!(
             cones,
             vec![vec![c0, c1, c3], vec![c0, c1, c2, c4], vec![c6, c7]]
@@ -640,7 +730,7 @@ mod tests {
         let c1 = system
             .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
             .unwrap();
-        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1]]);
+        assert_eq!(system.goal_cones().unwrap().parts, vec![vec![c0, c1]]);
         assert_eq!(system.deriving_clauses()[&p], HashSet::from([c0]));
     }
 
@@ -656,7 +746,7 @@ mod tests {
         let c0 = system
             .push_clause(clause(applies, vec![], Formula::top()))
             .unwrap();
-        assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c0)));
+        assert_eq!(system.goal_cones().unwrap().kept_whole, vec![c0]);
     }
 
     /// `once := p` applied in a head position derives `p` and in a body position applies it;
@@ -678,24 +768,26 @@ mod tests {
         let c1 = system
             .push_clause(clause(Atom::bottom(), vec![applies], Formula::top()))
             .unwrap();
-        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1]]);
+        assert_eq!(system.goal_cones().unwrap().parts, vec![vec![c0, c1]]);
 
         let some = UserDefinedPred::new("some".into());
         let exists = Formula::Exists(vec![], Box::new(Formula::Atom(atom(p))));
         system.push_pred_define_formula(some.clone(), IndexVec::new(), exists);
         let applies = Atom::new(Pred::UserDefined(some), vec![]);
-        system
+        let c2 = system
             .push_clause(clause(
                 Atom::bottom(),
                 vec![applies.clone()],
                 Formula::top(),
             ))
             .unwrap();
-        assert_eq!(system.goal_cones().unwrap().len(), 2);
+        assert_eq!(system.goal_cones().unwrap().parts.len(), 2);
         let c3 = system
             .push_clause(clause(applies, vec![], Formula::top()))
             .unwrap();
-        assert_eq!(system.goal_cones(), Err(NotHorn::Clause(c3)));
+        let parts = system.goal_cones().unwrap();
+        assert_eq!(parts.kept_whole, vec![c3]);
+        assert_eq!(parts.parts, vec![vec![c0, c1, c2, c3]]);
     }
 
     #[test]
@@ -733,7 +825,10 @@ mod tests {
         let c1 = system
             .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
             .unwrap();
-        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0], vec![c0, c1]]);
+        assert_eq!(
+            system.goal_cones().unwrap().parts,
+            vec![vec![c0], vec![c0, c1]]
+        );
         let part = system.part(&[c0, c1]);
         assert_eq!(super::super::prune::emitted_clauses(&part), vec![c0, c1]);
         let q = ForallPred::new("q".into(), String::new(), vec![], vec![]);
@@ -758,7 +853,7 @@ mod tests {
         let c1 = system
             .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
             .unwrap();
-        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1]]);
+        assert_eq!(system.goal_cones().unwrap().parts, vec![vec![c0, c1]]);
         assert_eq!(system.deriving_clauses()[&p], HashSet::from([c0]));
     }
 
@@ -781,7 +876,7 @@ mod tests {
         let c1 = system
             .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
             .unwrap();
-        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1]]);
+        assert_eq!(system.goal_cones().unwrap().parts, vec![vec![c0, c1]]);
     }
 
     /// `a := p ∧ b`, `b := a`: unfolding does not end.
@@ -836,7 +931,7 @@ mod tests {
         let c2 = system
             .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
             .unwrap();
-        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1, c2]]);
+        assert_eq!(system.goal_cones().unwrap().parts, vec![vec![c0, c1, c2]]);
     }
 
     /// `⊥ ⇐ ¬∀. p` is `p ⇐ ⊤` with the quantified variables as the clause's.
@@ -851,7 +946,7 @@ mod tests {
         let c1 = system
             .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
             .unwrap();
-        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0, c1]]);
+        assert_eq!(system.goal_cones().unwrap().parts, vec![vec![c0, c1]]);
     }
 
     /// `⊥ ⇐ ¬(p ∧ c)` is `p ⇐ ⊤` and the goal `c ⇐ ⊤`: it derives `p` and is a goal.
@@ -866,7 +961,10 @@ mod tests {
         let c1 = system
             .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
             .unwrap();
-        assert_eq!(system.goal_cones().unwrap(), vec![vec![c0], vec![c0, c1]]);
+        assert_eq!(
+            system.goal_cones().unwrap().parts,
+            vec![vec![c0], vec![c0, c1]]
+        );
     }
 
     /// `p(0) ∧ c ⇐ ⊤`, `p(1) ⇐ ⊤`, `⊥ ⇐ p`: the first is a goal whose cone lacks `p(1) ⇐ ⊤`.
@@ -885,9 +983,64 @@ mod tests {
             .push_clause(clause(Atom::bottom(), vec![atom(p)], Formula::top()))
             .unwrap();
         assert_eq!(
-            system.goal_cones().unwrap(),
+            system.goal_cones().unwrap().parts,
             vec![vec![c0], vec![c0, c1, c2]]
         );
         assert_eq!(system.deriving_clauses()[&p], HashSet::from([c0, c1]));
+    }
+
+    /// `p ⇐ ⊤` and `⊥ ⇐ p`, one class of definite clauses, the goal `⊥ ⇐ ⊤`, and the
+    /// class `r ∨ s ⇐ ⊤`, `⊥ ⇐ r`, `⊥ ⇐ s`, whose first clause is not definite: the first class
+    /// is split into the cones of its goals, the second is one part, in the order of the goals
+    /// and the first clause of the class kept whole.
+    #[test]
+    fn a_class_with_a_clause_that_is_not_definite_is_kept_whole() {
+        let mut system = System::default();
+        let [p, r, s] = [(); 3].map(|()| system.new_pred_var(vec![], DebugInfo::default()));
+        let either = Formula::Atom(atom(s)).not();
+        let mut push = |c| system.push_clause(c).unwrap();
+        let c0 = push(clause(atom(p), vec![], Formula::top()));
+        let c1 = push(clause(atom(r), vec![], either));
+        let c2 = push(clause(Atom::bottom(), vec![atom(p)], Formula::top()));
+        let c3 = push(clause(Atom::bottom(), vec![atom(r)], Formula::top()));
+        let c4 = push(clause(Atom::bottom(), vec![atom(s)], Formula::top()));
+        let c5 = push(clause(Atom::bottom(), vec![], Formula::top()));
+        let parts = system.goal_cones().unwrap();
+        assert_eq!(parts.kept_whole, vec![c1]);
+        assert_eq!(parts.parts, vec![vec![c1, c3, c4], vec![c0, c2], vec![c5]]);
+    }
+
+    /// With the goals of `⊥ ⇐ p` set apart, the class of definite clauses is split as with every
+    /// clause definite; the class with `r ∨ s ⇐ ⊤` is a part as it is, kept whole only when a
+    /// goal set apart is in it.
+    #[test]
+    fn goals_set_apart_in_a_class_that_is_not_definite_keep_it_whole() {
+        let mut system = System::default();
+        let [p, q, r, s] = [(); 4].map(|()| system.new_pred_var(vec![], DebugInfo::default()));
+        let either = Formula::Atom(atom(s)).not();
+        let mut push = |c| system.push_clause(c).unwrap();
+        let c0 = push(clause(atom(p), vec![], Formula::top()));
+        let c1 = push(clause(atom(q), vec![], Formula::top()));
+        let c2 = push(clause(Atom::bottom(), vec![atom(p)], Formula::top()));
+        let c3 = push(clause(
+            Atom::bottom(),
+            vec![atom(p), atom(q)],
+            Formula::top(),
+        ));
+        let c4 = push(clause(atom(r), vec![], either));
+        let c5 = push(clause(Atom::bottom(), vec![atom(r)], Formula::top()));
+        let c6 = push(clause(Atom::bottom(), vec![atom(s)], Formula::top()));
+        let parts = system.goals_apart(|id| id == c3).unwrap();
+        assert_eq!(parts.kept_whole, vec![]);
+        assert_eq!(
+            parts.parts,
+            vec![vec![c0, c2], vec![c4, c5, c6], vec![c0, c1, c3]]
+        );
+        let parts = system.goals_apart(|id| id == c3 || id == c5).unwrap();
+        assert_eq!(parts.kept_whole, vec![c4]);
+        assert_eq!(
+            parts.parts,
+            vec![vec![c0, c2], vec![c4, c5, c6], vec![c0, c1, c3]]
+        );
     }
 }

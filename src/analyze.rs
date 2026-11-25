@@ -3283,10 +3283,12 @@ impl<'tcx> Analyzer<'tcx> {
     }
 
     /// The parts of `system` to solve on their own: with `THRUST_SPLIT_GOALS=1`, the cone of each
-    /// goal when every clause is a definite Horn clause; otherwise the classes of clauses that
-    /// share an unknown, with each goal of a function marked `#[thrust::split_goals]` set apart
-    /// in its cone (see [`chc::System::goals_apart`]). When the clauses are not definite, a note
-    /// says why and the parts are the classes.
+    /// goal of a class of clauses that share an unknown whose clauses are all definite Horn
+    /// clauses; otherwise the classes, with each goal of a function marked
+    /// `#[thrust::split_goals]` set apart in its cone (see [`chc::System::goals_apart`]). A class
+    /// with a clause that is not definite is one part, with a note naming the clause's function;
+    /// when the system is split into cones in no class, a note says why and the parts are the
+    /// classes.
     fn parts_to_solve(
         &self,
         system: &chc::System,
@@ -3313,9 +3315,14 @@ impl<'tcx> Analyzer<'tcx> {
             return (system.components(), Parts::Classes);
         };
         match parts {
-            Ok(parts) => (parts, kind),
+            Ok(chc::GoalParts { parts, kept_whole }) => {
+                for clause in kept_whole {
+                    crate::report::emit_kept_whole_note(self.tcx, system, clause, asked_by);
+                }
+                (parts, kind)
+            }
             Err(why) => {
-                crate::report::emit_not_horn_note(self.tcx, system, why, asked_by);
+                crate::report::emit_not_horn_note(self.tcx, why, asked_by);
                 (system.components(), Parts::Classes)
             }
         }
