@@ -802,8 +802,8 @@ pub struct Analyzer<'tcx, 'ctx> {
     analysis_key: analyze::AnalysisKey<'tcx>,
     drop_points: DropPoints,
     block_contracts: Vec<BlockContract>,
-    /// The index pairs a write must keep different, by the span of the write.
-    index_obligations: analyze::two_phase_borrow::IndexObligations,
+    /// The variables formulas name in the windows of two-phase borrows.
+    window_reads: analyze::two_phase_borrow::WindowReads<'tcx>,
     basic_block: BasicBlock,
     body: Cow<'tcx, Body<'tcx>>,
 
@@ -2825,7 +2825,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     if !self.is_defined(place.local) {
                         continue;
                     }
-                    Operand::Copy(*place)
+                    Operand::Copy(
+                        self.window_reads.read_by_formula(
+                            self.tcx,
+                            &self.body,
+                            self.body.basic_blocks[self.basic_block]
+                                .terminator()
+                                .source_info
+                                .span,
+                            *place,
+                        ),
+                    )
                 }
                 mir::VarDebugInfoContents::Const(constant) => {
                     Operand::Constant(Box::new(*constant))
@@ -3824,32 +3834,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         None
     }
 
-    /// A write between the reservation and the activation of a two-phase borrow, which changes a
-    /// pointer on the borrowed place's path unless the written index differs from the reserved
-    /// one: asserts that they differ. The reserved index local cannot be written before the
-    /// activation, so its value is the one the borrow's place was evaluated at; the written index
-    /// is a temporary of the write, read where `reads_written` says it is, which is the write
-    /// itself or the indexing call that stands for it.
-    fn assert_indices_differ(
-        &mut self,
-        span: rustc_span::Span,
-        stmt_idx: Option<usize>,
-        reads_written: impl Fn(Local) -> bool,
-    ) {
-        for obligation in self.index_obligations.at(span, reads_written) {
-            let (_, reserved, written) = obligation;
-            let check = tracing::info_span!("index_check_of_two_phase_borrow", stmt_idx);
-            let _guard = check.enter();
-            let mut builder = PlaceTypeBuilder::default();
-            let reserved_ty = self.operand_type(Operand::Copy(mir::Place::from(reserved)));
-            let written_ty = self.operand_type(Operand::Copy(mir::Place::from(written)));
-            let (_, reserved_term) = builder.subsume(reserved_ty);
-            let (_, written_term) = builder.subsume(written_ty);
-            self.assert_term(builder, reserved_term.ne(written_term));
-            self.index_obligations.mark_emitted(obligation);
-        }
-    }
-
     fn analyze_statements(&mut self) {
         for local in self.drop_points.before_statements.clone() {
             tracing::info!(?local, "implicitly dropped before statements");
@@ -3867,11 +3851,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 StatementKind::Assign(x) => {
                     let (lhs, rvalue) = &**x;
                     self.check_opaque_use(lhs, rvalue, stmt.source_info.span);
-                    self.assert_indices_differ(stmt.source_info.span, Some(stmt_idx), |local| {
-                        lhs.projection
-                            .iter()
-                            .any(|elem| elem == mir::PlaceElem::Index(local))
-                    });
                     self.analyze_assignment(lhs, rvalue, stmt_idx);
                 }
                 StatementKind::Nop
@@ -4395,7 +4374,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             analysis_key,
             drop_points,
             block_contracts: Vec::new(),
-            index_obligations: Default::default(),
+            window_reads: Default::default(),
             basic_block,
             body,
             type_builder,
@@ -4416,11 +4395,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self
     }
 
-    pub fn index_obligations(
+    pub fn window_reads(
         &mut self,
-        index_obligations: analyze::two_phase_borrow::IndexObligations,
+        window_reads: analyze::two_phase_borrow::WindowReads<'tcx>,
     ) -> &mut Self {
-        self.index_obligations = index_obligations;
+        self.window_reads = window_reads;
         self
     }
 
@@ -4453,12 +4432,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.analyze_statements();
 
         let term = self.elaborated_terminator();
-        if let TerminatorKind::Call { args, .. } = &term.kind {
-            self.assert_indices_differ(term.source_info.span, None, |local| {
-                args.iter()
-                    .any(|arg| arg.node.place().and_then(|place| place.as_local()) == Some(local))
-            });
-        }
         self.analyze_terminator_binds(&term, expected_fn, &outer_fn_param_vars);
         self.analyze_terminator_goto(&term, expected_fn, &outer_fn_param_vars);
         self.ctx.leave_template_site(previous);

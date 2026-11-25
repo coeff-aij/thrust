@@ -141,8 +141,9 @@ pub struct Analyzer<'tcx, 'ctx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     drop_points: HashMap<BasicBlock, analyze::basic_block::DropPoints>,
     block_contracts: Vec<analyze::block_contract::BlockContract>,
-    /// The index pairs a write must keep different, found before the body is rewritten.
-    index_obligations: analyze::two_phase_borrow::IndexObligations,
+    /// The variables formulas name in the windows of two-phase borrows, found before the body is
+    /// rewritten.
+    window_reads: analyze::two_phase_borrow::WindowReads<'tcx>,
     type_builder: TypeBuilder<'tcx>,
 }
 
@@ -2237,8 +2238,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     _ => None,
                 });
                 for place in places {
-                    let span = operands[0].span;
+                    let place = self
+                        .window_reads
+                        .read_by_formula(self.tcx, &self.body, span, place);
                     let node = mir::Operand::Copy(place);
+                    let span = operands[0].span;
                     operands.push(rustc_span::source_map::Spanned { node, span });
                 }
             }
@@ -2616,7 +2620,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .body(self.body.clone())
                 .drop_points(drop_points)
                 .block_contracts(self.block_contracts.clone())
-                .index_obligations(self.index_obligations.clone())
+                .window_reads(self.window_reads.clone())
                 .run(&rty, expected_fn_ty);
         }
     }
@@ -2765,7 +2769,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             generic_args,
             drop_points,
             block_contracts: Vec::new(),
-            index_obligations: Default::default(),
+            window_reads: Default::default(),
             type_builder,
         }
     }
@@ -2962,9 +2966,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .record(self.local_def_id, analyze::BodyCheck::Checked);
         self.ctx.enter_body(self.local_def_id);
         self.unelaborate_derefs();
-        self.index_obligations = analyze::two_phase_borrow::index_obligations(self.tcx, &self.body);
+        self.window_reads =
+            analyze::two_phase_borrow::redirect_window_reads(self.tcx, &mut self.body);
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
-        analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
         self.normalize_switch_int_discriminant_order();
         analyze::block_contract::separate_entries(self.ctx, &mut self.body);
         let move_data = self.move_data();
@@ -2972,7 +2976,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.refine_basic_blocks(&move_data);
         let checked = self.contract_checked_by_body(expected);
         self.analyze_basic_blocks(&checked);
-        self.index_obligations.require_all_emitted(self.tcx);
         self.assert_entry(expected);
         if analyze::candidate_atoms_enabled() {
             self.declare_candidate_atoms(expected);

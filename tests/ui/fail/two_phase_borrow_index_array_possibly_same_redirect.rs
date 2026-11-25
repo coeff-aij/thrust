@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The receiver `*a[0]` is reserved; the argument re-points `a[k]`, which is `a[0]` when `k == 0`.
-// Thrust asserts `k != 0` at the write, and `k == 0` here.
+// The borrow stays on `x`, and `a[0]` is `c` afterwards.
 
 trait Bump {
     fn bump(&mut self, k: i64);
@@ -25,4 +25,5 @@ fn main() {
         a[k] = &mut c;
         10
     });
+    assert!(*a[0] == 11);
 }

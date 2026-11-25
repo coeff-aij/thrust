@@ -1,31 +1,42 @@
-//! Creates each two-phase mutable borrow at its activation, as Creusot does
-//! (`activate_two_phases` in `creusot/src/analysis.rs`).
+//! Reads of a place a two-phase mutable borrow has reserved.
 //!
-//! A two-phase borrow `_t = &mut P` (an autoref'd receiver, `x.bump(arg)`) only reserves `P`,
-//! sharing it, until its activation, the unique use of `_t`; the code in between may read `P`.
-//! Thrust replaces a borrowed place by the borrow's prophecy where the borrow is created, so every
-//! two-phase borrow is created right before its activation; the deref temporaries rustc makes for
-//! its place are already folded into the place by `unelaborate_derefs`. rustc evaluates `P` once,
-//! at the reservation, and a write in between that may change a pointer `P` goes through or one of
-//! its index locals is refused. Without one, `P` names the same memory at both points: the borrow
-//! created at the activation is rustc's borrow, and the reads in between see the current value.
-//! A write that reaches such a pointer only through an index (`(*s)[j] = b` while `*(*s)[i]` is
-//! reserved) leaves `P` unchanged exactly when the two indices differ, so [`index_obligations`]
-//! finds the pairs the analysis asserts different at the write. Thrust reads MIR without `InstSimplify`, which would turn a reborrow
-//! `&mut *p` into `copy p` and lose its two-phase kind.
+//! A two-phase borrow `_t = &mut P` (an autoref'd receiver, `x.bump(arg)`) only reserves `P`
+//! until its activation, the unique use of `_t`; the code in between, the window, may read `P`.
+//! rustc evaluates `P` once, at the reservation, and until the activation the memory it names
+//! holds the value it held there: every write, move or mutable borrow of an overlapping place is
+//! rejected, and a write to a pointer `P` goes through only cuts the path.
 //!
-//! The borrow of a slice element (`s[0].bump(s[1])`) is created at its activation by the
-//! reconstruction of its `IndexMut::index_mut` call, which runs first and asks
-//! [`creation_point`] where to create it.
+//! Thrust borrows at the reservation exactly as for any mutable borrow, so the lender holds the
+//! borrow's prophecy from there on, and a read of `P` in the window has to see the borrow's
+//! current value instead. [`redirect_window_reads`] rewrites each such read to a read through
+//! `_t` (`P.f` becomes `(*_t).f`), and [`WindowReads`] does the same for a variable a formula
+//! names. A read of a place that is disjoint from `P`, or that goes through a pointer a write in
+//! the window has re-pointed, is left as it is. A read Thrust cannot place is refused:
+//!
+//! - a window that holds a read of `P` through a raw pointer or of a type with interior mutability;
+//! - a read of an ancestor of `P` for its value (`p` for `P = *p`);
+//! - a read of `P` after a write that may re-point a pointer `P` goes through (a write through an
+//!   index that may or may not be the reserved one);
+//! - a read of a place that differs from `P` in an index the analysis cannot compare (two indices
+//!   that are not the same constant);
+//! - a borrow that is not used exactly once after it is made, or that its reservation does not
+//!   dominate.
+//!
+//! Thrust reads MIR without `InstSimplify`, which would turn a reborrow `&mut *p` into `copy p`
+//! and lose its two-phase kind. Whether a read or a write in the window overlaps the reserved
+//! place is rustc's `places_conflict`, a relation of places that does not depend on the borrow
+//! checker (NLL or Polonius).
 
-use std::cell::RefCell;
 use std::collections::HashSet;
-use std::rc::Rc;
+
+use rustc_borrowck::consumers::{places_conflict, PlaceConflictBias};
 
 use rustc_middle::mir::{
-    self, visit::PlaceContext, BasicBlock, Body, Local, Location, Place, PlaceElem, PlaceRef,
+    self,
+    visit::{MutVisitor, NonMutatingUseContext, PlaceContext},
+    BasicBlock, Body, Local, Location, Place, PlaceElem,
 };
-use rustc_middle::ty::TyCtxt;
+use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::Span;
 
 /// A two-phase borrow `temp = &mut place` made at `reservation`.
@@ -35,135 +46,592 @@ struct TwoPhaseBorrow<'tcx> {
     place: Place<'tcx>,
 }
 
-/// The index pairs a write must keep different: `reserved` is the index of a reserved two-phase
-/// borrow's place, `written` the index of the write at the statement spanning `write`.
-///
-/// They are keyed by span, not location, because the reconstruction of slice indexing and
-/// [`move_to_activation`] move statements. The basic-block analysis asserts a pair where the
-/// written index is still live: at the write, or at the indexing call the reconstruction made of
-/// it, which has a span inside the write's.
-#[derive(Clone, Default)]
-pub struct IndexObligations {
-    pairs: Vec<(Span, Local, Local)>,
-    emitted: Rc<RefCell<HashSet<(Span, Local, Local)>>>,
+/// What the pointers `P` goes through hold at a location of the window.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Pointers {
+    /// No write since the reservation re-pointed one: `P` names the reserved memory.
+    Intact,
+    /// A write on every path since the reservation re-pointed one: `P` names other memory.
+    Repointed,
+    /// Some path re-pointed one, or the analysis cannot tell.
+    Unknown,
 }
 
-impl IndexObligations {
-    /// The obligations of writes whose span contains `span`, those of `written` only.
-    pub fn at(&self, span: Span, written: impl Fn(Local) -> bool) -> Vec<(Span, Local, Local)> {
-        let found = self
-            .pairs
-            .iter()
-            .filter(|(write, _, w)| write.contains(span) && written(*w));
-        found.copied().collect()
-    }
+/// How a write in the window affects the pointers the reserved place goes through.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Repoint {
+    Always,
+    Maybe,
+}
 
-    pub fn mark_emitted(&self, obligation: (Span, Local, Local)) {
-        self.emitted.borrow_mut().insert(obligation);
-    }
+/// A reserved place with its window: what is needed to say how a read in it is read.
+#[derive(Clone)]
+struct Window<'tcx> {
+    temp: Local,
+    place: Place<'tcx>,
+    blocks: HashSet<BasicBlock>,
+    repoints: Vec<(Location, Repoint)>,
+}
 
-    /// Stops at an obligation the analysis did not assert, which would leave its write unchecked.
-    pub fn require_all_emitted(&self, tcx: TyCtxt<'_>) {
-        let emitted = self.emitted.borrow();
-        if let Some(obligation) = self.pairs.iter().find(|o| !emitted.contains(o)) {
-            tcx.dcx().span_fatal(
-                obligation.0,
-                "the index of this write to a place a two-phase mutable borrow goes through is \
-                 not checked against the borrow's index",
+/// How a read of a place relates to the reserved place.
+enum Overlap {
+    Disjoint,
+    /// Whether the places overlap depends on indices the analysis cannot compare.
+    Undecided,
+    /// The read place is the reserved place, a part of it, or an ancestor of it.
+    Within(Relation),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Relation {
+    /// The reserved place itself or a place inside it.
+    Inside,
+    /// A place the reserved place is inside of: its value includes the reserved memory.
+    Ancestor,
+}
+
+/// How a read of a place in the window is carried out.
+enum Reading<'tcx> {
+    /// As written.
+    Native,
+    /// Through the borrow, which holds the reserved value.
+    Through(Place<'tcx>),
+    /// Not supported, with the reason.
+    Refused(&'static str),
+}
+
+impl<'tcx> Window<'tcx> {
+    /// How the read of `read` at a location where the pointers are `pointers` is carried out.
+    /// `shape_only` is set for a read of the discriminant or the length of `read`.
+    fn reading(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        body: &Body<'tcx>,
+        read: Place<'tcx>,
+        shape_only: bool,
+        pointers: Pointers,
+    ) -> Reading<'tcx> {
+        let relation = match overlap(tcx, body, read, self.place) {
+            Overlap::Disjoint => return Reading::Native,
+            Overlap::Undecided if pointers == Pointers::Repointed => return Reading::Native,
+            Overlap::Undecided => {
+                return Reading::Refused(
+                    "this read may or may not be of the place a two-phase mutable borrow has \
+                     reserved, depending on indices Thrust cannot compare",
+                )
+            }
+            Overlap::Within(relation) => relation,
+        };
+        if pointers == Pointers::Repointed {
+            return Reading::Native;
+        }
+        // The shape of an ancestor (its length, its variant) does not include the reserved part.
+        if shape_only && relation == Relation::Ancestor {
+            return Reading::Native;
+        }
+        if pointers == Pointers::Unknown {
+            return Reading::Refused(
+                "this read follows a write that may re-point a pointer the place of a two-phase \
+                 mutable borrow goes through; Thrust cannot tell whether it reads the reserved place",
             );
         }
+        match relation {
+            Relation::Ancestor => Reading::Refused(
+                "this reads the value of a place that holds the place of a two-phase mutable \
+                 borrow; Thrust supports only reads of the reserved place itself and of parts of it",
+            ),
+            Relation::Inside => Reading::Through(self.through_borrow(tcx, read)),
+        }
+    }
+
+    /// The place `read` names inside the reserved place, as a place of the borrow.
+    fn through_borrow(&self, tcx: TyCtxt<'tcx>, read: Place<'tcx>) -> Place<'tcx> {
+        let inside = &read.projection.as_slice()[self.place.projection.len()..];
+        Place {
+            local: self.temp,
+            projection: tcx.mk_place_elems_from_iter(
+                std::iter::once(PlaceElem::Deref).chain(inside.iter().copied()),
+            ),
+        }
+    }
+
+    /// The pointers the reserved place goes through at `location`.
+    fn pointers_at(&self, body: &Body<'tcx>, location: Location) -> Pointers {
+        let dominators = body.basic_blocks.dominators();
+        let before: Vec<(Location, Repoint)> = self
+            .repoints
+            .iter()
+            .copied()
+            .filter(|(write, _)| self.reaches(body, *write, location))
+            .collect();
+        if before.is_empty() {
+            return Pointers::Intact;
+        }
+        let certain = before.iter().all(|(_, kind)| *kind == Repoint::Always);
+        let on_every_path = before
+            .iter()
+            .any(|(write, _)| write.dominates(location, dominators));
+        if certain && on_every_path {
+            Pointers::Repointed
+        } else {
+            Pointers::Unknown
+        }
+    }
+
+    /// Whether `to` may be reached after `from` without leaving the window.
+    fn reaches(&self, body: &Body<'tcx>, from: Location, to: Location) -> bool {
+        if from.block == to.block && from.statement_index < to.statement_index {
+            return true;
+        }
+        let mut seen = HashSet::new();
+        let mut stack: Vec<BasicBlock> = successors_in(body, from.block, &self.blocks);
+        while let Some(block) = stack.pop() {
+            if block == to.block {
+                return true;
+            }
+            if seen.insert(block) {
+                stack.extend(successors_in(body, block, &self.blocks));
+            }
+        }
+        false
     }
 }
 
-/// Finds, for each write between a reservation and its activation that reaches a pointer of the
-/// borrowed place only through an index, the pair of index locals the analysis asserts different
-/// at the write: then no write in between changes a pointer on the path, and the borrow created
-/// at the activation is rustc's borrow. With equal indices the assertion fails and verification
-/// stops. A write that is no statement (a call's destination) is refused.
-pub fn index_obligations<'tcx>(tcx: TyCtxt<'tcx>, body: &Body<'tcx>) -> IndexObligations {
-    let mut obligations = IndexObligations::default();
+fn successors_in(
+    body: &Body<'_>,
+    block: BasicBlock,
+    blocks: &HashSet<BasicBlock>,
+) -> Vec<BasicBlock> {
+    let successors = body.basic_blocks[block].terminator().successors();
+    successors.filter(|next| blocks.contains(next)).collect()
+}
+
+/// Whether and how `read` overlaps `reserved`. rustc's `places_conflict` rules out disjoint
+/// places (other locals, fields, variants, constant indices); of the rest, a read is of the
+/// reserved place, a part or an ancestor of it only when the two agree on their common prefix
+/// ([`same_prefix`]).
+fn overlap<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    read: Place<'tcx>,
+    reserved: Place<'tcx>,
+) -> Overlap {
+    if !places_conflict(tcx, body, reserved, read, PlaceConflictBias::Overlap) {
+        return Overlap::Disjoint;
+    }
+    match same_prefix(body, read, reserved) {
+        Some(true) if read.projection.len() >= reserved.projection.len() => {
+            Overlap::Within(Relation::Inside)
+        }
+        Some(true) => Overlap::Within(Relation::Ancestor),
+        Some(false) => Overlap::Disjoint,
+        None => Overlap::Undecided,
+    }
+}
+
+/// Whether `a` and `b` name the same place up to the shorter of the two: `Some(false)` when an
+/// index pair is two different constants, `None` when an index pair cannot be compared or two
+/// other projections differ (fields of a union, overlapping subslices).
+fn same_prefix<'tcx>(body: &Body<'tcx>, a: Place<'tcx>, b: Place<'tcx>) -> Option<bool> {
+    let mut decided = Some(true);
+    for (x, y) in a.projection.iter().zip(b.projection.iter()) {
+        if x == y {
+            continue;
+        }
+        let (PlaceElem::Index(x), PlaceElem::Index(y)) = (x, y) else {
+            decided = None;
+            continue;
+        };
+        match same_index(body, x, y) {
+            Some(false) => return Some(false),
+            Some(true) => {}
+            None => decided = None,
+        }
+    }
+    decided
+}
+
+/// Whether two index locals hold the same value, when both are assigned one constant.
+fn same_index(body: &Body<'_>, a: Local, b: Local) -> Option<bool> {
+    let (a, b) = (assigned_constant(body, a)?, assigned_constant(body, b)?);
+    if a == b {
+        return Some(true);
+    }
+    // Different constants are different values only once they are evaluated.
+    Some(false).filter(|_| a.try_to_scalar_int().is_some() && b.try_to_scalar_int().is_some())
+}
+
+/// The constant `local` is assigned, when that is its only assignment.
+fn assigned_constant<'tcx>(body: &Body<'tcx>, local: Local) -> Option<mir::Const<'tcx>> {
+    use mir::visit::Visitor as _;
+    struct ConstantAssignments<'tcx> {
+        local: Local,
+        assignments: usize,
+        constants: Vec<mir::Const<'tcx>>,
+    }
+    impl<'tcx> mir::visit::Visitor<'tcx> for ConstantAssignments<'tcx> {
+        fn visit_local(&mut self, local: Local, context: PlaceContext, _: Location) {
+            if local == self.local && context.is_mutating_use() {
+                self.assignments += 1;
+            }
+        }
+        fn visit_assign(
+            &mut self,
+            place: &Place<'tcx>,
+            rvalue: &mir::Rvalue<'tcx>,
+            location: Location,
+        ) {
+            if place.as_local() == Some(self.local) {
+                if let mir::Rvalue::Use(mir::Operand::Constant(constant)) = rvalue {
+                    self.constants.push(constant.const_);
+                }
+            }
+            self.super_assign(place, rvalue, location);
+        }
+    }
+    let mut finder = ConstantAssignments {
+        local,
+        assignments: 0,
+        constants: Vec::new(),
+    };
+    finder.visit_body(body);
+    match (finder.assignments, finder.constants.as_slice()) {
+        (1, [constant]) => Some(*constant),
+        _ => None,
+    }
+}
+
+/// The reads in the windows of two-phase borrows that formulas make: the variables they name.
+/// Keyed by the span of the terminator that holds the formula.
+#[derive(Clone, Default)]
+pub struct WindowReads<'tcx> {
+    formulas: Vec<(Span, Window<'tcx>, Pointers)>,
+}
+
+impl<'tcx> WindowReads<'tcx> {
+    /// The place a formula at the terminator spanning `span` reads for the variable at `place`.
+    pub fn read_by_formula(
+        &self,
+        tcx: TyCtxt<'tcx>,
+        body: &Body<'tcx>,
+        span: Span,
+        place: Place<'tcx>,
+    ) -> Place<'tcx> {
+        let mut read = place;
+        for (_, window, pointers) in self.formulas.iter().filter(|(at, ..)| *at == span) {
+            match window.reading(tcx, body, read, false, *pointers) {
+                Reading::Native => {}
+                Reading::Through(through) => {
+                    refuse_unsupported_path(tcx, body, window.place, span);
+                    read = through;
+                }
+                Reading::Refused(reason) => tcx.dcx().span_fatal(span, reason),
+            }
+        }
+        read
+    }
+}
+
+/// Redirects the reads in the window of each two-phase borrow to the borrow ([`Window::reading`]).
+/// Returns the windows' terminators, which formulas read variables at.
+pub fn redirect_window_reads<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) -> WindowReads<'tcx> {
+    let mut formulas = Vec::new();
+    for borrow in two_phase_borrows(body) {
+        let Some(activation) = activation(tcx, body, &borrow) else {
+            continue;
+        };
+        let between = locations_between(body, borrow.reservation, activation);
+        let window = window_of(tcx, body, &borrow, &between);
+        let rewrites = reads_to_redirect(tcx, body, &window, &between);
+        formulas.extend(terminators_in(body, &window, &between));
+        apply_redirects(tcx, body, rewrites);
+    }
+    WindowReads { formulas }
+}
+
+fn two_phase_borrows<'tcx>(body: &Body<'tcx>) -> Vec<TwoPhaseBorrow<'tcx>> {
+    let mut borrows = Vec::new();
     for (block, data) in body.basic_blocks.iter_enumerated() {
         for statement_index in 0..data.statements.len() {
             let location = Location {
                 block,
                 statement_index,
             };
-            let Some(borrow) = two_phase_borrow_at(body, location) else {
-                continue;
-            };
-            let Some(activation) = activation(tcx, body, &borrow) else {
-                continue;
-            };
-            for (write, reserved, written) in index_writes(tcx, body, &borrow, activation) {
-                let in_statement =
-                    write.statement_index < body.basic_blocks[write.block].statements.len();
-                if !in_statement {
-                    fatal_at(
-                        tcx,
-                        body,
-                        write,
-                        "a write that is no statement may change which place a two-phase mutable \
-                         borrow names before the borrow is used",
-                    );
-                }
-                let obligation = (body.source_info(write).span, reserved, written);
-                if !obligations.pairs.contains(&obligation) {
-                    obligations.pairs.push(obligation);
-                }
-            }
+            borrows.extend(two_phase_borrow_at(body, location));
         }
     }
-    obligations
+    borrows
 }
 
-/// The writes between the reservation and the activation whose overlap with the borrowed place is
-/// decided by two index locals: the write's location, the reserved index and the written index.
-fn index_writes<'tcx>(
+/// The reserved place, the blocks of its window and the writes in it that re-point a pointer.
+fn window_of<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
     borrow: &TwoPhaseBorrow<'tcx>,
-    activation: Location,
-) -> Vec<(Location, Local, Local)> {
-    let mut finder = AddressWriteFinder {
+    between: &[Location],
+) -> Window<'tcx> {
+    let mut finder = RepointFinder {
         tcx,
         body,
-        addresses: address_places(borrow.place),
-        write: None,
-        obligations: Vec::new(),
+        window: borrow.place,
+        repoints: Vec::new(),
     };
-    for location in locations_between(body, borrow.reservation, activation) {
-        visit_location(body, &mut finder, location);
+    for location in between {
+        visit_location(body, &mut finder, *location);
     }
-    finder.obligations
+    Window {
+        temp: borrow.temp,
+        place: borrow.place,
+        blocks: between.iter().map(|location| location.block).collect(),
+        repoints: finder.repoints,
+    }
 }
 
-pub fn move_to_activation<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
-    let mut moves = Vec::new();
-    for (block, data) in body.basic_blocks.iter_enumerated() {
-        for statement_index in 0..data.statements.len() {
-            let location = Location {
-                block,
-                statement_index,
-            };
-            let Some(borrow) = two_phase_borrow_at(body, location) else {
-                continue;
-            };
-            let activation = checked_activation(tcx, body, &borrow);
-            moves.push((borrow, activation));
-        }
-    }
-    apply(body, moves);
+/// The terminators in the window with the pointers there, for the formulas they hold.
+fn terminators_in<'tcx>(
+    body: &Body<'tcx>,
+    window: &Window<'tcx>,
+    between: &[Location],
+) -> Vec<(Span, Window<'tcx>, Pointers)> {
+    between
+        .iter()
+        .filter(|location| {
+            location.statement_index == body.basic_blocks[location.block].statements.len()
+        })
+        .map(|location| {
+            let span = body.source_info(*location).span;
+            (span, window.clone(), window.pointers_at(body, *location))
+        })
+        .collect()
 }
 
-/// Where the two-phase borrow made by the statement at `location` is created: its activation.
-/// `None` when the statement is no two-phase borrow or the borrow is never used.
-pub fn creation_point<'tcx>(
+/// The reads in `between` of a place in the window, with the place each is rewritten to.
+fn reads_to_redirect<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
-    location: Location,
-) -> Option<Location> {
-    let borrow = two_phase_borrow_at(body, location)?;
-    checked_activation(tcx, body, &borrow)
+    window: &Window<'tcx>,
+    between: &[Location],
+) -> Vec<(Location, Place<'tcx>, Place<'tcx>)> {
+    let length_arguments = &length_arguments(body);
+    let mut rewrites = Vec::new();
+    for &location in between {
+        let mut finder = ReadFinder {
+            reads: Vec::new(),
+            shape_only: false,
+            length_arguments,
+            assigns_length_argument: false,
+        };
+        visit_location(body, &mut finder, location);
+        let pointers = window.pointers_at(body, location);
+        for (read, shape_only) in finder.reads {
+            match window.reading(tcx, body, read, shape_only, pointers) {
+                Reading::Native => {}
+                Reading::Through(through) => {
+                    let span = body.source_info(location).span;
+                    refuse_unsupported_path(tcx, body, window.place, span);
+                    rewrites.push((location, read, through));
+                }
+                Reading::Refused(reason) => fatal_at(tcx, body, location, reason),
+            }
+        }
+    }
+    rewrites
+}
+
+/// The locals that are used only to read the length of what a reference points to
+/// (`_len = PtrMetadata(move _r)`), which reads nothing else.
+fn length_arguments(body: &Body<'_>) -> HashSet<Local> {
+    let mut locals = HashSet::new();
+    for data in body.basic_blocks.iter() {
+        for statement in &data.statements {
+            let Some((_, mir::Rvalue::UnaryOp(mir::UnOp::PtrMetadata, operand))) =
+                statement.kind.as_assign()
+            else {
+                continue;
+            };
+            let Some(local) = operand.place().and_then(|place| place.as_local()) else {
+                continue;
+            };
+            // The assignment and this read are its only uses.
+            if use_locations(body, local).len() == 2 {
+                locals.insert(local);
+            }
+        }
+    }
+    locals
+}
+
+fn apply_redirects<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mut Body<'tcx>,
+    rewrites: Vec<(Location, Place<'tcx>, Place<'tcx>)>,
+) {
+    for (location, from, to) in rewrites {
+        let mut redirect = Redirect { tcx, from, to };
+        let data = &mut body.basic_blocks.as_mut()[location.block];
+        match data.statements.get_mut(location.statement_index) {
+            Some(stmt) => redirect.visit_statement(stmt, location),
+            None => redirect.visit_terminator(data.terminator_mut(), location),
+        }
+    }
+}
+
+/// Stops when the reserved place goes through a raw pointer or holds interior mutability, which
+/// a read in the window may write through ([`redirect_window_reads`]).
+fn refuse_unsupported_path<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    place: Place<'tcx>,
+    span: Span,
+) {
+    let through_raw_pointer = place
+        .iter_projections()
+        .any(|(base, elem)| elem == PlaceElem::Deref && base.ty(body, tcx).ty.is_raw_ptr());
+    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, body.source.def_id());
+    let interior_mutable = !place.ty(body, tcx).ty.is_freeze(tcx, typing_env);
+    if through_raw_pointer || interior_mutable {
+        tcx.dcx().span_fatal(
+            span,
+            "this reads a place a two-phase mutable borrow has reserved, which goes through a raw \
+             pointer or holds interior mutability; Thrust does not support that",
+        );
+    }
+}
+
+/// Rewrites one read place, the whole place of a non-mutating use.
+struct Redirect<'tcx> {
+    tcx: TyCtxt<'tcx>,
+    from: Place<'tcx>,
+    to: Place<'tcx>,
+}
+
+impl<'tcx> MutVisitor<'tcx> for Redirect<'tcx> {
+    fn tcx(&self) -> TyCtxt<'tcx> {
+        self.tcx
+    }
+
+    fn visit_place(&mut self, place: &mut Place<'tcx>, context: PlaceContext, location: Location) {
+        if *place == self.from && is_read(context) {
+            *place = self.to;
+            return;
+        }
+        self.super_place(place, context, location);
+    }
+}
+
+fn is_read(context: PlaceContext) -> bool {
+    match context {
+        PlaceContext::NonMutatingUse(NonMutatingUseContext::Projection)
+        | PlaceContext::MutatingUse(_)
+        | PlaceContext::NonUse(_) => false,
+        PlaceContext::NonMutatingUse(_) => true,
+    }
+}
+
+/// The places read at a location, each with whether only its shape (variant or length) is.
+struct ReadFinder<'a, 'tcx> {
+    reads: Vec<(Place<'tcx>, bool)>,
+    shape_only: bool,
+    /// The locals that hold a shared reference only to read the length of what it points to.
+    length_arguments: &'a HashSet<Local>,
+    assigns_length_argument: bool,
+}
+
+impl<'tcx> mir::visit::Visitor<'tcx> for ReadFinder<'_, 'tcx> {
+    fn visit_assign(
+        &mut self,
+        place: &Place<'tcx>,
+        rvalue: &mir::Rvalue<'tcx>,
+        location: Location,
+    ) {
+        self.assigns_length_argument = place
+            .as_local()
+            .is_some_and(|local| self.length_arguments.contains(&local));
+        self.super_assign(place, rvalue, location);
+        self.assigns_length_argument = false;
+    }
+
+    fn visit_rvalue(&mut self, rvalue: &mir::Rvalue<'tcx>, location: Location) {
+        self.shape_only = match rvalue {
+            mir::Rvalue::Discriminant(_)
+            | mir::Rvalue::UnaryOp(mir::UnOp::PtrMetadata, _)
+            | mir::Rvalue::RawPtr(mir::RawPtrKind::FakeForPtrMetadata, _) => true,
+            mir::Rvalue::Ref(_, mir::BorrowKind::Shared, _) => self.assigns_length_argument,
+            _ => false,
+        };
+        self.super_rvalue(rvalue, location);
+        self.shape_only = false;
+    }
+
+    fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, location: Location) {
+        if is_read(context) {
+            self.reads.push((*place, self.shape_only));
+        }
+        self.super_place(place, context, location);
+    }
+}
+
+/// Finds the writes that re-point a pointer the reserved place goes through.
+struct RepointFinder<'a, 'tcx> {
+    tcx: TyCtxt<'tcx>,
+    body: &'a Body<'tcx>,
+    window: Place<'tcx>,
+    repoints: Vec<(Location, Repoint)>,
+}
+
+impl<'tcx> mir::visit::Visitor<'tcx> for RepointFinder<'_, 'tcx> {
+    fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, location: Location) {
+        if context.is_mutating_use() {
+            self.record(*place, location);
+        }
+        self.super_place(place, context, location);
+    }
+}
+
+impl<'tcx> RepointFinder<'_, 'tcx> {
+    /// rustc rejects a write in the window that reaches the reserved memory (RFC 2025), and a
+    /// write to a place the reserved one goes through ends right before a dereference: it
+    /// re-points that pointer. So a write that overlaps the reserved place re-points it, and is
+    /// shorter than it.
+    fn record(&mut self, written: Place<'tcx>, location: Location) {
+        let window = self.window;
+        let index_written = window.projection.iter().any(
+            |elem| matches!(elem, PlaceElem::Index(index) if written.as_local() == Some(index)),
+        );
+        if index_written {
+            fatal_at(
+                self.tcx,
+                self.body,
+                location,
+                "an index of a place a two-phase mutable borrow has reserved is written before \
+                 the borrow is used",
+            );
+        }
+        if !places_conflict(
+            self.tcx,
+            self.body,
+            window,
+            written,
+            PlaceConflictBias::Overlap,
+        ) {
+            return;
+        }
+        if written.projection.len() >= window.projection.len() {
+            fatal_at(
+                self.tcx,
+                self.body,
+                location,
+                "this writes a place a two-phase mutable borrow has reserved before the borrow is \
+                 used",
+            );
+        }
+        let kind = match same_prefix(self.body, written, window) {
+            Some(false) => return,
+            Some(true) => Repoint::Always,
+            None => Repoint::Maybe,
+        };
+        self.repoints.push((location, kind));
+    }
 }
 
 fn two_phase_borrow_at<'tcx>(
@@ -189,19 +657,8 @@ fn two_phase_borrow_at<'tcx>(
     })
 }
 
-/// The activation of `borrow`, after refusing a write before it that may change which place the
-/// borrow names. `None` when the borrow is never used.
-fn checked_activation<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    borrow: &TwoPhaseBorrow<'tcx>,
-) -> Option<Location> {
-    let activation = activation(tcx, body, borrow)?;
-    refuse_address_writes(tcx, body, borrow, activation);
-    Some(activation)
-}
-
-/// The unique use of the borrow's temporary, which the reservation dominates.
+/// The unique use of the borrow's temporary, which the reservation dominates. `None` when the
+/// borrow is never used.
 fn activation(tcx: TyCtxt<'_>, body: &Body<'_>, borrow: &TwoPhaseBorrow<'_>) -> Option<Location> {
     let uses: Vec<Location> = use_locations(body, borrow.temp)
         .into_iter()
@@ -217,181 +674,6 @@ fn activation(tcx: TyCtxt<'_>, body: &Body<'_>, borrow: &TwoPhaseBorrow<'_>) -> 
             borrow.reservation,
             "a two-phase mutable borrow that is not used exactly once after it is made is not supported",
         ),
-    }
-}
-
-/// Stops at a write between the reservation and the activation that may change a pointer the
-/// borrowed place goes through, or one of its index locals.
-fn refuse_address_writes<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    borrow: &TwoPhaseBorrow<'tcx>,
-    activation: Location,
-) {
-    let mut finder = AddressWriteFinder {
-        tcx,
-        body,
-        addresses: address_places(borrow.place),
-        write: None,
-        obligations: Vec::new(),
-    };
-    for location in locations_between(body, borrow.reservation, activation) {
-        visit_location(body, &mut finder, location);
-        let Some(write) = finder.write else {
-            continue;
-        };
-        tcx.dcx()
-            .struct_span_fatal(
-                body.source_info(write).span,
-                "this write may change which place a two-phase mutable borrow names before the \
-                 borrow is used; Thrust supports such a borrow only while the pointers and \
-                 indices its place goes through are unchanged",
-            )
-            .with_span_note(
-                body.source_info(borrow.reservation).span,
-                "the borrow is reserved here",
-            )
-            .with_span_note(body.source_info(activation).span, "and used here")
-            .emit();
-    }
-}
-
-/// The places whose value decides which place `place` names: each prefix ending right before a
-/// dereference, and each index local.
-fn address_places<'tcx>(place: Place<'tcx>) -> Vec<PlaceRef<'tcx>> {
-    let mut places = Vec::new();
-    for (base, elem) in place.iter_projections() {
-        match elem {
-            PlaceElem::Deref => places.push(base),
-            PlaceElem::Index(local) => places.push(PlaceRef {
-                local,
-                projection: &[],
-            }),
-            _ => {}
-        }
-    }
-    places
-}
-
-/// Finds a write that may change one of `addresses`.
-struct AddressWriteFinder<'a, 'tcx> {
-    tcx: TyCtxt<'tcx>,
-    body: &'a Body<'tcx>,
-    addresses: Vec<PlaceRef<'tcx>>,
-    /// A write that changes an address.
-    write: Option<Location>,
-    /// Writes that change an address unless two indices differ.
-    obligations: Vec<(Location, Local, Local)>,
-}
-
-impl<'tcx> mir::visit::Visitor<'tcx> for AddressWriteFinder<'_, 'tcx> {
-    fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, location: Location) {
-        if context.is_mutating_use() {
-            for address in &self.addresses {
-                match conflict(self.tcx, self.body, *place, *address) {
-                    Conflict::Disjoint => {}
-                    Conflict::Changes => self.write = Some(location),
-                    Conflict::UnlessIndicesDiffer(reserved, written) => {
-                        self.obligations.push((location, reserved, written));
-                    }
-                }
-            }
-        }
-        self.super_place(place, context, location);
-    }
-}
-
-/// How writing `written` affects the value at `address`.
-enum Conflict {
-    /// It does not change the address; a write through a dereference of `address` changes the
-    /// pointee, not `address`.
-    Disjoint,
-    /// It may change the address.
-    Changes,
-    /// It changes the address when the two index locals are equal, and not otherwise: the
-    /// places are the same up to indices, the first of the address, the second of the write.
-    UnlessIndicesDiffer(Local, Local),
-}
-
-fn conflict<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    written: Place<'tcx>,
-    address: PlaceRef<'tcx>,
-) -> Conflict {
-    if written.local != address.local {
-        return Conflict::Disjoint;
-    }
-    let mut indices = None;
-    let mut index_pairs = 0;
-    let mut other_overlap = false;
-    for (i, (base, elem)) in written.iter_projections().enumerate() {
-        let Some(addressed) = address.projection.get(i) else {
-            if elem == PlaceElem::Deref {
-                return Conflict::Disjoint;
-            }
-            break;
-        };
-        if !elems_may_overlap(tcx, body, base, elem, *addressed) {
-            return Conflict::Disjoint;
-        }
-        match (*addressed, elem) {
-            (PlaceElem::Index(reserved), PlaceElem::Index(written)) if reserved != written => {
-                indices = Some((reserved, written));
-                index_pairs += 1;
-            }
-            _ => other_overlap |= *addressed != elem,
-        }
-    }
-    match indices {
-        Some((reserved, written)) if index_pairs == 1 && !other_overlap => {
-            Conflict::UnlessIndicesDiffer(reserved, written)
-        }
-        _ => Conflict::Changes,
-    }
-}
-
-/// Whether two projection elements of the same base may name overlapping parts, as rustc's
-/// `place_projection_conflict` decides with `PlaceConflictBias::Overlap`: distinct fields of a
-/// struct and distinct variants are disjoint, fields of a union and elements of a sequence may
-/// overlap whatever the indices. Constant indices and subslices, which rustc tells apart by their
-/// offsets, are taken to overlap.
-fn elems_may_overlap<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    base: PlaceRef<'tcx>,
-    a: PlaceElem<'tcx>,
-    b: PlaceElem<'tcx>,
-) -> bool {
-    match (a, b) {
-        (PlaceElem::Field(f, _), PlaceElem::Field(g, _)) => {
-            f == g || base.ty(body, tcx).ty.is_union()
-        }
-        (PlaceElem::Downcast(_, v), PlaceElem::Downcast(_, w)) => v == w,
-        _ => true,
-    }
-}
-
-/// Moves each borrow right before its activation, or removes it when it is never used.
-fn apply<'tcx>(body: &mut Body<'tcx>, moves: Vec<(TwoPhaseBorrow<'tcx>, Option<Location>)>) {
-    let blocks = body.basic_blocks.as_mut_preserves_cfg();
-    let mut inserts = Vec::new();
-    for (borrow, activation) in moves {
-        let from = borrow.reservation;
-        let stmt = &mut blocks[from.block].statements[from.statement_index];
-        let moved = stmt.clone();
-        stmt.make_nop();
-        if let Some(activation) = activation {
-            inserts.push((activation, moved));
-        }
-    }
-    // Inserting from the last location down keeps the earlier indices valid; the stable sort
-    // keeps borrows created at one location in reservation order.
-    inserts.sort_by_key(|(location, _)| (location.block, location.statement_index));
-    for (location, stmt) in inserts.into_iter().rev() {
-        blocks[location.block]
-            .statements
-            .insert(location.statement_index, stmt);
     }
 }
 
@@ -432,7 +714,6 @@ fn visit_location<'tcx>(
         None => visitor.visit_terminator(data.terminator(), location),
     }
 }
-
 /// The statements and terminators on a path from `from` to `to`, both excluded. A path that
 /// reaches `from` again starts over, so `from`'s block is not entered from its start.
 fn locations_between(body: &Body<'_>, from: Location, to: Location) -> Vec<Location> {
