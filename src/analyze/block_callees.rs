@@ -208,6 +208,15 @@ pub fn check_callees_agree<'tcx>(
     bc_args: GenericArgsRef<'tcx>,
     is_marker: &dyn Fn(DefId) -> bool,
 ) {
+    // Only the host's calls are compared: a call that appears only in the extracted function is
+    // taken to be an operator or a conversion the host's concrete types make built in. That holds
+    // only while no MIR inlining removes a host call, which `src/main.rs` guarantees by setting
+    // `inline_mir = Some(false)`.
+    assert_eq!(
+        tcx.sess.opts.unstable_opts.inline_mir,
+        Some(false),
+        "the callee comparison of `block_contract!` assumes MIR inlining is off"
+    );
     let root = tcx.typeck_root_def_id(host_body.source.def_id());
     let typing_env = mir_ty::TypingEnv::post_analysis(tcx, root);
     let normalize = |ty: mir_ty::Ty<'tcx>| tcx.normalize_erasing_regions(typing_env, ty);
