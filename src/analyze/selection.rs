@@ -104,6 +104,20 @@ fn host_of_extracted_block(name: Symbol) -> Option<Symbol> {
     (after_number.len() < rest.len() && !host.is_empty()).then(|| Symbol::intern(host))
 }
 
+/// Whether `def_id` is a function a `block_contract!` block is extracted into: named
+/// `__block_contract_<n>`, with `_of_<host>` when hoisted next to its host.
+pub fn is_extracted_block(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
+    tcx.def_kind(def_id).is_fn_like()
+        && tcx
+            .opt_item_name(def_id)
+            .and_then(|name| {
+                name.as_str()
+                    .strip_prefix("__block_contract_")
+                    .map(str::to_owned)
+            })
+            .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+}
+
 fn impl_self_name(tcx: TyCtxt<'_>, impl_def_id: DefId) -> Symbol {
     tcx.type_of(impl_def_id)
         .instantiate_identity()

@@ -264,10 +264,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             && self.ctx.contract_names_type_param(local_def_id);
         let has_constrained_type_param = !self.constrained_type_params(local_def_id).is_empty();
         let is_law_impl = self.is_law_impl(local_def_id);
-        let per_instance = self.ctx.per_instance_generics();
-        let per_instance_too = per_instance && !per_instance_generics_requested();
         let outside_selection = self.is_outside_selection(local_def_id);
+        let per_instance_requested = self.ctx.per_instance_generics();
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
+        // A function a `block_contract!` block is extracted into has one call, its region: its
+        // untyped and block-declared generic parameters stand for the types the outer variables
+        // have, so it is analyzed at that instance and never over its type parameters.
+        let is_extracted_block =
+            analyze::selection::is_extracted_block(self.tcx, analyzer.owner_fn_id);
+        let per_instance = per_instance_requested || is_extracted_block;
+        let per_instance_too =
+            per_instance && !per_instance_generics_requested() && !is_extracted_block;
 
         // An impl's definition of a trait law has the law's contract, when the law has one. The
         // injected std.rs is checked where it is compiled on its own: building the contract here
