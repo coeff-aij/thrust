@@ -13,6 +13,7 @@ use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeFoldable};
 
 use crate::analyze::{self, did_cache::DefIdCache};
 use crate::chc;
+use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{self, TypeBuilder};
 use crate::rty;
 
@@ -2361,8 +2362,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// The parameters of an `exists` / `forall` closure as quantified variables, the domain of
     /// their types (the range of an integer type in use ([`rty::int_range`]), the length of an
-    /// array: [`rty::binder_domain`]), over which they range,
-    /// and the body.
+    /// array: [`rty::binder_domain`]) and the code points of the `char`s they hold
+    /// ([`rty::char_domain_formula`]), over which they range, and the body.
     fn to_formula_with_quantified_vars(&self, closure: &rustc_hir::Body<'tcx>) -> QuantifiedBody {
         let mut inner_translator = self.clone();
         let mut vars = Vec::new();
@@ -2385,7 +2386,22 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
-            if let Some(fact) = rty::binder_domain(&param_rty.ty, term.clone()) {
+            let domain = rty::binder_domain(&param_rty.ty, term.clone());
+            let closed_ty = param_rty.ty.clone().strip_refinement();
+            let char_facts =
+                rty::char_domain_formula(&closed_ty, term.clone(), &self.analyzer.enum_defs)
+                    .unwrap_or_else(|enum_ty| {
+                        self.tcx.dcx().span_fatal(
+                            param.pat.span,
+                            format!(
+                                "thrust: the `char`s of a variable of type `{param_ty}` cannot \
+                                 all be given their code points: `{}` recurs in its own \
+                                 payload or is nested too deep",
+                                enum_ty.display()
+                            ),
+                        )
+                    });
+            for fact in domain.into_iter().chain(char_facts) {
                 range = Some(match range {
                     Some(range) => range.and(fact),
                     None => fact,
