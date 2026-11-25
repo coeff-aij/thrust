@@ -379,7 +379,19 @@ fn replace_region<'tcx>(
 /// This reads the MIR as borrowck does (`mir_promoted`), before the optimizations that rename one
 /// local into another (`CopyProp` turns an unlisted `let y = x;` into a use of `x`), where a use
 /// is an operand of a statement or terminator, a closure's captures included.
+///
+/// A function's check covers the closures written in it, whose borrowck rustc does with the
+/// function's.
 pub fn check_regions_use_only_parameters(tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId) {
+    check_body_regions(tcx, def_id);
+    if tcx.typeck_root_def_id(def_id.to_def_id()) == def_id.to_def_id() {
+        for nested in tcx.nested_bodies_within(def_id) {
+            check_body_regions(tcx, nested);
+        }
+    }
+}
+
+fn check_body_regions(tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId) {
     let (promoted, _) = tcx.mir_promoted(def_id);
     let body = promoted.borrow();
     for bb in body.basic_blocks.indices() {
@@ -409,11 +421,35 @@ fn marker_callee<'tcx>(
     Some(args[0].node.ty(&body.local_decls, tcx))
 }
 
-/// The locals the code of a region uses, with where, and the locals it declares itself.
+/// What a use of a place names: its local, and for the environment of a closure (`_1`) the
+/// captured variable the place reaches, the first field below it, as `var_debug_info` names the
+/// captures (`(*_1).0`).
+type UseKey = (Local, Option<FieldIdx>);
+
+fn use_key(is_closure: bool, local: Local, projection: &[mir::PlaceElem<'_>]) -> UseKey {
+    if !is_closure || local != Local::from_u32(1) {
+        return (local, None);
+    }
+    let capture = projection.iter().find_map(|elem| match elem {
+        mir::PlaceElem::Field(field, _) => Some(*field),
+        mir::PlaceElem::Deref
+        | mir::PlaceElem::Index(_)
+        | mir::PlaceElem::ConstantIndex { .. }
+        | mir::PlaceElem::Subslice { .. }
+        | mir::PlaceElem::Downcast(..)
+        | mir::PlaceElem::OpaqueCast(_)
+        | mir::PlaceElem::Subtype(_)
+        | mir::PlaceElem::UnwrapUnsafeBinder(_) => None,
+    });
+    (local, capture)
+}
+
+/// What the code of a region uses, with where, and the locals it declares itself.
 struct RegionLocals<'a, 'tcx> {
     body: &'a Body<'tcx>,
+    is_closure: bool,
     declared: HashSet<Local>,
-    used: Vec<(Local, rustc_span::Span)>,
+    used: Vec<(UseKey, rustc_span::Span)>,
 }
 
 impl<'tcx> Visitor<'tcx> for RegionLocals<'_, 'tcx> {
@@ -424,12 +460,20 @@ impl<'tcx> Visitor<'tcx> for RegionLocals<'_, 'tcx> {
         self.super_statement(statement, location);
     }
 
-    fn visit_local(&mut self, local: Local, context: PlaceContext, location: Location) {
+    fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, location: Location) {
         if context.is_storage_marker() {
             return;
         }
-        self.used
-            .push((local, self.body.source_info(location).span));
+        let span = self.body.source_info(location).span;
+        self.used.push((
+            use_key(self.is_closure, place.local, place.projection),
+            span,
+        ));
+        for elem in place.projection {
+            if let mir::PlaceElem::Index(index) = elem {
+                self.used.push(((index, None), span));
+            }
+        }
     }
 }
 
@@ -445,11 +489,12 @@ fn check_region_uses<'tcx>(
     let Some(bc_local) = bc.as_local() else {
         return;
     };
+    let is_closure = tcx.is_closure_like(body.source.def_id());
     let scope = body.basic_blocks[opening].terminator().source_info.scope;
-    let listed: HashSet<Local> = param_names(tcx, bc_local)
+    let listed: HashSet<UseKey> = param_names(tcx, bc_local)
         .into_iter()
         .flat_map(|name| bound_places(tcx, body, name, scope).0)
-        .map(|place| place.local)
+        .map(|place| use_key(is_closure, place.local, place.projection))
         .collect();
 
     let TerminatorKind::Call {
@@ -461,6 +506,7 @@ fn check_region_uses<'tcx>(
     };
     let mut locals = RegionLocals {
         body,
+        is_closure,
         declared: HashSet::new(),
         used: Vec::new(),
     };
@@ -480,21 +526,23 @@ fn check_region_uses<'tcx>(
     }
 
     // a temporary of the host has no name and is not an outer variable the body writes
-    let names: HashMap<Local, rustc_span::symbol::Symbol> = body
+    let names: HashMap<UseKey, rustc_span::symbol::Symbol> = body
         .var_debug_info
         .iter()
         .filter_map(|vdi| match vdi.value {
-            mir::VarDebugInfoContents::Place(place) => Some((place.local, vdi.name)),
+            mir::VarDebugInfoContents::Place(place) => {
+                Some((use_key(is_closure, place.local, place.projection), vdi.name))
+            }
             mir::VarDebugInfoContents::Const(_) => None,
         })
         .collect();
     let mut reported = HashSet::new();
-    for (local, span) in &locals.used {
-        let Some(name) = names.get(local) else {
+    for (key, span) in &locals.used {
+        let Some(name) = names.get(key) else {
             continue;
         };
-        let is_outer = !locals.declared.contains(local) && !listed.contains(local);
-        if is_outer && reported.insert(*local) {
+        let is_outer = !locals.declared.contains(&key.0) && !listed.contains(key);
+        if is_outer && reported.insert(*key) {
             tcx.dcx().span_err(
                 *span,
                 format!(
