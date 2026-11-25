@@ -1,16 +1,16 @@
 //@check-pass
-
+use thrust_models::{Model, model::{Array, Int}};
 struct VecWrap<T> {
     inner: Vec<T>
 }
 
-impl<T> thrust_models::Model for VecWrap<T> where T: thrust_models::Model {
+impl<T> Model for VecWrap<T> where T: Model {
   type Ty = (
-      thrust_models::model::Array<
-          thrust_models::model::Int,
-          <T as thrust_models::Model>::Ty
+      Array<
+          Int,
+          <T as Model>::Ty
       >,
-      thrust_models::model::Int,
+      Int,
   );
 }
 

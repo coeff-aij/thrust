@@ -10,8 +10,8 @@
 // The bodies of the injected std.rs are not analyzed in the crates it is injected into. Compiled
 // here as an ordinary source file, its bodies are checked: each `IteratorSpec` impl proves
 // `produces_refl` and `produces_trans`, and each `DoubleEndedIteratorSpec` impl `produces_back_refl`
-// and `produces_back_trans`, with an empty body, except the `produces_trans` of `Filter`, which is
-// trusted (std.rs says why), and that of `Chain`, which calls the lemmas of its cases.
+// and `produces_back_trans`, with an empty body, except the `produces_trans` of `Filter` and
+// `Chain`, which call the lemmas of their witnesses and their cases.
 
 include!("../../../../std.rs");
 

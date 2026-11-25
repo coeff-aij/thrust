@@ -4,7 +4,7 @@
 
 // `==` in a specification is logical equality, so it compares values holding a `Ghost` by
 // their models. `Ghost` has no `PartialEq`: executable code cannot compare it.
-
+use thrust_models::Model;
 use thrust_models::Ghost;
 
 struct Tagged {
@@ -12,7 +12,7 @@ struct Tagged {
     g: Option<Ghost<i64>>,
 }
 
-impl thrust_models::Model for Tagged {
+impl Model for Tagged {
     type Ty = Tagged;
 }
 

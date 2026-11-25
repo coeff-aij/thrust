@@ -577,6 +577,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                     &call_args,
                     result.clone(),
                     final_state,
+                    None,
                     &mut parts,
                 )
             }

@@ -4,13 +4,13 @@
 
 // `local_iterator_override_collect_own_spec` (pass) with an own spec whose precondition std.rs's
 // `collect` contract does not imply.
-
+use thrust_models::{exists, forall, Model, model::{Int, Mut, Seq}};
 #[derive(PartialEq)]
 struct Up {
     n: i64,
 }
 
-impl thrust_models::Model for Up {
+impl Model for Up {
     type Ty = Up;
 }
 
@@ -44,7 +44,7 @@ impl IteratorSpec for Up {
         self.n <= o.n
             && o.n <= 3
             && visited.len() == o.n - self.n
-            && thrust_models::forall(|i: thrust_models::model::Int|
+            && forall(|i: Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.n + i)
     }
 
@@ -57,9 +57,9 @@ impl IteratorSpec for Up {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<thrust_models::model::Int>,
+        ab: Seq<Int>,
         b: &Self,
-        bc: thrust_models::model::Seq<thrust_models::model::Int>,
+        bc: Seq<Int>,
         c: &Self,
     ) {
     }
@@ -68,9 +68,9 @@ impl IteratorSpec for Up {
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(it.n == 0)]
 #[thrust_macros::ensures(
-    thrust_models::exists(|done: Up, fin: Up|
+    exists(|done: Up, fin: Up|
         <Up as IteratorSpec>::produces(it, result, done)
-            && <Up as IteratorSpec>::completed(thrust_models::model::Mut::new(done, fin)))
+            && <Up as IteratorSpec>::completed(Mut::new(done, fin)))
 )]
 fn _extern_spec_up_collect(it: Up) -> Vec<i64> {
     <Up as Iterator>::collect::<Vec<i64>>(it)
@@ -78,10 +78,10 @@ fn _extern_spec_up_collect(it: Up) -> Vec<i64> {
 
 #[thrust_macros::requires(I::inv(it))]
 #[thrust_macros::ensures(
-    thrust_models::exists(|done: <I as thrust_models::Model>::Ty, fin: <I as thrust_models::Model>::Ty|
+    exists(|done: <I as Model>::Ty, fin: <I as Model>::Ty|
         I::produces(it, result, done)
-            && (I::completed(thrust_models::model::Mut::new(done, fin))
-                || I::fold_completed(thrust_models::model::Mut::new(done, fin))))
+            && (I::completed(Mut::new(done, fin))
+                || I::fold_completed(Mut::new(done, fin))))
 )]
 fn collect_all<I: IteratorSpec<Item = i64>>(it: I) -> Vec<i64> {
     it.collect()

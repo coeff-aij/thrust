@@ -5,7 +5,7 @@
 // other parameter's: a `FnParam<..>` binder called `self`, read with `at_entry()`.
 // The loop carries a rebinding of the receiver, so the invariant needs both that
 // loop-carried value and the entry value to tie the two prophecies together.
-
+use thrust_models::{FnParam, Model};
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
 #[thrust::trusted]
@@ -18,7 +18,7 @@ struct Counter {
     value: i64,
 }
 
-impl thrust_models::Model for Counter {
+impl Model for Counter {
     type Ty = Counter;
 }
 
@@ -30,7 +30,7 @@ impl Counter {
         let s = self;
         while rand() {
             thrust_macros::invariant!(
-                |s: &mut Counter, self: thrust_models::FnParam<&mut Self>|
+                |s: &mut Counter, self: FnParam<&mut Self>|
                     (*s).value >= (*self.at_entry()).value && !s == !self.at_entry()
             );
             s.value -= 1;

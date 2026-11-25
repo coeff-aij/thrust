@@ -9,19 +9,19 @@
 // Specialization outside Thrust's std.rs needs the crate to enable the feature, as rustc does.
 #![feature(specialization)]
 #![allow(incomplete_features)]
-
-trait Fast: thrust_models::Model {}
+use thrust_models::Model;
+trait Fast: Model {}
 
 impl Fast for u8 {}
 
 struct W<T>(T);
 
-impl<T> thrust_models::Model for W<T> {
+impl<T> Model for W<T> {
     type Ty = W<T>;
 }
 
 #[thrust_macros::context]
-trait Lim: thrust_models::Model {
+trait Lim: Model {
     #[thrust_macros::predicate]
     fn lim(x: i64) -> bool;
 
@@ -35,7 +35,7 @@ trait Lim: thrust_models::Model {
 }
 
 #[thrust_macros::context]
-impl<T: thrust_models::Model> Lim for W<T> {
+impl<T: Model> Lim for W<T> {
     #[thrust_macros::predicate]
     default fn lim(x: i64) -> bool {
         x >= 0
@@ -51,7 +51,7 @@ impl<T: thrust_models::Model> Lim for W<T> {
 
 // Takes `base` and its law from the impl it specializes.
 #[thrust_macros::context]
-impl<T: thrust_models::Model + Fast> Lim for W<T> {
+impl<T: Model + Fast> Lim for W<T> {
     #[thrust_macros::predicate]
     fn lim(x: i64) -> bool {
         x <= -1
@@ -72,13 +72,13 @@ fn slow(x: i64) -> i64 {
 
 #[thrust_macros::requires(<W<T> as Lim>::base(x))]
 #[thrust_macros::ensures(result >= 5)]
-fn generic_base<T: thrust_models::Model>(x: i64) -> i64 {
+fn generic_base<T: Model>(x: i64) -> i64 {
     x
 }
 
 #[thrust_macros::requires(<W<T> as Lim>::lim(x))]
 #[thrust_macros::ensures(result == x)]
-fn generic_lim<T: thrust_models::Model>(x: i64) -> i64 {
+fn generic_lim<T: Model>(x: i64) -> i64 {
     x
 }
 

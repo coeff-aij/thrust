@@ -4,7 +4,7 @@
 
 // With an invariant on `C`, `get` does not ensure it (its borrow outlives the call), and calls
 // through the trait object would assume it after `*d.get() = 1`, so packing `C` is rejected.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(true)]
@@ -18,7 +18,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

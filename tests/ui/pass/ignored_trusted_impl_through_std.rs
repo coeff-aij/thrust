@@ -4,10 +4,10 @@
 
 // The twin of `fail/ignored_trusted_impl_through_std.rs`: `S`'s `eq` is checked against the trait's spec,
 // which `W`'s trusted `eq` relies on at `S`.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -19,12 +19,12 @@ impl PartialEq for S {
 
 struct W<T>(T);
 
-impl<T: thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Model> Model for W<T> {
     type Ty = W<T::Ty>;
 }
 
 #[thrust_macros::context]
-impl<T: PartialEq + thrust_models::Model> PartialEq for W<T> {
+impl<T: PartialEq + Model> PartialEq for W<T> {
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result == (*self == *o))]

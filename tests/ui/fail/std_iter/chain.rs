@@ -6,16 +6,16 @@
 // A specification of std's `Chain` and `Iterator::chain`, kept out of std.rs until its laws are
 // proved: with it, std.rs's law check (iterators/std_iterator_spec_laws.rs) gets no answer.
 // The second iterator's item is not skipped.
-
+use thrust_models::{exists, Model, model::{Mut, Seq}};
 // The two iterators it chains and whether the first is still there: std's `Chain` drops the
 // first at its end and keeps the second (core/src/iter/adapters/chain.rs, `next`), and
 // `chain` makes it with both.
-impl<A, B> thrust_models::Model for core::iter::Chain<A, B>
+impl<A, B> Model for core::iter::Chain<A, B>
 where
-    A: thrust_models::Model,
-    B: thrust_models::Model,
+    A: Model,
+    B: Model,
 {
-    type Ty = (<A as thrust_models::Model>::Ty, <B as thrust_models::Model>::Ty, bool);
+    type Ty = (<A as Model>::Ty, <B as Model>::Ty, bool);
 }
 
 // std's `Chain` yields the items of its first iterator, drops it at its end, then yields those of
@@ -26,7 +26,7 @@ impl<A, B> IteratorSpec for core::iter::Chain<A, B>
 where
     A: IteratorSpec<Item = <B as std::iter::Iterator>::Item>,
     B: IteratorSpec,
-    A::Item: thrust_models::Model,
+    A::Item: Model,
 {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
@@ -39,13 +39,13 @@ where
         (self.2 && o.2 && A::produces(self.0, visited, o.0) && o.1 == self.1)
         // Past it: what was left of it, completed, then a part of the second.
             || (self.2 && !o.2
-                && thrust_models::exists(|va: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>,
-                                          vb: thrust_models::model::Seq<<A::Item as thrust_models::Model>::Ty>,
-                                          a2: <A as thrust_models::Model>::Ty,
-                                          a3: <A as thrust_models::Model>::Ty|
+                && exists(|va: Seq<<A::Item as Model>::Ty>,
+                                          vb: Seq<<A::Item as Model>::Ty>,
+                                          a2: <A as Model>::Ty,
+                                          a3: <A as Model>::Ty|
                     visited == va.concat(vb)
                         && A::produces(self.0, va, a2)
-                        && A::completed(thrust_models::model::Mut::new(a2, a3))
+                        && A::completed(Mut::new(a2, a3))
                         && B::produces(self.1, vb, o.1)))
         // In the second.
             || (!self.2 && !o.2 && B::produces(self.1, visited, o.1))
@@ -55,18 +55,18 @@ where
     fn completed(&mut self) -> bool {
         !(!self).2
             && (!(*self).2
-                || thrust_models::exists(|a2: <A as thrust_models::Model>::Ty|
-                    A::completed(thrust_models::model::Mut::new((*self).0, a2))))
-            && B::completed(thrust_models::model::Mut::new((*self).1, (!self).1))
+                || exists(|a2: <A as Model>::Ty|
+                    A::completed(Mut::new((*self).0, a2))))
+            && B::completed(Mut::new((*self).1, (!self).1))
     }
 
     fn produces_refl(a: &Self) {}
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -80,7 +80,7 @@ fn _extern_spec_iterator_chain<A, U>(a: A, b: U) -> core::iter::Chain<A, U::Into
     where A: IteratorSpec<Item = <U as std::iter::IntoIterator>::Item>,
           U: IntoIteratorSpec,
           U::IntoIter: IteratorSpec,
-          A::Item: thrust_models::Model
+          A::Item: Model
 {
     <A as std::iter::Iterator>::chain(a, b)
 }

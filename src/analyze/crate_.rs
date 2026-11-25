@@ -100,6 +100,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 keys.swap_remove(local_def_id);
                 continue;
             }
+            self.ctx.collect_lemma_variant(*local_def_id);
             let analyzer = self.ctx.local_def_analyzer(*local_def_id);
             if analyzer.is_annotated_as_extern_spec_fn() {
                 let target_def_id = analyzer.extern_spec_fn_target_def_id();
@@ -113,12 +114,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     local_spec_targets.push(local_target_def_id);
                     // The spec is the target's contract; a trusted target's body is not
                     // checked against it.
-                    if self
-                        .tcx
-                        .get_attrs_by_path(target_def_id, &analyze::annot::trusted_path())
-                        .next()
-                        .is_some()
-                    {
+                    if analyze::annot::has_thrust_attr(
+                        self.tcx,
+                        target_def_id,
+                        &analyze::annot::trusted_path(),
+                    ) {
                         self.skip_analysis.insert(local_target_def_id);
                         self.trusted.insert(local_target_def_id);
                         self.body_checks.record(
@@ -264,11 +264,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let contract_generic = !self.tcx.is_closure_like(local_def_id.to_def_id())
             && self.ctx.contract_names_type_param(local_def_id);
         let has_constrained_type_param = !self.constrained_type_params(local_def_id).is_empty();
+        let has_const_param = self.has_const_param(local_def_id);
         let is_law_impl = self.is_law_impl(local_def_id);
-        let per_instance = self.ctx.per_instance_generics();
-        let per_instance_too = per_instance && !per_instance_generics_requested();
         let outside_selection = self.is_outside_selection(local_def_id);
+        let per_instance_requested = self.ctx.per_instance_generics();
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
+        // A function a `block_contract!` block is extracted into has one call, its region: its
+        // untyped and block-declared generic parameters stand for the types the outer variables
+        // have, so it is analyzed at that instance and never over its type parameters.
+        let is_extracted_block =
+            analyze::selection::is_extracted_block(self.tcx, analyzer.owner_fn_id);
+        let per_instance = per_instance_requested || is_extracted_block;
+        let per_instance_too =
+            per_instance && !per_instance_generics_requested() && !is_extracted_block;
 
         // An impl's definition of a trait law has the law's contract, when the law has one. The
         // injected std.rs is checked where it is compiled on its own: building the contract here
@@ -297,10 +305,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let is_lemma = [local_def_id.to_def_id(), analyzer.owner_fn_id]
             .into_iter()
             .any(|def_id| {
-                self.tcx
-                    .get_attrs_by_path(def_id, &analyze::annot::lemma_path())
-                    .next()
-                    .is_some()
+                analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::lemma_path())
             });
         if is_injected_std && is_lemma {
             self.skip_analysis.extend(analyzer.owner_fn_id.as_local());
@@ -394,14 +399,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.ctx
                     .register_deferred_def(owner_fn_id, local_def_id, owner_fn_id_args);
             }
-        } else if sig.has_param() || trait_method || contract_generic || has_constrained_type_param
+        } else if sig.has_param()
+            || trait_method
+            || contract_generic
+            || has_constrained_type_param
+            || has_const_param
         {
             // A function is generic when its contract names a type parameter its signature does
             // not mention: a trait method's `Self::score(x)`, or `T::score(x)` of
             // `fn via<T: Score>`, resolves at each instance to the impl's own logic function.
             // Closures keep their treatment. So is a function with a trait-bounded type
             // parameter, its own or its parent's (`impl<T: K> W<T>`), since its body depends on
-            // the impl the parameter is instantiated with.
+            // the impl the parameter is instantiated with. So is a function with a const
+            // parameter, its own or its parent's, even when its signature does not mention it:
+            // as a concrete def its body would not be analyzed (a generic function is no walk
+            // root), and a call would take the contract with nothing checking the body against it.
             if trusted_derive {
                 let expected = analyzer.expected_ty();
                 self.ctx
@@ -502,10 +514,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.analyze_placeholder(*local_def_id);
         }
         // A def is skipped (D34) when a concrete instantiation has analyzed its body and no
-        // instance has used its generic analysis instead. Only a def whose specification relates
-        // the closure's states by `hist_inv!` can have such an instance
-        // (`Analyzer::reuse_fn_mut_generic`); analyzing a def may add one for a def skipped
-        // before, which is then analyzed too.
+        // instance has used its generic analysis instead: an instance that reuses it through
+        // `Analyzer::reuse_fn_mut_generic` (a `hist_inv!`-specified def), or any instance the
+        // analysis did not analyze at its arguments (`Analyzer::record_fn_mut_generic_reused`,
+        // with the impls of a trait method reached at a type parameter). Analyzing a def may add
+        // one for a def skipped before, which is then analyzed too.
         let mut pending = fn_mut_generic_defs;
         while !pending.is_empty() {
             let mut skipped = Vec::new();
@@ -597,10 +610,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .opt_associated_item(local_def_id.to_def_id())
             .and_then(|item| item.trait_item_def_id)
             .is_some_and(|trait_item| {
-                self.tcx
-                    .get_attrs_by_path(trait_item, &analyze::annot::law_path())
-                    .next()
-                    .is_some()
+                analyze::annot::has_thrust_attr(self.tcx, trait_item, &analyze::annot::law_path())
             })
     }
 
@@ -929,6 +939,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             && !analyze::fn_mut_bounded_params(self.tcx, local_def_id.to_def_id()).is_empty()
     }
 
+    /// Whether `local_def_id` has a const parameter, its own or an enclosing item's.
+    fn has_const_param(&self, local_def_id: LocalDefId) -> bool {
+        let generics = self.tcx.generics_of(local_def_id);
+        (0..generics.count()).any(|idx| {
+            matches!(
+                generics.param_at(idx, self.tcx).kind,
+                mir_ty::GenericParamDefKind::Const { .. }
+            )
+        })
+    }
+
     /// Indices of the type parameters bound by a trait other than `Sized`, including bounds
     /// inherited from the parent impl or trait.
     fn constrained_type_params(&self, local_def_id: LocalDefId) -> HashSet<u32> {
@@ -1153,12 +1174,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// claim std's specialized behaviour for a type std runs the general impl on.
     fn check_sealed_impls(&self) {
         for (trait_did, impls) in self.tcx.all_local_trait_impls(()) {
-            if self
-                .tcx
-                .get_attrs_by_path(*trait_did, &analyze::annot::sealed_path())
-                .next()
-                .is_none()
-            {
+            if !analyze::annot::has_thrust_attr(
+                self.tcx,
+                *trait_did,
+                &analyze::annot::sealed_path(),
+            ) {
                 continue;
             }
             let source_map = self.tcx.sess.source_map();
@@ -1220,11 +1240,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn check_restated_laws(&self) {
         for item_id in self.tcx.hir_crate_items(()).impl_items() {
             let local_def_id = item_id.owner_id.def_id;
-            let restated = self
-                .tcx
-                .get_attrs_by_path(local_def_id.to_def_id(), &analyze::annot::law_path())
-                .next()
-                .is_some();
+            let restated = analyze::annot::has_thrust_attr(
+                self.tcx,
+                local_def_id.to_def_id(),
+                &analyze::annot::law_path(),
+            );
             if restated && !self.is_law_impl(local_def_id) {
                 self.tcx.dcx().span_err(
                     self.tcx.def_span(local_def_id),
@@ -1509,11 +1529,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn register_trait_laws(&mut self) {
         for item_id in self.tcx.hir_crate_items(()).trait_items() {
             let def_id = item_id.owner_id.to_def_id();
-            let is_law = self
-                .tcx
-                .get_attrs_by_path(def_id, &analyze::annot::law_path())
-                .next()
-                .is_some();
+            let is_law =
+                analyze::annot::has_thrust_attr(self.tcx, def_id, &analyze::annot::law_path());
             if !is_law {
                 continue;
             }

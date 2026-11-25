@@ -15,7 +15,8 @@ use crate::refine;
 use crate::rty;
 
 /// The model of a contiguous sequence of `elem_ty`: the native sequence that `thrust_models`
-/// gives to `Vec<T>`, `[T]` and `[T; N]` alike.
+/// gives to `Vec<T>`, `[T]` and `[T; N]` alike. The type of `[T; N]` also fixes the length
+/// ([`array_model_type`]).
 ///
 /// A concrete element type never needs this: `<Vec<i64> as Model>::Ty` normalizes to
 /// `model::Seq<model::Int>`, which `model_adt` maps to the same type. A generic element type
@@ -24,7 +25,20 @@ use crate::rty;
 /// normalization. The element's model is then the element type as `build` sees it, a type
 /// parameter, and the sequence over it is spelled out here.
 fn seq_model_type<V>(elem_ty: rty::Type<V>) -> rty::Type<V> {
-    rty::Type::Seq(Box::new(rty::RefinedType::unrefined(elem_ty)))
+    rty::Type::Seq {
+        elem: Box::new(rty::RefinedType::unrefined(elem_ty)),
+        fixed_len: None,
+    }
+}
+
+/// The model of an array `[T; len]` of `elem_ty`: the sequence of [`seq_model_type`] whose values
+/// all have the length `len`, as Creusot's type invariant of `[T; N]` states; `len` is `None` for
+/// a length that is a generic parameter.
+pub fn array_model_type<V>(elem_ty: rty::Type<V>, len: Option<u64>) -> rty::Type<V> {
+    rty::Type::Seq {
+        elem: Box::new(rty::RefinedType::unrefined(elem_ty)),
+        fixed_len: len,
+    }
 }
 
 /// The model of an iterator over a contiguous sequence: the `(base, cursor)` pair, where the
@@ -798,9 +812,7 @@ impl<'tcx> TypeBuilder<'tcx> {
 
         if Some(adt.did()) == self.def_ids.seq_model() {
             let elem_ty = self.build_ty_in(m, args.type_at(0));
-            return Some(rty::Type::Seq(Box::new(rty::RefinedType::unrefined(
-                elem_ty,
-            ))));
+            return Some(seq_model_type(elem_ty));
         }
 
         if Some(adt.did()) == self.def_ids.array_model() {
@@ -991,7 +1003,22 @@ impl<'tcx> TypeBuilder<'tcx> {
                 return ty;
             }
         }
-        let ty = self.resolve_model_ty(ty);
+        // An array keeps its length, which its model `Seq` does not have.
+        if let mir_ty::TyKind::Array(elem_ty, len) = ty.kind() {
+            let elem_ty = self.build_ty_in(m, *elem_ty);
+            return array_model_type(elem_ty, len.try_to_target_usize(self.tcx));
+        }
+        // So does an array behind a reference or in a box, whose model would replace the array by
+        // the array's.
+        let refers_to_array = match ty.kind() {
+            mir_ty::TyKind::Ref(_, elem, _) => elem.is_array(),
+            _ => ty.is_box() && ty.boxed_ty().is_some_and(|elem| elem.is_array()),
+        };
+        let ty = if refers_to_array {
+            ty
+        } else {
+            self.resolve_model_ty(ty)
+        };
         match ty.kind() {
             mir_ty::TyKind::Bool => rty::Type::bool(),
             mir_ty::TyKind::Str => rty::Type::string(),
@@ -1016,7 +1043,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                 let sig = sig_tys.with(*hdr).skip_binder();
                 m.fn_ptr(self, sig)
             }
-            mir_ty::TyKind::Slice(elem_ty) | mir_ty::TyKind::Array(elem_ty, _) => {
+            mir_ty::TyKind::Slice(elem_ty) => {
                 let elem_ty = self.build_ty_in(m, *elem_ty);
                 seq_model_type(elem_ty)
             }

@@ -126,7 +126,8 @@ pub fn by_value_relation_laws(relation: chc::PredVarId, sorts: &[chc::Sort]) -> 
     clauses
 }
 
-/// The relation at a concrete closure: an `Fn` closure's state never changes, and an `FnMut`
+/// The relation at a concrete closure: an `Fn` closure's state never changes (trivially so when its
+/// upvars have a single value, which no equality is asked of), and an `FnMut`
 /// closure keeps the final value of every capture borrowed by `&mut` and the value of every
 /// capture borrowed by `&`. A capture taken by value says nothing, since the closure may
 /// replace it.
@@ -141,6 +142,7 @@ pub fn concrete_definition<'tcx, V: chc::Var>(
         panic!("hist_inv! at a type that is not a closure: {closure_ty:?}");
     };
     match args.as_closure().kind() {
+        mir_ty::ClosureKind::Fn if upvars_sort.is_singleton() => return chc::Formula::top(),
         mir_ty::ClosureKind::Fn => return from.equal_to(to).into(),
         mir_ty::ClosureKind::FnMut => {}
         mir_ty::ClosureKind::FnOnce => panic!("hist_inv! is defined for Fn and FnMut closures"),

@@ -3,7 +3,7 @@
 
 // A generic impl calls `bump` on its field at `T`. At `W<C>` its body is analyzed again, where the
 // call runs `C::bump`, which assumes the invariant of the field.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(result <= 100)]
@@ -14,7 +14,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 
@@ -35,7 +35,7 @@ impl Counter for C {
 
 struct W<T>(T);
 
-impl<T: thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Model> Model for W<T> {
     type Ty = T::Ty;
 }
 
