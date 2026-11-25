@@ -3,6 +3,7 @@ use proc_macro2::{TokenStream as TokenStream2, TokenTree as TokenTree2};
 
 mod apit;
 mod block_contract;
+mod block_contract_fn;
 mod closure;
 mod context;
 mod entry_value;
@@ -201,6 +202,27 @@ pub fn assume(input: TokenStream) -> TokenStream {
 #[proc_macro]
 pub fn block_contract(input: TokenStream) -> TokenStream {
     block_contract::expand(input, false)
+}
+
+/// A contract on a block written as the function the block would be extracted into (temporary
+/// name, until `block_contract!` is replaced by it):
+///
+/// ```ignore
+/// thrust_macros::block_contract_fn!(
+///     |v: &mut Vec<i64>, i: usize| -> i64
+///     requires(i < (*v).len()),
+///     ensures(result == (*v)[i]),
+///     { v[i] }
+/// )
+/// ```
+///
+/// It expands into a function with that signature and contract, and a call of it at the block
+/// passing the same-named outer variables (`&mut v` for a `&mut` parameter, `&x` for a `&`
+/// parameter). The body can name only its parameters. A body that `return`s, uses `?`, or
+/// `break`s or `continue`s out of the block is rejected. See [`mod@block_contract_fn`].
+#[proc_macro]
+pub fn block_contract_fn(input: TokenStream) -> TokenStream {
+    block_contract_fn::expand(input)
 }
 
 /// Context-carrying counterpart of `block_contract!` (see [`_invariant_with_context`]).
