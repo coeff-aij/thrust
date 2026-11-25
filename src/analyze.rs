@@ -115,6 +115,7 @@ pub fn mir_borrowck_skip_formula_fn(
         return Ok(tcx.arena.alloc(dummy_result));
     }
 
+    analyze::inline_block_contract::check_regions_use_only_parameters(tcx, local_def_id);
     (rustc_interface::DEFAULT_QUERY_PROVIDERS
         .queries
         .mir_borrowck)(tcx, local_def_id)

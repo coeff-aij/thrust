@@ -15,8 +15,11 @@
 //! contract is: the opening marker call becomes the call of `__bc`, followed by the assignments of
 //! the results, and the blocks of the body are emptied.
 
+use std::collections::{HashMap, HashSet};
+
 use rustc_abi::FieldIdx;
-use rustc_middle::mir::{self, BasicBlock, Body, Operand, Place, TerminatorKind};
+use rustc_middle::mir::visit::{PlaceContext, Visitor};
+use rustc_middle::mir::{self, BasicBlock, Body, Local, Location, Operand, Place, TerminatorKind};
 use rustc_middle::ty::{self as mir_ty, TyCtxt};
 
 use crate::analyze;
@@ -364,5 +367,143 @@ fn replace_region<'tcx>(
         let data = &mut body.basic_blocks_mut()[bb];
         data.statements.clear();
         data.terminator_mut().kind = TerminatorKind::Unreachable;
+    }
+}
+
+/// Reports each use, in the body of a `block_contract_inline!` block, of a variable declared
+/// outside the block that is not a parameter of the block. The block is verified as the function
+/// `__bc`, which does not see such a variable: a name the body writes for it could resolve to a
+/// module item there (a variable holding a closure or a function pointer shadows a function of
+/// the module in place only).
+///
+/// This reads the MIR as borrowck does (`mir_promoted`), before the optimizations that rename one
+/// local into another (`CopyProp` turns an unlisted `let y = x;` into a use of `x`), where a use
+/// is an operand of a statement or terminator, a closure's captures included.
+pub fn check_regions_use_only_parameters(tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId) {
+    let (promoted, _) = tcx.mir_promoted(def_id);
+    let body = promoted.borrow();
+    for bb in body.basic_blocks.indices() {
+        if body.basic_blocks[bb].is_cleanup {
+            continue;
+        }
+        if let Some(bc_ty) = marker_callee(tcx, &body, bb, "__block_region_open_marker") {
+            check_region_uses(tcx, &body, bb, bc_ty);
+        }
+    }
+}
+
+/// The extracted function's type the block ending in a call of the marker `name` passes to it.
+fn marker_callee<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    bb: BasicBlock,
+    name: &str,
+) -> Option<mir_ty::Ty<'tcx>> {
+    let TerminatorKind::Call { func, args, .. } = &body.basic_blocks[bb].terminator().kind else {
+        return None;
+    };
+    let (def_id, _) = func.const_fn_def()?;
+    if tcx.item_name(def_id).as_str() != name {
+        return None;
+    }
+    Some(args[0].node.ty(&body.local_decls, tcx))
+}
+
+/// The locals the code of a region uses, with where, and the locals it declares itself.
+struct RegionLocals<'a, 'tcx> {
+    body: &'a Body<'tcx>,
+    declared: HashSet<Local>,
+    used: Vec<(Local, rustc_span::Span)>,
+}
+
+impl<'tcx> Visitor<'tcx> for RegionLocals<'_, 'tcx> {
+    fn visit_statement(&mut self, statement: &mir::Statement<'tcx>, location: Location) {
+        if let mir::StatementKind::StorageLive(local) = statement.kind {
+            self.declared.insert(local);
+        }
+        self.super_statement(statement, location);
+    }
+
+    fn visit_local(&mut self, local: Local, context: PlaceContext, location: Location) {
+        if context.is_storage_marker() {
+            return;
+        }
+        self.used
+            .push((local, self.body.source_info(location).span));
+    }
+}
+
+fn check_region_uses<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    opening: BasicBlock,
+    bc_ty: mir_ty::Ty<'tcx>,
+) {
+    let mir_ty::TyKind::FnDef(bc, _) = bc_ty.kind() else {
+        return;
+    };
+    let Some(bc_local) = bc.as_local() else {
+        return;
+    };
+    let scope = body.basic_blocks[opening].terminator().source_info.scope;
+    let listed: HashSet<Local> = param_names(tcx, bc_local)
+        .into_iter()
+        .flat_map(|name| bound_places(tcx, body, name, scope).0)
+        .map(|place| place.local)
+        .collect();
+
+    let TerminatorKind::Call {
+        target: Some(entry),
+        ..
+    } = body.basic_blocks[opening].terminator().kind
+    else {
+        return;
+    };
+    let mut locals = RegionLocals {
+        body,
+        declared: HashSet::new(),
+        used: Vec::new(),
+    };
+    let mut seen = HashSet::new();
+    let mut stack = vec![entry];
+    while let Some(bb) = stack.pop() {
+        let data = &body.basic_blocks[bb];
+        if data.is_cleanup || !seen.insert(bb) {
+            continue;
+        }
+        locals.visit_basic_block_data(bb, data);
+        let ends_region =
+            marker_callee(tcx, body, bb, "__block_region_close_marker") == Some(bc_ty);
+        if !ends_region {
+            stack.extend(data.terminator().successors());
+        }
+    }
+
+    // a temporary of the host has no name and is not an outer variable the body writes
+    let names: HashMap<Local, rustc_span::symbol::Symbol> = body
+        .var_debug_info
+        .iter()
+        .filter_map(|vdi| match vdi.value {
+            mir::VarDebugInfoContents::Place(place) => Some((place.local, vdi.name)),
+            mir::VarDebugInfoContents::Const(_) => None,
+        })
+        .collect();
+    let mut reported = HashSet::new();
+    for (local, span) in &locals.used {
+        let Some(name) = names.get(local) else {
+            continue;
+        };
+        let is_outer = !locals.declared.contains(local) && !listed.contains(local);
+        if is_outer && reported.insert(*local) {
+            tcx.dcx().span_err(
+                *span,
+                format!(
+                    "the body of `block_contract_inline!` uses the variable `{name}`, which is \
+                     declared outside the block and is not one of its parameters; the block is \
+                     verified as a function that does not see it, where the name could mean \
+                     another item. List `{name}` as a parameter"
+                ),
+            );
+        }
     }
 }
