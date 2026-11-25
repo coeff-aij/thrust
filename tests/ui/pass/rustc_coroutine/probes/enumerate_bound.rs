@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1
 
 // The enumerate position over a bit-set iterator stays below the domain size: `BitIter`'s model
-// is (bound, count), as in tests/ui/pass/rustc_coroutine/eligibility.rs.
+// is (bound, count), as in tests/ui/pass/rustc_coroutine/coroutine_saved_local_eligibility.rs.
 
 use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, forall};

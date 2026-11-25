@@ -1,13 +1,9 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
-//@rustc-env: THRUST_VERIFY_ONLY=rustc_hashes
+//@rustc-env: THRUST_VERIFY_ONLY=rustc_index::idx::IdxRange::eq,rustc_index::idx::IdxRange::new,rustc_index::idx::IdxRange::next,rustc_index::idx::IdxRange::produces_refl,rustc_index::idx::IdxRange::produces_trans
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
-// Stage 1 of the rustc-coroutine verification target: rustc_hashes; rustc_abi's lib.rs is the
-// `values.rs` root's. No analyzed code calls `Hash64::new`, which layout/simple.rs needs to
-// compile, and `wrapping_add` is checked on its own contract, so this file has no driver.
-// The code is the module tree under tests/rustc_coroutine/; this file selects the module.
-// Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
+// Generated root: the call graph of `layout()` reaches the functions of row standins in module(s) listed below; see README.md.
 #![feature(new_range_api)]
 
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]

@@ -1,4 +1,4 @@
---- pass/univariant.rs
+--- pass/univariant_caller.rs
 +++ fail/univariant.rs
 @@ -1,14 +1,15 @@
 -//@check-pass
