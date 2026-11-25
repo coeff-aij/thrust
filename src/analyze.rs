@@ -51,7 +51,7 @@ pub mod unanalyzed_entry;
 
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
-pub use reached_instances::InstanceWalk;
+pub use reached_instances::{InstanceWalk, ReachedInstance};
 
 // Also the paths siblings use: analyze::{predicate_typing_env, trait_bounds, trait_item_args,
 // fn_mut_bounded_params}.

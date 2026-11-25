@@ -693,8 +693,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// its instances (`narrower_spec`), at each covered one; and any but a destructor (D57) under
     /// `THRUST_PER_INSTANCE_GENERICS=1`. However its contract is written.
     fn is_checked_per_instance(&self, local_def_id: LocalDefId, narrower_spec: bool) -> bool {
-        // A trait method declared without a default body has no body to check.
-        if !self.tcx.mir_keys(()).contains(&local_def_id) {
+        // A trait method declared without a default body has no body to check. A lemma is a
+        // proof: its calls are ghost and take its contract, so it is not run at instances.
+        if !self.tcx.mir_keys(()).contains(&local_def_id)
+            || analyze::annot::has_thrust_attr(
+                self.tcx,
+                local_def_id.to_def_id(),
+                &analyze::annot::lemma_path(),
+            )
+        {
             return false;
         }
         if narrower_spec {
@@ -753,6 +760,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     ?instance,
                     "checked per instance, at an instance this run reaches"
                 );
+                self.instantiate_closure_contracts(&instance);
                 self.ctx.def_ty_with_args(
                     instance.def_id,
                     instance.generic_args,
@@ -763,6 +771,29 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         self.instance_walk = walk;
         analyzed
+    }
+
+    /// Builds the contract of each closure among the arguments of `instance` under the function it
+    /// is analyzed from, as the analysis of the body that makes the closure does
+    /// (`basic_block::register_closure_local_types`): a `pre!` or `post!` of the closure in the
+    /// instance's contract reads it from there.
+    fn instantiate_closure_contracts(&mut self, instance: &analyze::ReachedInstance<'tcx>) {
+        let closures: Vec<_> = instance
+            .generic_args
+            .iter()
+            .flat_map(|arg| arg.walk())
+            .filter_map(|part| match *part.as_type()?.kind() {
+                mir_ty::Closure(def_id, args) if def_id.is_local() => Some((def_id, args)),
+                _ => None,
+            })
+            .collect();
+        for (closure_def_id, closure_args) in closures {
+            let parent_count = self.tcx.generics_of(closure_def_id).parent_count;
+            let parent_args = self.tcx.mk_args(&closure_args[..parent_count]);
+            let _ = self
+                .ctx
+                .def_ty_with_args(closure_def_id, parent_args, instance.env_def_id);
+        }
     }
 
     /// Whether `generic_args` name a closure written in a trusted body (`trusted`) whose own code
