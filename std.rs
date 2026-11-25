@@ -1434,7 +1434,10 @@ fn _extern_spec_option_partialeq_eq<T>(x: &Option<T>, y: &Option<T>) -> bool
 #[thrust_macros::requires(opt != None)]
 #[thrust_macros::ensures(Some(result) == opt)]
 fn _extern_spec_option_unwrap<T>(opt: Option<T>) -> T where T: thrust_models::Model {
-    Option::unwrap(opt)
+    thrust_std_target!(
+        Option::unwrap(opt),
+        crate::std_transcriptions::option_unwrap(opt)
+    )
 }
 
 // `expect` is `unwrap` with a message, as Creusot and Verus specify it; the message, a `&str`,
@@ -1443,7 +1446,10 @@ fn _extern_spec_option_unwrap<T>(opt: Option<T>) -> T where T: thrust_models::Mo
 #[thrust_macros::requires(opt != None)]
 #[thrust_macros::ensures(Some(result) == opt)]
 fn _extern_spec_option_expect<T>(opt: Option<T>, msg: &str) -> T where T: thrust_models::Model {
-    Option::expect(opt, msg)
+    thrust_std_target!(
+        Option::expect(opt, msg),
+        crate::std_transcriptions::option_expect(opt, msg)
+    )
 }
 
 #[thrust::extern_spec_fn]
@@ -1473,7 +1479,10 @@ fn _extern_spec_option_is_some<T>(opt: &Option<T>) -> bool where T: thrust_model
     || (opt == None && result == default)
 )]
 fn _extern_spec_option_unwrap_or<T>(opt: Option<T>, default: T) -> T where T: thrust_models::Model {
-    Option::unwrap_or(opt, default)
+    thrust_std_target!(
+        Option::unwrap_or(opt, default),
+        crate::std_transcriptions::option_unwrap_or(opt, default)
+    )
 }
 
 #[thrust::extern_spec_fn]
@@ -1491,7 +1500,10 @@ where
     U: thrust_models::Model,
     F: FnOnce(T) -> U,
 {
-    Option::map(opt, f)
+    thrust_std_target!(
+        Option::map(opt, f),
+        crate::std_transcriptions::option_map(opt, f)
+    )
 }
 
 #[thrust::extern_spec_fn]
@@ -1508,7 +1520,10 @@ where
     U: thrust_models::Model,
     F: FnOnce(T) -> U,
 {
-    Option::map_or(opt, default, f)
+    thrust_std_target!(
+        Option::map_or(opt, default, f),
+        crate::std_transcriptions::option_map_or(opt, default, f)
+    )
 }
 
 #[thrust::extern_spec_fn]
@@ -1522,7 +1537,10 @@ where
     T: thrust_models::Model,
     F: FnOnce() -> T,
 {
-    Option::unwrap_or_else(opt, f)
+    thrust_std_target!(
+        Option::unwrap_or_else(opt, f),
+        crate::std_transcriptions::option_unwrap_or_else(opt, f)
+    )
 }
 
 #[thrust::extern_spec_fn]
@@ -1535,14 +1553,20 @@ fn _extern_spec_option_ok_or<T, E>(opt: Option<T>, err: E) -> Result<T, E>
     where T: thrust_models::Model,
           E: thrust_models::Model,
 {
-    Option::ok_or(opt, err)
+    thrust_std_target!(
+        Option::ok_or(opt, err),
+        crate::std_transcriptions::option_ok_or(opt, err)
+    )
 }
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(!opt == None && result == *opt)]
 fn _extern_spec_option_take<T>(opt: &mut Option<T>) -> Option<T> where T: thrust_models::Model {
-    Option::take(opt)
+    thrust_std_target!(
+        Option::take(opt),
+        crate::std_transcriptions::option_take(opt)
+    )
 }
 
 #[thrust::extern_spec_fn]
@@ -1561,7 +1585,10 @@ fn _extern_spec_option_replace<T>(opt: &mut Option<T>, src: T) -> Option<T>
     || (opt == &None && result == None)
 )]
 fn _extern_spec_option_as_ref<T>(opt: &Option<T>) -> Option<&T> where T: thrust_models::Model {
-    Option::as_ref(opt)
+    thrust_std_target!(
+        Option::as_ref(opt),
+        crate::std_transcriptions::option_as_ref(opt)
+    )
 }
 
 #[thrust::extern_spec_fn]
@@ -1643,7 +1670,10 @@ fn _extern_spec_result_ok<T, E>(res: Result<T, E>) -> Option<T>
   where T: thrust_models::Model,
         E: thrust_models::Model,
 {
-    Result::ok(res)
+    thrust_std_target!(
+        Result::ok(res),
+        crate::std_transcriptions::result_ok(res)
+    )
 }
 
 #[thrust::extern_spec_fn]
@@ -2762,7 +2792,10 @@ fn _extern_spec_iterator_find<I, P>(it: &mut I, predicate: P) -> Option<I::Item>
           I::Item: thrust_models::Model,
           P: FnMut(&I::Item) -> bool
 {
-    <I as std::iter::Iterator>::find(it, predicate)
+    thrust_std_target!(
+        <I as std::iter::Iterator>::find(it, predicate),
+        <crate::std_transcriptions::StdBodies as crate::std_transcriptions::IteratorFindMethods<I, P>>::iterator_find(it, predicate)
+    )
 }
 
 // `all` and `any` call the predicate on the items in order until it returns `stop` (`false` for
