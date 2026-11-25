@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -A unused-variables -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::witness;
 use thrust_models::exists;
 use thrust_models::model::Int;
 
@@ -17,7 +17,7 @@ fn positive(x: Option<i64>) -> bool {
 #[thrust_macros::ensures(positive(result))]
 fn three() -> Option<i64> {
     let y = Some(3);
-    thrust_macros::proof_assert!(|y: Option<i64>| thrust_models::witness(positive(y), 4));
+    thrust_macros::proof_assert!(|y: Option<i64>| witness(positive(y), 4));
     y
 }
 

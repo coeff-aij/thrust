@@ -55,16 +55,16 @@ struct Map<I, F> {
     func: F,
 }
 
-impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
-    type Ty = Map<<I as thrust_models::Model>::Ty, Closure<F>>;
+impl<I: Model, F> Model for Map<I, F> {
+    type Ty = Map<<I as Model>::Ty, Closure<F>>;
 }
 
 #[thrust_macros::context]
-impl<I: Iterator + thrust_models::Model, B: thrust_models::Model, F: Fn(I::Item) -> B> Iterator for Map<I, F>
+impl<I: Iterator + Model, B: Model, F: Fn(I::Item) -> B> Iterator for Map<I, F>
 where
-    <I as Iterator>::Item: thrust_models::Model,
-    <<I as Iterator>::Item as thrust_models::Model>::Ty:
-        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty>,
+    <I as Iterator>::Item: Model,
+    <<I as Iterator>::Item as Model>::Ty:
+        Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
 {
     type Item = B;
     
@@ -82,7 +82,7 @@ where
         // self.iter.invariant() &&
         // forall(|i: I::Item| self.iter.produces(i) ==> pre!(self.func(i)))
         I::invariant(self.iter)
-            && forall(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+            && forall(|i: <<I as Iterator>::Item as Model>::Ty|
                 !I::produces(self.iter, i) || thrust_macros::pre!((self.func)(i)))
     }
 
@@ -97,7 +97,7 @@ where
         // exists(|i: I::Item| self.iter.step(i, dist.iter)
         //     && pre!(self.func(i)) && post!(self.func(i), item))
         // && self.func == dist.func
-        exists(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+        exists(|i: <<I as Iterator>::Item as Model>::Ty|
             I::step(self.iter, i, dist.iter)
                 && thrust_macros::pre!((self.func)(i))
                 && thrust_macros::post!((self.func)(i), item)
@@ -108,7 +108,7 @@ where
     fn produces(self, item: Self::Item) -> bool {
         // exists(|j: I::Item| self.iter.produces(j)
         //     && pre!(self.func(j)) && post!(self.func(j), item))
-        exists(|j: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+        exists(|j: <<I as Iterator>::Item as Model>::Ty|
             I::produces(self.iter, j)
                 && thrust_macros::pre!((self.func)(j))
                 && thrust_macros::post!((self.func)(j), item))
@@ -121,7 +121,7 @@ struct Range {
     end: i64,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 

@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // `sides` has no contract, so the call resolved to `Sq`'s override takes the override's type,
 // inferred from its body, not the default's.
 trait Shape {
@@ -10,7 +10,7 @@ trait Shape {
     }
 }
 struct Sq;
-impl thrust_models::Model for Sq {
+impl Model for Sq {
     type Ty = ();
 }
 impl Shape for Sq {

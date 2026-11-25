@@ -4,12 +4,12 @@
 // A `Vec` reached through a field of a struct whose model is the struct itself
 // keeps its real Rust type inside a formula, so the model's `.array` / `.length`
 // are not spellable there. `.len()` and indexing are, and mean the same thing.
-
+use thrust_models::Model;
 struct Rows {
     raw: Vec<i64>,
 }
 
-impl thrust_models::Model for Rows {
+impl Model for Rows {
     type Ty = Self;
 }
 

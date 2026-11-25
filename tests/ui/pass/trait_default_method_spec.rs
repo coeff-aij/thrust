@@ -5,7 +5,7 @@
 // A required method carries its postcondition into each impl, where `produces` is concrete
 // and the witness exists. The `fail` twin keeps `nonempty` a default method, whose
 // postcondition is checked against the abstract predicate for every implementor instead.
-
+use thrust_models::{exists, Model};
 #[thrust_macros::context]
 trait Source {
     type Item;
@@ -13,7 +13,7 @@ trait Source {
     #[thrust_macros::predicate]
     fn produces(self, x: Self::Item) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::exists(|x| Self::produces(*self, x)))]
+    #[thrust_macros::ensures(exists(|x| Self::produces(*self, x)))]
     fn nonempty(&self);
 }
 
@@ -22,7 +22,7 @@ struct S {
     v: i64,
 }
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = S;
 }
 

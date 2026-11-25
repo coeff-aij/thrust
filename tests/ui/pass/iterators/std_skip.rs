@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // `for` over std's `Skip`: `skip(1)` drops the first item of a non-empty vector.
-
+use thrust_models::FnParam;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Ghost;
 
@@ -13,7 +13,7 @@ use thrust_models::Ghost;
 fn count_after_first(v: &Vec<i64>) -> usize {
     let mut c = 0;
     for _x in v.iter().skip(1) {
-        thrust_macros::invariant!(|iter: core::iter::Skip<core::slice::Iter<'_, i64>>, iter_old: Ghost<core::iter::Skip<core::slice::Iter<'_, i64>>>, produced: Ghost<Seq<&Int>>, c: usize, v: thrust_models::FnParam<&Vec<i64>>|
+        thrust_macros::invariant!(|iter: core::iter::Skip<core::slice::Iter<'_, i64>>, iter_old: Ghost<core::iter::Skip<core::slice::Iter<'_, i64>>>, produced: Ghost<Seq<&Int>>, c: usize, v: FnParam<&Vec<i64>>|
             iter_old.0 .0 == *v.at_entry() && iter_old.0 .1 == 0 && iter_old.1 == 1 && c == produced.len());
         c += 1;
     }

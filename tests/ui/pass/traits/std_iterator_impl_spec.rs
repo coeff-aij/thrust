@@ -4,15 +4,15 @@
 // A specification written on a method of an `impl` of a foreign trait: `#[..::context]`
 // moves it out to an extern-spec wrapper in a sibling inherent impl, so the body is
 // verified against it and the call in `main` gets to use it.
-
+use thrust_models::{Model, model::Int};
 struct Range {
     start: i64,
     end: i64,
 }
 
 // Range is represented as Tuple<Int, Int>, so `(*self).0` is `self.start`.
-impl thrust_models::Model for Range {
-    type Ty = (thrust_models::model::Int, thrust_models::model::Int);
+impl Model for Range {
+    type Ty = (Int, Int);
 }
 
 #[thrust_macros::context]

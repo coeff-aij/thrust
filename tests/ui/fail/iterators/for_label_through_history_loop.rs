@@ -6,7 +6,7 @@
 // the annotated loop that names `iter!('rows)` gets the history, whose ghosts have fixed names;
 // the reference still names the outer loop's iterator, not the middle loop's of the same type.
 // Fail twin: the outer range's `end` is `n`, not the middle range's `1`.
-
+use thrust_models::FnParam;
 use core::ops::Range;
 
 #[thrust_macros::context]
@@ -17,7 +17,7 @@ fn f(n: i64) -> i64 {
     'rows: for _i in 0..n {
         for _m in 0..1i64 {
             for _j in 0..2i64 {
-                thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>, c: i64, n: thrust_models::FnParam<i64>|
+                thrust_macros::invariant!(|iter: Range<i64>, iter!('rows): Range<i64>, c: i64, n: FnParam<i64>|
                     c >= 0 && 1 <= iter!('rows).start && iter!('rows).end == 1);
                 c += 1;
             }

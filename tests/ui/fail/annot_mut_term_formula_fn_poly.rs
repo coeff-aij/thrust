@@ -1,15 +1,15 @@
 //@error-in-other-file: Unsat
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::model::Mut;
 #[allow(unused_variables)]
 #[thrust::formula_fn]
-fn _thrust_requires_swap(x: thrust_models::model::Mut<i64>, y: i64) -> bool {
+fn _thrust_requires_swap(x: Mut<i64>, y: i64) -> bool {
     true
 }
 
 #[allow(unused_variables)]
 #[thrust::formula_fn]
-fn _thrust_ensures_swap(result: (), x: thrust_models::model::Mut<i64>, y: thrust_models::model::Mut<i64>) -> bool {
+fn _thrust_ensures_swap(result: (), x: Mut<i64>, y: Mut<i64>) -> bool {
     *x == *y && *y == *x
 }
 
