@@ -2,8 +2,9 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 // A block declares a type parameter with its bound, `<F: Fn(i64) -> i64>`: the extracted function
-// is generic over it and is verified for every `F` meeting the bound, and the call instantiates it
-// at the closure type of the variable. The block calls `f`, so `requires` states its precondition.
+// is generic over it and is checked per concrete instance, at the closure type of the variable,
+// not once for every `F` meeting the bound, so it does not use a closure's contract modularly.
+// The block calls `f`, so `requires` states its precondition.
 fn main() {
     let n = 5i64;
     let f = thrust_macros::closure!(
