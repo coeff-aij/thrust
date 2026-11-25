@@ -756,7 +756,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
         let mut fn_ty = builder.build();
-        self.require_ghost_const_ranges(sig, &mut fn_ty);
+        self.require_ghost_const_premises(sig, &mut fn_ty);
         self.conjoin_fn_mut_hist_inv(&mut fn_ty);
         self.conjoin_type_invariants(sig, &mut fn_ty);
         rty::RefinedType::unrefined(fn_ty.into())
@@ -767,7 +767,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// caller's own ghost argument is by this requirement; and, of an extern spec's, to be as its
     /// call of the target has it ([`analyze::ghost_const::GhostTie`]), as the spec of a type
     /// fixed by its call holds only there.
-    fn require_ghost_const_ranges(&self, sig: mir_ty::FnSig<'tcx>, fn_ty: &mut rty::FunctionType) {
+    fn require_ghost_const_premises(
+        &self,
+        sig: mir_ty::FnSig<'tcx>,
+        fn_ty: &mut rty::FunctionType,
+    ) {
         let ghosts = analyze::ghost_const::ghost_consts(self.ctx, self.local_def_id.to_def_id());
         let first = sig.inputs().len() - ghosts.len();
         for (offset, ghost) in ghosts.iter().enumerate() {
