@@ -1,17 +1,17 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::{exists, model::Mut};
 #[allow(unused_variables)]
 #[thrust::formula_fn]
-fn _thrust_requires_incr(m: thrust_models::model::Mut<i32>, x: i32) -> bool {
+fn _thrust_requires_incr(m: Mut<i32>, x: i32) -> bool {
     x > 0
 }
 
 #[allow(unused_variables)]
 #[thrust::formula_fn]
-fn _thrust_ensures_incr(result: (), m: thrust_models::model::Mut<i32>, x: i32) -> bool {
-    thrust_models::exists(|y: i32| !m == y && y > *m)
+fn _thrust_ensures_incr(result: (), m: Mut<i32>, x: i32) -> bool {
+    exists(|y: i32| !m == y && y > *m)
 }
 
 #[allow(path_statements)]

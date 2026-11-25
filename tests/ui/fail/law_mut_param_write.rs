@@ -3,7 +3,7 @@
 // A law is assumed for every value of its parameters, both components of a `&mut` included,
 // while its proof only has to hold for the final value its body leaves. A law that takes a
 // `&mut` is rejected, as a lemma is.
-
+use thrust_models::model::Int;
 use thrust_models::Model;
 
 #[thrust_macros::context]
@@ -20,7 +20,7 @@ trait L: Model {
 struct A(i64);
 
 impl Model for A {
-    type Ty = (thrust_models::model::Int,);
+    type Ty = (Int,);
 }
 
 #[thrust_macros::context]

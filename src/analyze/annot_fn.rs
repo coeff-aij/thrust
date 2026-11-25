@@ -57,24 +57,27 @@ pub enum FormulaFnBody {
 ///
 /// The lifted function is free, where `self` is not a legal parameter name, so a formula
 /// naming the receiver gets a synthetic parameter instead. It stands for the value that
-/// debug info records as `self`.
-pub fn lifted_param_source_name(ident: rustc_span::symbol::Ident) -> rustc_span::Symbol {
+/// debug info records as `self`. The identifier keeps the parameter's span, whose hygiene
+/// [`crate::analyze::basic_block::bindings_in_scope`] resolves it with.
+pub fn lifted_param_source_name(ident: rustc_span::symbol::Ident) -> rustc_span::symbol::Ident {
     if ident.name.as_str() == "__thrust_self" {
-        rustc_span::Symbol::intern("self")
+        rustc_span::symbol::Ident::new(rustc_span::Symbol::intern("self"), ident.span)
     } else {
-        ident.name
+        ident
     }
 }
 
 /// The parameter of the enclosing function whose entry value a parameter of a lifted loop
-/// invariant names, written `old!(x)` and spelled `__thrust_old_x` by `thrust_macros`; `None` for
-/// any other parameter.
-pub fn entry_value_param_name(ident: rustc_span::symbol::Ident) -> Option<rustc_span::Symbol> {
+/// invariant names, written `old!(x)` and spelled `__thrust_old_x` by `thrust_macros` with the
+/// span of `x`; `None` for any other parameter.
+pub fn entry_value_param_name(
+    ident: rustc_span::symbol::Ident,
+) -> Option<rustc_span::symbol::Ident> {
     ident
         .name
         .as_str()
         .strip_prefix("__thrust_old_")
-        .map(rustc_span::Symbol::intern)
+        .map(|name| rustc_span::symbol::Ident::new(rustc_span::Symbol::intern(name), ident.span))
 }
 
 impl<'a, D> Pretty<'a, D, termcolor::ColorSpec> for &FormulaFn<'_>
@@ -403,6 +406,10 @@ pub struct AnnotFnTranslator<'a, 'tcx> {
     env: HashMap<HirId, chc::Term<rty::FunctionParamIdx>>,
     /// [`FormulaFn::pre_receivers`], shared with the translators of quantifier bodies.
     pre_receivers: Rc<RefCell<Vec<mir_ty::Ty<'tcx>>>>,
+    /// The generic parameter indices of the const parameters taken as ghost arguments by the
+    /// function this formula is the `requires` or `ensures` of: the formula's parameters are
+    /// followed by them, in this order.
+    ghost_consts: Vec<Option<u32>>,
 }
 
 impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
@@ -436,9 +443,32 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             type_builder,
             env: HashMap::default(),
             pre_receivers: Rc::default(),
+            ghost_consts: Vec::new(),
         };
         translator.build_env_from_params();
         translator
+    }
+
+    /// Makes this the translation of the `requires` or `ensures` of `contract_of`, whose formula
+    /// parameters its ghost const arguments follow.
+    pub fn for_contract(mut self, contract_of: DefId) -> Self {
+        self.ghost_consts = analyze::ghost_const::ghost_consts(self.analyzer, contract_of)
+            .iter()
+            .map(|ghost| ghost.param_index)
+            .collect();
+        self
+    }
+
+    /// The ghost argument that stands for the const parameter `param_did`.
+    fn ghost_const_term(&self, param_did: DefId) -> Option<chc::Term<rty::FunctionParamIdx>> {
+        let index = self
+            .tcx
+            .generics_of(self.local_def_id)
+            .param_def_id_to_index(self.tcx, param_did)?;
+        let position = self.ghost_consts.iter().position(|&i| i == Some(index))?;
+        Some(chc::Term::var(rty::FunctionParamIdx::from(
+            self.body.params.len() + position,
+        )))
     }
 
     pub fn with_def_id_cache(mut self, def_ids: DefIdCache<'tcx>) -> Self {
@@ -2326,8 +2356,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         term
     }
 
-    /// The parameters of an `exists` / `forall` closure as quantified variables, the range of
-    /// those of an integer type whose range is in use ([`rty::int_range`]), over which they range,
+    /// The parameters of an `exists` / `forall` closure as quantified variables, the domain of
+    /// their types (the range of an integer type in use ([`rty::int_range`]), the length of an
+    /// array: [`rty::binder_domain`]), over which they range,
     /// and the body.
     fn to_formula_with_quantified_vars(&self, closure: &rustc_hir::Body<'tcx>) -> QuantifiedBody {
         let mut inner_translator = self.clone();
@@ -2351,7 +2382,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
-            if let Some(fact) = rty::int_range_formula(&param_rty.ty, term.clone()) {
+            if let Some(fact) = rty::binder_domain(&param_rty.ty, term.clone()) {
                 range = Some(match range {
                     Some(range) => range.and(fact),
                     None => fact,
@@ -2885,6 +2916,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     rustc_hir::def::DefKind::Const | rustc_hir::def::DefKind::AssocConst,
                     const_did,
                 ) => FormulaOrTerm::Term(self.const_term(const_did, hir)),
+                rustc_hir::def::Res::Def(rustc_hir::def::DefKind::ConstParam, param_did) => {
+                    let Some(term) = self.ghost_const_term(param_did) else {
+                        self.tcx.dcx().span_fatal(
+                            hir.span,
+                            "a const generic parameter can be named only in the `requires` or \
+                             `ensures` of a function or an inherent method",
+                        )
+                    };
+                    FormulaOrTerm::Term(term)
+                }
                 _ => unimplemented!("unsupported path in formula: {:?}", qpath),
             },
             ExprKind::Tup(exprs) => {

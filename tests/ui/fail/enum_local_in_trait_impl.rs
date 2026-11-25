@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::Model;
 trait T {
     fn f(b: bool) -> i64;
 }
@@ -8,11 +8,11 @@ trait T {
 struct A;
 struct B;
 
-impl thrust_models::Model for A {
+impl Model for A {
     type Ty = Self;
 }
 
-impl thrust_models::Model for B {
+impl Model for B {
     type Ty = Self;
 }
 
@@ -22,7 +22,7 @@ impl T for A {
             X(i64),
             Y,
         }
-        impl thrust_models::Model for E {
+        impl Model for E {
             type Ty = Self;
         }
         let e = if b { E::X(1) } else { E::Y };
@@ -39,7 +39,7 @@ impl T for B {
             Z(bool),
             W(i64),
         }
-        impl thrust_models::Model for E {
+        impl Model for E {
             type Ty = Self;
         }
         let e = if b { E::Z(true) } else { E::W(5) };

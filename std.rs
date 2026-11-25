@@ -1126,17 +1126,20 @@ mod thrust_models {
     #[inline(never)]
     pub fn __assume_marker<F>(_f: F) {}
 
+    /// Opens the block of `block_contract!`, which `_f`, the function the block is
+    /// extracted into, stands for.
     #[doc(hidden)]
-    #[thrust::def::block_requires_marker]
+    #[thrust::def::block_region_open_marker]
     #[thrust::ignored]
     #[inline(never)]
-    pub fn __block_requires_marker<F>(_f: F) {}
+    pub fn __block_region_open_marker<F>(_f: F) {}
 
+    /// Closes the block `__block_region_open_marker` opened.
     #[doc(hidden)]
-    #[thrust::def::block_ensures_marker]
+    #[thrust::def::block_region_close_marker]
     #[thrust::ignored]
     #[inline(never)]
-    pub fn __block_ensures_marker<F>(_f: F) {}
+    pub fn __block_region_close_marker<F>(_f: F) {}
 
     /// Proof-only data, introduced by `thrust_macros::ghost!`. In the logic it is its
     /// content, so a specification refers to a `Ghost<T>` as if it were a `T`.
@@ -1201,8 +1204,10 @@ mod thrust_models {
     }
 
     // The ghost history `thrust_macros::context` gives a `for` loop whose body starts with no
-    // invariant (`thrust-macros/src/for_loop.rs`), as Creusot's `desugar_for` gives every loop:
-    // `iter_old`, the iterator before the loop, and `produced`, the items `next` has returned so far.
+    // invariant (`thrust-macros/src/for_loop.rs`): `iter_old`, the iterator before the loop, and
+    // `produced`, the items `next` has returned so far. Creusot's `desugar_for` makes them only for
+    // a loop with an `#[invariant]` or `#[variant]` attribute; Thrust's mode makes them for every
+    // `for` loop when it is enabled.
     // The desugaring cannot write the iterator's type, so a `ghost!` cannot make them: each is made
     // by a marker generic in it, whose arguments give Thrust the type, and which Thrust types as a
     // `ghost!` whose term is the formula function after it, at the marker's generic arguments. The

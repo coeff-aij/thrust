@@ -4,10 +4,10 @@
 
 // The twin of `fail/ignored_clone_derive.rs`: a derived `clone` has the trait's spec where each
 // field's `clone` is checked against it.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -20,7 +20,7 @@ impl Clone for S {
 #[derive(Clone)]
 struct W(S);
 
-impl thrust_models::Model for W {
+impl Model for W {
     type Ty = Self;
 }
 

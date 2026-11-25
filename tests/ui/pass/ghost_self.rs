@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Ghost;
 
@@ -10,7 +10,7 @@ struct Counter {
     seen: Ghost<Seq<Int>>,
 }
 
-impl thrust_models::Model for Counter {
+impl Model for Counter {
     type Ty = (Int, Seq<Int>);
 }
 

@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A contract that does not mention the receiver holds at every impl a call through `dyn` reaches.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Tick {
     #[thrust_macros::ensures(result >= 1)]
@@ -15,7 +15,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 
