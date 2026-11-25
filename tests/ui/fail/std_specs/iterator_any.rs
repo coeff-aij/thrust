@@ -55,6 +55,34 @@ mod std_transcriptions {
         }
     }
 
+    // library/core/src/ops/control_flow.rs, `impl<B, C> const ops::Try for ControlFlow<B, C>`, `fn branch(self) -> ControlFlow<Self::Residual, Self::Output>`
+    pub fn control_flow_branch<B, C>(cf: ControlFlow<B, C>) -> ControlFlow<ControlFlow<B, Infallible>, C> {
+        match cf {
+            ControlFlow::Continue(c) => ControlFlow::Continue(c),
+            ControlFlow::Break(b) => ControlFlow::Break(ControlFlow::Break(b)),
+        }
+    }
+
+    // library/core/src/ops/control_flow.rs, `impl<B, C> const ops::Try for ControlFlow<B, C>`, `fn from_output(output: Self::Output) -> Self`
+    pub fn control_flow_from_output<B, C>(output: C) -> ControlFlow<B, C> {
+        ControlFlow::Continue(output)
+    }
+
+    // library/core/src/ops/control_flow.rs, `impl<B, C> const ops::FromResidual<ControlFlow<B, convert::Infallible>> for ControlFlow<B, C>`, `fn from_residual(residual: ControlFlow<B, convert::Infallible>) -> Self`
+    pub fn control_flow_from_residual<B, C>(residual: ControlFlow<B, Infallible>) -> ControlFlow<B, C> {
+        match residual {
+            ControlFlow::Break(b) => ControlFlow::Break(b),
+        }
+    }
+
+    // library/core/src/ops/control_flow.rs, `impl<B, C> ControlFlow<B, C>`, `fn break_value(self) -> Option<B>`
+    pub fn control_flow_break_value<B, C>(cf: ControlFlow<B, C>) -> Option<B> {
+        match cf {
+            ControlFlow::Continue(..) => None,
+            ControlFlow::Break(x) => Some(x),
+        }
+    }
+
     // std's `unwrap_failed` and `expect_failed` end in a panic. The specs' preconditions keep
     // them unreachable, which the checks of `unwrap` and `expect` rely on.
     fn unwrap_failed() -> ! {
@@ -219,6 +247,17 @@ mod std_transcriptions {
         fn iterator_try_fold(it: &mut I, init: B, f: F) -> Option<B>;
     }
 
+    pub trait IteratorTryFoldControlFlowMethods<I, B, C, F>
+    where
+        I: crate::IteratorSpec,
+        I::Item: thrust_models::Model,
+        B: thrust_models::Model,
+        C: thrust_models::Model,
+        F: FnMut(B, I::Item) -> ControlFlow<C, B>,
+    {
+        fn iterator_try_fold(it: &mut I, init: B, f: F) -> ControlFlow<C, B>;
+    }
+
     pub struct StdBodies;
 
     #[thrust_macros::context]
@@ -229,7 +268,7 @@ mod std_transcriptions {
         B: thrust_models::Model,
         F: FnMut(B, I::Item) -> Option<B>,
     {
-        // std: library/core/src/iter/traits/iterator.rs, `pub trait Iterator`, `fn try_fold<B, F, R>(&mut self, init: B, mut f: F) -> R where Self: Sized, F: FnMut(B, Self::Item) -> R, R: Try<Output = B>,`
+        // library/core/src/iter/traits/iterator.rs, `pub trait Iterator`, `fn try_fold<B, F, R>(&mut self, init: B, mut f: F) -> R where Self: Sized, F: FnMut(B, Self::Item) -> R, R: Try<Output = B>,`
         // `R` is `Option<B>`. The ghosts `gs`, `gaccs` and `gfs` are the items taken, the accumulators and the closure's states before each call.
         fn iterator_try_fold(it: &mut I, init: B, mut f: F) -> Option<B> {
             let mut accum = init;
@@ -262,6 +301,47 @@ mod std_transcriptions {
     }
 
     #[thrust_macros::context]
+    impl<I, B, C, F> IteratorTryFoldControlFlowMethods<I, B, C, F> for StdBodies
+    where
+        I: crate::IteratorSpec,
+        I::Item: thrust_models::Model,
+        B: thrust_models::Model,
+        C: thrust_models::Model,
+        F: FnMut(B, I::Item) -> ControlFlow<C, B>,
+    {
+        // library/core/src/iter/traits/iterator.rs, `pub trait Iterator`, `fn try_fold<B, F, R>(&mut self, init: B, mut f: F) -> R where Self: Sized, F: FnMut(B, Self::Item) -> R, R: Try<Output = B>,`
+        // `R` is `ControlFlow<C, B>`. The ghosts `gs`, `gaccs` and `gfs` are the items taken, the accumulators and the closure's states before each call.
+        fn iterator_try_fold(it: &mut I, init: B, mut f: F) -> ControlFlow<C, B> {
+            let mut accum = init;
+            let mut gs = thrust_macros::ghost!(|| -> Vec<I::Item> { Seq::empty() });
+            let mut gaccs = thrust_macros::ghost!(|accum: B| -> Seq<<B as thrust_models::Model>::Ty> { Seq::singleton(accum) });
+            let mut gfs = thrust_macros::ghost!(|f: F| -> Seq<Closure<F>> { Seq::singleton(f) });
+            while let Some(x) = it.next() {
+                thrust_macros::invariant!(
+                    |it: &mut I, accum: B, f: F, gs: Ghost<Vec<I::Item>>, gaccs: Ghost<Seq<<B as thrust_models::Model>::Ty>>, gfs: Ghost<Seq<Closure<F>>>, old!(it): &mut I, old!(init): B, old!(f): F|
+                    !it == !old!(it)
+                        && I::inv(*it)
+                        && crate::_iter_spec_try_fold_control_flow_chain::<I, B, C, F>(*old!(it), old!(init), old!(f), gs, *it, gaccs, gfs)
+                        && gaccs[gs.len()] == accum
+                        && gfs[gs.len()] == f
+                        && forall(|s: Seq<<I::Item as thrust_models::Model>::Ty>, it1: <I as thrust_models::Model>::Ty,
+                                   accs: Seq<<B as thrust_models::Model>::Ty>, fs: Seq<Closure<F>>,
+                                   x: <I::Item as thrust_models::Model>::Ty, it2: <I as thrust_models::Model>::Ty|
+                            (crate::_iter_spec_try_fold_control_flow_chain::<I, B, C, F>(*old!(it), old!(init), old!(f), s, it1, accs, fs)
+                                && I::produces(it1, Seq::singleton(x), it2))
+                                ==> thrust_macros::pre!(fs[s.len()](accs[s.len()], x)))
+                );
+                let gx = thrust_macros::ghost!(|x: I::Item| -> I::Item { x });
+                accum = f(accum, x)?;
+                gs = thrust_macros::ghost!(|gs: Ghost<Vec<I::Item>>, gx: Ghost<I::Item>| -> Vec<I::Item> { gs.push(gx) });
+                gaccs = thrust_macros::ghost!(|gaccs: Ghost<Seq<<B as thrust_models::Model>::Ty>>, accum: B| -> Seq<<B as thrust_models::Model>::Ty> { gaccs.push(accum) });
+                gfs = thrust_macros::ghost!(|gfs: Ghost<Seq<Closure<F>>>, f: F| -> Seq<Closure<F>> { gfs.push(f) });
+            }
+            try { accum }
+        }
+    }
+
+    #[thrust_macros::context]
     impl<I, B, F> IteratorFoldMethods<I, B, F> for StdBodies
     where
         I: crate::IteratorSpec,
@@ -269,7 +349,7 @@ mod std_transcriptions {
         B: thrust_models::Model,
         F: FnMut(B, I::Item) -> B,
     {
-        // std: library/core/src/iter/traits/iterator.rs, `pub trait Iterator`, `fn fold<B, F>(mut self, init: B, mut f: F) -> B where Self: Sized, F: FnMut(B, Self::Item) -> B,`
+        // library/core/src/iter/traits/iterator.rs, `pub trait Iterator`, `fn fold<B, F>(mut self, init: B, mut f: F) -> B where Self: Sized, F: FnMut(B, Self::Item) -> B,`
         // The ghosts `gs`, `gaccs` and `gfs` are the items taken, the accumulators and the closure's states before each call.
         fn iterator_fold(mut it: I, init: B, mut f: F) -> B {
             let mut accum = init;

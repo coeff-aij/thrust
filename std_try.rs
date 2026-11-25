@@ -40,6 +40,50 @@ fn _extern_spec_option_from_residual<T>(residual: Option<std::convert::Infallibl
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(
+    thrust_models::exists(|c| cf == std::ops::ControlFlow::Continue(c) && result == std::ops::ControlFlow::Continue(c))
+    || thrust_models::exists(|b| cf == std::ops::ControlFlow::Break(b)
+        && result == std::ops::ControlFlow::Break(std::ops::ControlFlow::Break(b)))
+)]
+fn _extern_spec_control_flow_branch<B, C>(cf: std::ops::ControlFlow<B, C>) -> std::ops::ControlFlow<std::ops::ControlFlow<B, std::convert::Infallible>, C>
+    where B: thrust_models::Model,
+          C: thrust_models::Model,
+{
+    thrust_std_target!(
+        <std::ops::ControlFlow<B, C> as std::ops::Try>::branch(cf),
+        crate::std_transcriptions::control_flow_branch(cf)
+    )
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == std::ops::ControlFlow::Continue(output))]
+fn _extern_spec_control_flow_from_output<B, C>(output: C) -> std::ops::ControlFlow<B, C>
+    where B: thrust_models::Model,
+          C: thrust_models::Model,
+{
+    thrust_std_target!(
+        <std::ops::ControlFlow<B, C> as std::ops::Try>::from_output(output),
+        crate::std_transcriptions::control_flow_from_output(output)
+    )
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(thrust_models::exists(|b| residual == std::ops::ControlFlow::Break(b)
+    && result == std::ops::ControlFlow::Break(b)))]
+fn _extern_spec_control_flow_from_residual<B, C>(residual: std::ops::ControlFlow<B, std::convert::Infallible>) -> std::ops::ControlFlow<B, C>
+    where B: thrust_models::Model,
+          C: thrust_models::Model,
+{
+    thrust_std_target!(
+        <std::ops::ControlFlow<B, C> as std::ops::FromResidual<std::ops::ControlFlow<B, std::convert::Infallible>>>::from_residual(residual),
+        crate::std_transcriptions::control_flow_from_residual(residual)
+    )
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
     thrust_models::exists(|x| res == Ok(x) && result == std::ops::ControlFlow::Continue(x))
     || thrust_models::exists(|e| res == Err(e) && result == std::ops::ControlFlow::Break(Err(e)))
 )]
@@ -98,4 +142,42 @@ fn _extern_spec_option_from_residual_std<T>(residual: Option<std::convert::Infal
     where T: thrust_models::Model,
 {
     <Option<T> as std::ops::FromResidual<Option<std::convert::Infallible>>>::from_residual(residual)
+}
+
+#[cfg(thrust_std_conformance)]
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    thrust_models::exists(|c| cf == std::ops::ControlFlow::Continue(c) && result == std::ops::ControlFlow::Continue(c))
+    || thrust_models::exists(|b| cf == std::ops::ControlFlow::Break(b)
+        && result == std::ops::ControlFlow::Break(std::ops::ControlFlow::Break(b)))
+)]
+fn _extern_spec_control_flow_branch_std<B, C>(cf: std::ops::ControlFlow<B, C>) -> std::ops::ControlFlow<std::ops::ControlFlow<B, std::convert::Infallible>, C>
+    where B: thrust_models::Model,
+          C: thrust_models::Model,
+{
+    <std::ops::ControlFlow<B, C> as std::ops::Try>::branch(cf)
+}
+
+#[cfg(thrust_std_conformance)]
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == std::ops::ControlFlow::Continue(output))]
+fn _extern_spec_control_flow_from_output_std<B, C>(output: C) -> std::ops::ControlFlow<B, C>
+    where B: thrust_models::Model,
+          C: thrust_models::Model,
+{
+    <std::ops::ControlFlow<B, C> as std::ops::Try>::from_output(output)
+}
+
+#[cfg(thrust_std_conformance)]
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(thrust_models::exists(|b| residual == std::ops::ControlFlow::Break(b)
+    && result == std::ops::ControlFlow::Break(b)))]
+fn _extern_spec_control_flow_from_residual_std<B, C>(residual: std::ops::ControlFlow<B, std::convert::Infallible>) -> std::ops::ControlFlow<B, C>
+    where B: thrust_models::Model,
+          C: thrust_models::Model,
+{
+    <std::ops::ControlFlow<B, C> as std::ops::FromResidual<std::ops::ControlFlow<B, std::convert::Infallible>>>::from_residual(residual)
 }
