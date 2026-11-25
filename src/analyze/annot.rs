@@ -42,6 +42,7 @@ thrust_paths! {
     logic_path = "logic";
     lemma_path = "lemma";
     lemma_rec_path = "lemma_rec";
+    lemma_variant_path_path = "lemma_variant_path";
     derived_path = "derived";
     law_path = "law";
     ignored_path = "ignored";

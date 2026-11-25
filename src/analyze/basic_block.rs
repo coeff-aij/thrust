@@ -500,6 +500,43 @@ pub fn binding_idents(
     bindings.idents
 }
 
+/// The argument local the identifier `name` names ([`names_binding`]).
+pub fn function_param_local_of_name<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mir::Body<'tcx>,
+    name: rustc_span::symbol::Ident,
+) -> Option<Local> {
+    let idents = binding_idents(tcx, body);
+    let mut found: Option<Local> = None;
+    for vdi in &body.var_debug_info {
+        tracing::debug!("comparing {name:?} with {vdi:?}...");
+        if !names_binding(&idents, name, vdi) {
+            tracing::debug!("another name or another hygiene, skip.");
+            continue;
+        }
+        let mir::VarDebugInfoContents::Place(place) = vdi.value else {
+            tracing::debug!("place, skip.");
+            continue;
+        };
+        if !place.projection.is_empty() {
+            tracing::debug!("empty projection, skip.");
+            continue;
+        }
+        let local = place.local;
+        if local.index() == 0 || local.index() > body.arg_count {
+            tracing::debug!("not param of local, skip.");
+            continue;
+        }
+        tracing::debug!("found.");
+        match found {
+            None => found = Some(local),
+            Some(prev) if prev == local => {}
+            Some(_) => panic!("multiple function arguments share the name `{name}`"),
+        }
+    }
+    found
+}
+
 /// Whether the identifier `name` names the variable of `vdi` where both are in scope, as rustc
 /// resolves a local: by the name and by the syntax context of the binding identifier's span and
 /// of `name`'s, normalized as for `macro_rules!` hygiene, so a variable a `macro_rules!` macro
@@ -2824,6 +2861,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         formula_fn: FormulaFn<'tcx>,
         span: rustc_span::Span,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
         let what = match marker {
             FormulaMarker::Assert => "proof_assert!",
@@ -2842,8 +2880,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             formula_fn_def_id,
             generic_args,
             &formula_fn,
-            span,
-            scope,
+            mir::SourceInfo { span, scope },
+            outer_fn_param_vars,
         );
         let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
         if matches!(marker, FormulaMarker::Assert | FormulaMarker::BlockEnsures) {
@@ -2863,17 +2901,81 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.env.assume(formula.map_var(PlaceTypeVar::Var));
     }
 
+    /// A call of a lemma's companion in the lemma's own body is its recursive call: the lemma's
+    /// variant at the call's actual arguments has to be non-negative and smaller than at the
+    /// lemma's parameters on entry, whose values are the analysis's own. The companion carries the
+    /// formula (`#[thrust::lemma_variant_path]`), over the parameters the variant reads and their
+    /// entry values `old!(p)`. The lemma then terminates, since the variant decreases along every
+    /// chain of recursive calls and is never negative.
+    fn check_lemma_variant(
+        &mut self,
+        companion: DefId,
+        args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
+        span: rustc_span::Span,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
+    ) {
+        let companion_local = companion.expect_local();
+        let (formula_def_id, _) = self
+            .ctx
+            .extract_path_and_args_with_attr(
+                companion_local,
+                &analyze::annot::lemma_variant_path_path(),
+            )
+            .expect("the companion of a lemma with a variant carries the variant's formula");
+        let formula_fn = self
+            .ctx
+            .formula_fn_with_args(
+                formula_def_id.expect_local(),
+                self.tcx.mk_args(&[]),
+                self.type_builder.owner_fn_id(),
+            )
+            .expect("the variant's formula is a formula function");
+        let param_names = self.tcx.fn_arg_idents(companion);
+        let vars: IndexVec<rty::FunctionParamIdx, Var> = formula_fn
+            .params()
+            .indices()
+            .map(|idx| {
+                let ident =
+                    formula_fn.param_idents()[idx].expect("formula parameters must be named");
+                if let Some(param_name) = analyze::annot_fn::entry_value_param_name(ident) {
+                    let local = function_param_local_of_name(self.tcx, &self.body, param_name)
+                        .unwrap_or_else(|| {
+                            self.tcx.dcx().span_fatal(
+                                span,
+                                format!("`{param_name}` is not a parameter of the lemma"),
+                            )
+                        });
+                    return outer_fn_param_vars[&analyze::function_param_of_local(local)];
+                }
+                let position = param_names
+                    .iter()
+                    .position(|name| name.is_some_and(|name| name.name == ident.name))
+                    .expect("the variant reads a parameter of the lemma");
+                let arg = self.operand_refined_type(args[position].node.clone());
+                self.env.immut_bind_tmp(arg)
+            })
+            .collect();
+        self.check_formula(
+            formula_fn
+                .witnessed_formula()
+                .clone()
+                .map_var(|idx| vars[idx]),
+        );
+    }
+
     /// The values of the variables the parameters of a formula over live variables name, each
-    /// the binding its name stands for in `scope`.
+    /// the binding its name stands for in `scope`. A parameter written `old!(x)` (a
+    /// `proof_assert!`'s) is the entry value of the function's parameter `x`.
     fn formula_vars(
         &mut self,
         what: &str,
         formula_fn_def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         formula_fn: &FormulaFn<'tcx>,
-        span: rustc_span::Span,
-        scope: mir::SourceScope,
+        source_info: mir::SourceInfo,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) -> IndexVec<rty::FunctionParamIdx, Var> {
+        let mir::SourceInfo { span, scope } = source_info;
         let sig = self
             .tcx
             .fn_sig(formula_fn_def_id)
@@ -2886,6 +2988,27 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .map(|(idx, written_input_ty)| {
                 let ident =
                     formula_fn.param_idents()[idx].expect("formula parameters must be named");
+                if let Some(param_name) = analyze::annot_fn::entry_value_param_name(ident) {
+                    let local = function_param_local_of_name(self.tcx, &self.body, param_name)
+                        .unwrap_or_else(|| {
+                            self.tcx.dcx().span_fatal(
+                                span,
+                                format!(
+                                    "{what} refers to `old!({param_name})`, but `{param_name}` \
+                                     is not a parameter of the function"
+                                ),
+                            )
+                        });
+                    let operand = Operand::Copy(local.into());
+                    self.check_spec_param_ty(
+                        what,
+                        span,
+                        rustc_span::Symbol::intern(&format!("old!({param_name})")),
+                        *written_input_ty,
+                        &operand,
+                    );
+                    return outer_fn_param_vars[&analyze::function_param_of_local(local)];
+                }
                 let name = analyze::annot_fn::lifted_param_source_name(ident);
                 let operand = self.operand_of_name_in(name, scope).unwrap_or_else(|| {
                     self.tcx.dcx().span_fatal(
@@ -3030,8 +3153,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             formula_def_id.to_def_id(),
             generic_args,
             &formula_fn,
-            closing.source_info.span,
-            closing.source_info.scope,
+            closing.source_info,
+            outer_fn_param_vars,
         );
         let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
         self.env.assume(formula.map_var(PlaceTypeVar::Var));
@@ -3770,9 +3893,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             func,
             args,
             destination,
+            fn_span,
             ..
         } = &term.kind
         {
+            if let Some((callee, _)) = func.const_fn_def() {
+                if analyze::lemma::is_own_companion(self.tcx, self.local_def_id, callee) {
+                    self.check_lemma_variant(callee, args, *fn_span, outer_fn_param_vars);
+                }
+            }
             let destination = match destination {
                 p if p.projection.is_empty() => p.local,
                 _ => unimplemented!(),
@@ -3821,6 +3950,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     args,
                     formula_fn,
                     term.source_info.span,
+                    outer_fn_param_vars,
                 );
                 self.bind_local(destination, rty::RefinedType::unrefined(rty::Type::unit()));
                 return;

@@ -3474,7 +3474,7 @@ impl<'tcx> Analyzer<'tcx> {
 
     /// The definition a statement of `local_def_id`'s body marked with `attr_path` names, and the
     /// generic arguments it is written with, as type checking resolved them.
-    fn extract_path_and_args_with_attr(
+    pub fn extract_path_and_args_with_attr(
         &self,
         local_def_id: LocalDefId,
         attr_path: &[Symbol],

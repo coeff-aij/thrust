@@ -174,15 +174,17 @@ pub fn expand_with_context(input: TokenStream, marker: Marker) -> TokenStream {
     }
 }
 
-/// `input` with the `old!(x)` of a loop invariant renamed ([`mod@crate::entry_value`]); the
-/// statement forms take no `old!`.
+/// `input` with the `old!(x)` of a loop invariant or a `proof_assert!` renamed
+/// ([`mod@crate::entry_value`]); the other statement forms take no `old!`.
 fn rename_entry_values(
     input: proc_macro2::TokenStream,
     marker: Marker,
 ) -> syn::Result<proc_macro2::TokenStream> {
     match marker {
-        Marker::Full | Marker::Partial => crate::entry_value::rename_in_invariant(input),
-        Marker::Assert | Marker::Assume | Marker::BlockRequires | Marker::BlockEnsures => {
+        Marker::Full | Marker::Partial | Marker::Assert => {
+            crate::entry_value::rename_in_invariant(input)
+        }
+        Marker::Assume | Marker::BlockRequires | Marker::BlockEnsures => {
             crate::entry_value::reject(&input)?;
             Ok(input)
         }
@@ -196,6 +198,23 @@ fn expand_invariant(
     context: Option<&EnclosingContext>,
     marker: Marker,
 ) -> syn::Result<syn::Expr> {
+    let LiftedFormulaFn { item, reference } = lift_closure(closure, local_types, context, marker)?;
+    let marker = marker.ident();
+
+    Ok(syn::parse_quote!({
+        #item
+
+        crate::thrust_models::#marker(#reference)
+    }))
+}
+
+/// Lifts a predicate closure into a `#[thrust::formula_fn]` and the reference that names it.
+fn lift_closure(
+    closure: &syn::ExprClosure,
+    local_types: &syn::Generics,
+    context: Option<&EnclosingContext>,
+    marker: Marker,
+) -> syn::Result<LiftedFormulaFn> {
     if !marker.is_statement() && !local_types.params.is_empty() {
         return Err(syn::Error::new_spanned(
             local_types,
@@ -218,17 +237,21 @@ fn expand_invariant(
 
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = format_ident!("{}_{}", marker.item_prefix(), id);
-    let lifted = if marker.is_statement() {
+    if marker.is_statement() {
         formula_fn_lifting::lift_statement(&name, &params, &closure.body, context, local_types)
     } else {
         formula_fn_lifting::lift(&name, &params, &closure.body, context)
-    };
-    let LiftedFormulaFn { item, reference } = lifted?;
-    let marker = marker.ident();
+    }
+}
 
-    Ok(syn::parse_quote!({
-        #item
-
-        crate::thrust_models::#marker(#reference)
-    }))
+/// The formula function of the statement closure `tokens` (`|x: T, old!(y): U| formula`), and the
+/// reference that names it, for a caller that gives the formula's parameters their values itself.
+pub fn lift_statement_closure(tokens: proc_macro2::TokenStream) -> syn::Result<LiftedFormulaFn> {
+    let tokens = rename_entry_values(tokens, Marker::Assert)?;
+    let tokens = crate::formula::wrap_closure_body(tokens);
+    let ClosureWithLocalTypes {
+        local_types,
+        closure,
+    } = syn::parse2(tokens)?;
+    lift_closure(&closure, &local_types, None, Marker::Assert)
 }
