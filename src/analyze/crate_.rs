@@ -376,8 +376,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let owner_fn_id_args = analyzer.owner_fn_id_args;
         use mir_ty::TypeVisitableExt as _;
         let trait_method = self.tcx.trait_of_assoc(owner_fn_id).is_some();
+        // The extern spec of a local function that takes ghost const arguments is the contract of
+        // its generic body, whether or not the spec has a const parameter of its own: a const
+        // argument its call fixes is a premise there (`GhostTie::Fixed`).
+        let targets_ghost_consts = analyzer.targets_ghost_consts();
+        let has_const_param = has_const_param || targets_ghost_consts;
         if analyzer.is_annotated_as_extern_spec_fn()
-            && is_narrower_local_spec(self.tcx, local_def_id, owner_fn_id, owner_fn_id_args)
+            && is_narrower_local_spec(
+                self.tcx,
+                local_def_id,
+                owner_fn_id,
+                owner_fn_id_args,
+                targets_ghost_consts,
+            )
         {
             // The spec covers the local target only at some of its instances, so it is not the
             // contract of the target's generic body: the body is analyzed at each covered
@@ -1615,15 +1626,19 @@ fn has_type_or_const_args(args: mir_ty::GenericArgsRef<'_>) -> bool {
 }
 
 /// Whether `local_def_id` is an extern spec of a function of this crate, `target`, that covers
-/// only some of its instances: it calls the target at an argument that is not one of the
-/// spec's type or const parameters, or bounds an associated type the target leaves free (`R:
-/// IntoSliceIdx<I, [T], Output = usize>` where the target has `R: IntoSliceIdx<I, [T]>`). The
-/// spec `requires`/`ensures` generate for a function repeats its bounds, so it covers all of it.
+/// only some of its instances: it calls the target at a type argument that is not one of the
+/// spec's type parameters, or at a const argument when the target takes no ghost const
+/// arguments (a trait method, an impl of one, a closure; for a function that takes them, a fixed
+/// const argument is a premise of the contract instead), or bounds an associated type the target
+/// leaves free (`R: IntoSliceIdx<I, [T], Output = usize>` where the target has `R:
+/// IntoSliceIdx<I, [T]>`). The spec `requires`/`ensures` generate for a function repeats its
+/// bounds, so it covers all of it.
 fn is_narrower_local_spec<'tcx>(
     tcx: TyCtxt<'tcx>,
     local_def_id: LocalDefId,
     target: rustc_span::def_id::DefId,
     target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
+    target_takes_ghost_consts: bool,
 ) -> bool {
     let Some(target_args) = target_args else {
         return false;
@@ -1634,9 +1649,10 @@ fn is_narrower_local_spec<'tcx>(
     let fixes_an_arg = target_args
         .types()
         .any(|ty| !matches!(ty.kind(), mir_ty::TyKind::Param(_)))
-        || target_args
-            .consts()
-            .any(|ct| !matches!(ct.kind(), mir_ty::ConstKind::Param(_)));
+        || (!target_takes_ghost_consts
+            && target_args
+                .consts()
+                .any(|ct| !matches!(ct.kind(), mir_ty::ConstKind::Param(_))));
     if fixes_an_arg {
         return true;
     }
