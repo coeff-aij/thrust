@@ -1,12 +1,12 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-// A `&mut` variable of the block is written through in the body as written.
+// A `mut` `&mut` variable of the block is written through in the body as written.
 fn main() {
     let mut a = 0i64;
     let r = &mut a;
     thrust_macros::block_contract!(
-        |r: &mut i64| -> ()
+        |mut r: &mut i64| -> ()
         requires(*r == 0),
         ensures(!r == 1),
         {

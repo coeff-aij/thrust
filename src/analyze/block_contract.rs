@@ -260,7 +260,12 @@ fn replace_region<'tcx>(
         .enumerate()
         .map(|(index, name)| {
             let place = outer_place(tcx, body, *name, scope, source_info.span);
-            (place, is_mut_param(tcx, bc_local, index))
+            let in_out = is_mut_param(tcx, bc_local, index)
+                && !matches!(
+                    sig.inputs()[index].kind(),
+                    mir_ty::TyKind::Ref(_, _, mir::Mutability::Mut)
+                );
+            (place, in_out)
         })
         .collect();
     let args = params
@@ -276,6 +281,14 @@ fn replace_region<'tcx>(
     let returned = sig.output();
     let in_out = params.iter().any(|(_, is_mut)| *is_mut);
     let result_ty = if in_out {
+        let returned_in_out = returned.tuple_fields().len() - 1;
+        if returned_in_out != params.iter().filter(|(_, is_mut)| *is_mut).count() {
+            tcx.dcx().span_fatal(
+                source_info.span,
+                "a `block_contract!` parameter of `&mut` type written `mut` must be written as \
+                 `&mut T` (not through a type alias): it is passed as in a call, not returned",
+            );
+        }
         returned.tuple_fields()[0]
     } else {
         returned
