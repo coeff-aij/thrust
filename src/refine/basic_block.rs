@@ -7,6 +7,7 @@ use rustc_index::IndexVec;
 use rustc_middle::mir::{BasicBlock, Local};
 use rustc_middle::ty as mir_ty;
 
+use crate::chc;
 use crate::rty;
 
 #[derive(Debug, Clone)]
@@ -194,35 +195,57 @@ impl BasicBlockType {
     }
 
     /// Assumes `precondition`, the precondition of the landing `landing` of the loop headed by
-    /// `head`, over the entry snapshots of this block, with the values it has no snapshot of
-    /// left unknown.
-    pub fn assume_entry_state(&mut self, head: BasicBlock, landing: &BasicBlockType) {
+    /// `head`, over the entry values of this block, with the values it has none of left unknown.
+    /// The entry value of a variable is its entry snapshot, or the parameter that holds it when
+    /// the block has no snapshot of it (the loop does not write it); of a `&mut` the loop writes
+    /// through, only its final value is the snapshot, and its current value is left unknown.
+    pub fn assume_entry_state(
+        &mut self,
+        head: BasicBlock,
+        landing: &BasicBlockType,
+        is_kept: impl Fn(Local) -> bool,
+    ) {
         let last = landing.precondition_param();
         let precondition = landing.ty.params[last].refinement.clone();
         let mut existentials = precondition.existentials.clone();
         let mut value_of = Vec::new();
+        let mut final_values = Vec::new();
         for (idx, param) in landing.ty.params.iter_enumerated() {
             let sort = param.ty.to_sort();
             let known = match landing.param_kind(idx) {
-                BasicBlockTypeParamKind::Local(local, _) => {
-                    self.param_of_entry_snapshot(head, local)
-                }
+                BasicBlockTypeParamKind::Local(local, _) => self
+                    .param_of_entry_snapshot(head, local)
+                    .or_else(|| self.param_of_local(local).filter(|_| is_kept(local))),
                 BasicBlockTypeParamKind::OuterFnParam(outer) => self.param_of_outer_fn_param(outer),
                 BasicBlockTypeParamKind::Synthetic
                 | BasicBlockTypeParamKind::EntrySnapshot(..)
                 | BasicBlockTypeParamKind::Captured => None,
             };
             let var = match known {
-                Some(own) => rty::RefinedTypeVar::Free(own),
+                Some(own) if self.ty.params[own].ty.to_sort() == sort => {
+                    rty::RefinedTypeVar::Free(own)
+                }
+                Some(own) => {
+                    let value = existentials.push(sort);
+                    final_values.push((value, own, param.ty.clone()));
+                    rty::RefinedTypeVar::Existential(value)
+                }
                 None => rty::RefinedTypeVar::Existential(existentials.push(sort)),
             };
             value_of.push(var);
         }
-        let body = precondition.body.map_var(|v| match v {
+        let mut body = precondition.body.map_var(|v| match v {
             rty::RefinedTypeVar::Value => value_of[last.index()],
             rty::RefinedTypeVar::Free(idx) => value_of[idx.index()],
             rty::RefinedTypeVar::Existential(ev) => rty::RefinedTypeVar::Existential(ev),
         });
+        for (value, final_value, ty) in final_values {
+            let value = chc::Term::var(rty::RefinedTypeVar::Existential(value));
+            body.push_conj(
+                final_value_term(&ty, value)
+                    .equal_to(chc::Term::var(rty::RefinedTypeVar::Free(final_value))),
+            );
+        }
         self.assumed_entry_state
             .push_conj(rty::Refinement::new(existentials, body));
     }
@@ -355,5 +378,24 @@ impl BasicBlockType {
             .refinement
             .clone()
             .map_free_var(|idx| mapping[&idx]);
+    }
+}
+
+/// The type of the final value of a `&mut` of type `ty`, which is the whole of the local that
+/// holds it when the local is boxed (a mutable local is).
+pub fn final_value_type<T: Clone>(ty: &rty::Type<T>) -> rty::Type<T> {
+    match ty.as_pointer() {
+        Some(pointer) if pointer.is_own() => final_value_type(&pointer.elem.ty),
+        Some(pointer) if pointer.is_mut() => pointer.elem.ty.clone(),
+        _ => unreachable!("only a `&mut` keeps its final value alone"),
+    }
+}
+
+/// The final value of the `&mut`, of type `ty`, that `term` holds.
+pub fn final_value_term<T, V>(ty: &rty::Type<T>, term: chc::Term<V>) -> chc::Term<V> {
+    match ty.as_pointer() {
+        Some(pointer) if pointer.is_own() => final_value_term(&pointer.elem.ty, term.box_current()),
+        Some(pointer) if pointer.is_mut() => term.mut_final(),
+        _ => unreachable!("only a `&mut` keeps its final value alone"),
     }
 }

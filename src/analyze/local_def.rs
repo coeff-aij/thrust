@@ -2443,6 +2443,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Gives each block of a loop with a landing a parameter for the entry value of each variable
     /// the loop does not change that its head holds, and has the blocks with a precondition of
     /// their own require each to be unchanged.
+    ///
+    /// A block that has such a variable as a parameter itself, and whose loop never writes it,
+    /// takes that parameter as the entry value, as it equals it at every visit: the block has no
+    /// parameter of its own for it and nothing to check. A `&mut` the loop writes through has an
+    /// entry parameter for its final value only, the one thing the loop leaves as it was.
     fn add_entry_snapshots(&mut self) {
         for frame in &self.loop_frames {
             let head_ty = self
@@ -2456,19 +2461,28 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .filter_map(|(idx, param)| {
                     let local = head_ty.local_of_param(idx)?;
                     let kept = *frame.kept.get(&local)?;
-                    (!param.ty.to_sort().is_singleton())
-                        .then(|| (local, kept, param.ty.clone().strip_refinement()))
+                    (!param.ty.to_sort().is_singleton()).then(|| {
+                        let ty = kept.snapshot_type(param.ty.clone().strip_refinement());
+                        (local, kept, ty)
+                    })
                 })
                 .collect();
             for bb in frame.snapshot_blocks(&self.block_contracts) {
                 let requires = analyze::basic_block::needs_own_precondition(&self.body, bb);
                 let update = |bty: &mut BasicBlockType| {
                     for (local, kept, ty) in &kept {
+                        let current = bty.param_of_local(*local);
+                        if current.is_some() && *kept == analyze::loop_frame::Kept::Whole {
+                            continue;
+                        }
                         let snapshot =
                             bty.push_entry_snapshot_param(frame.head, *local, ty.clone());
-                        let current = bty.param_of_local(*local).filter(|_| requires);
-                        if let Some(current) = current {
-                            bty.require_of_param(snapshot, kept.equality_with(current));
+                        let requirement = current.filter(|_| requires).and_then(|current| {
+                            let current_ty = bty.as_ref().params[current].ty.clone();
+                            kept.requirement_on_snapshot(current, &current_ty)
+                        });
+                        if let Some(requirement) = requirement {
+                            bty.require_of_param(snapshot, requirement);
                         }
                     }
                 };

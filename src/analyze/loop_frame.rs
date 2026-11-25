@@ -7,12 +7,15 @@
 //!
 //! A block of its own, the landing, is put on the edge into the head from outside the loop. It
 //! inherits the state before the loop, which is its precondition. Every block of the loop that
-//! has a precondition of its own carries the landing's values of the unchanged variables as
-//! extra parameters, the entry snapshot, passed on unchanged inside the loop. Such a block
-//! requires each unchanged variable to equal its snapshot, which every edge into it checks, and
-//! assumes the landing's precondition over the snapshot. That precondition is the premise of
-//! the clause that enters the loop and has no unknown of its own, and a snapshot is never
-//! changed, so the assumption holds at every visit and needs no check.
+//! has a precondition of its own assumes the landing's precondition over the entry values of the
+//! unchanged variables, the other values left unknown. A variable the loop does not write is its
+//! own entry value in a block that has it as a parameter; a block without it carries the
+//! landing's value as an extra parameter, the entry snapshot, passed on unchanged inside the
+//! loop. For a `&mut` the loop writes through, the snapshot is of the final value alone, the only
+//! part the loop leaves as it was; a block that has the `&mut` requires its final value to equal
+//! the snapshot, which every edge into it checks. That precondition is the premise of the clause
+//! that enters the loop and has no unknown of its own, and an entry value is never changed, so
+//! the assumption holds at every visit and needs no check.
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -21,6 +24,7 @@ use rustc_middle::ty::{self as mir_ty, TyCtxt};
 
 use crate::analyze::block_contract::{changed_locals, BlockContract, Change};
 use crate::chc;
+use crate::refine::{final_value_term, final_value_type};
 use crate::rty;
 
 /// How much of a variable the loop leaves as it was.
@@ -33,17 +37,34 @@ pub enum Kept {
 }
 
 impl Kept {
+    /// The type of the entry snapshot of a variable of type `ty`: the variable's own type for
+    /// [`Kept::Whole`], and for [`Kept::FinalOnly`] the type of the final value of the `&mut`,
+    /// which is all the loop leaves as it was.
+    pub fn snapshot_type(self, ty: rty::Type<rty::Closed>) -> rty::Type<rty::Closed> {
+        match self {
+            Kept::Whole => ty,
+            Kept::FinalOnly => final_value_type(&ty),
+        }
+    }
+
     /// What a block of the loop requires of the parameter `current` holding the variable, as a
-    /// refinement of its entry snapshot.
-    pub fn equality_with(
+    /// refinement of its entry snapshot, or `None` when the block needs none: a variable the loop
+    /// does not write, which the block has as a parameter itself, is its own entry snapshot.
+    pub fn requirement_on_snapshot(
         self,
         current: rty::FunctionParamIdx,
-    ) -> rty::Refinement<rty::FunctionParamIdx> {
-        let snapshot = chc::Term::var(rty::RefinedTypeVar::Value);
-        let current = chc::Term::var(rty::RefinedTypeVar::Free(current));
+        current_ty: &rty::Type<rty::FunctionParamIdx>,
+    ) -> Option<rty::Refinement<rty::FunctionParamIdx>> {
         match self {
-            Kept::Whole => snapshot.equal_to(current).into(),
-            Kept::FinalOnly => snapshot.mut_final().equal_to(current.mut_final()).into(),
+            Kept::Whole => None,
+            Kept::FinalOnly => {
+                let snapshot = chc::Term::var(rty::RefinedTypeVar::Value);
+                let current = final_value_term(
+                    current_ty,
+                    chc::Term::var(rty::RefinedTypeVar::Free(current)),
+                );
+                Some(snapshot.equal_to(current).into())
+            }
         }
     }
 }

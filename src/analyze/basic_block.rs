@@ -17,8 +17,8 @@ use crate::chc;
 use crate::chc::debug;
 use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{
-    Assumption, BasicBlockType, BasicBlockTypeParamKind, PlaceType, PlaceTypeBuilder, PlaceTypeVar,
-    TempVarIdx, TypeBuilder, Var,
+    final_value_term, final_value_type, Assumption, BasicBlockType, BasicBlockTypeParamKind,
+    PlaceType, PlaceTypeBuilder, PlaceTypeVar, TempVarIdx, TypeBuilder, Var,
 };
 use crate::rty::{
     self, ClauseBuilderExt as _, ClauseScope as _, ShiftExistential as _, Subtyping as _,
@@ -1887,20 +1887,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         let outer_fn_param_var = outer_fn_param_vars[&outer_idx];
                         self.env.var_type(outer_fn_param_var).into()
                     }
-                    // A block of the loop passes its snapshot on; the landing, which the loop is
-                    // entered from, takes the current value as the snapshot.
+                    // A block of the loop passes its snapshot on, or the variable itself when it
+                    // has no snapshot of it (the loop does not write it); the landing, which the
+                    // loop is entered from, takes the variable's current value as the snapshot.
                     BasicBlockTypeParamKind::EntrySnapshot(head, local) => {
                         match self.snapshot_vars.get(&(head, local)) {
                             Some(var) => self.env.var_type(*var).into(),
-                            None => {
-                                assert!(
-                                    self.is_landing_of(head),
-                                    "only the landing of the loop headed by {head:?} lacks its \
-                                     entry snapshot, not {:?}",
-                                    self.basic_block
-                                );
-                                self.local_argument(local, rty)
-                            }
+                            None => self.snapshot_argument(local, rty),
                         }
                     }
                     BasicBlockTypeParamKind::Captured => unreachable!(),
@@ -1932,10 +1925,34 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// Whether the current block is the landing of the loop headed by `head`.
-    fn is_landing_of(&self, head: BasicBlock) -> bool {
-        self.loop_frames
-            .iter()
-            .any(|frame| frame.head == head && frame.landing == self.basic_block)
+    /// The place type of the entry snapshot of `local`, of the sort `sort`, when this block has no
+    /// snapshot parameter of it: the variable's value, or of a `&mut` the loop writes through
+    /// (whose snapshot has the sort of its final value) its final value alone.
+    fn snapshot_place(&self, local: Local, sort: &chc::Sort) -> PlaceType {
+        let place = self.env.local_type(local);
+        if place.ty.to_sort() == *sort {
+            return place;
+        }
+        PlaceType {
+            ty: final_value_type(&place.ty),
+            term: final_value_term(&place.ty, place.term),
+            existentials: place.existentials,
+            formula: place.formula,
+        }
+    }
+
+    /// The argument for an entry snapshot of `local`, of the type `rty`, when this block has no
+    /// snapshot parameter of it.
+    fn snapshot_argument(
+        &self,
+        local: Local,
+        rty: &rty::RefinedType<rty::FunctionParamIdx>,
+    ) -> rty::RefinedType<Var> {
+        // A local that holds no value on this edge is passed as any value (see `local_argument`).
+        if !self.env.contains_local(local) {
+            return rty::RefinedType::unrefined(rty.ty.clone().assert_closed().vacuous());
+        }
+        self.snapshot_place(local, &rty.ty.to_sort()).into()
     }
 
     /// The argument for a parameter that holds `local`, of the type `rty`.
@@ -2000,7 +2017,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     self.env.var_type(outer_fn_param_vars[&outer_idx])
                 }
                 BasicBlockTypeParamKind::EntrySnapshot(head, local) => {
-                    self.env.var_type(self.snapshot_vars[&(head, local)])
+                    match self.snapshot_vars.get(&(head, local)) {
+                        Some(var) => self.env.var_type(*var),
+                        None => self.snapshot_place(local, &param_rty.ty.to_sort()),
+                    }
                 }
                 BasicBlockTypeParamKind::Synthetic => continue,
                 BasicBlockTypeParamKind::Captured => unreachable!(),
@@ -2060,7 +2080,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         for bb in blocks {
             self.ctx
                 .update_basic_block_ty(self.analysis_key, bb, |bty| {
-                    bty.assume_entry_state(head, landing_ty)
+                    bty.assume_entry_state(head, landing_ty, |local| {
+                        frame.kept.contains_key(&local)
+                    })
                 });
         }
     }

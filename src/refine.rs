@@ -11,7 +11,9 @@ mod template;
 pub use template::{TemplateRegistry, TemplateScope, TypeBuilder};
 
 mod basic_block;
-pub use basic_block::{BasicBlockType, BasicBlockTypeParamKind};
+pub use basic_block::{
+    final_value_term, final_value_type, BasicBlockType, BasicBlockTypeParamKind,
+};
 
 mod env;
 pub use env::{
