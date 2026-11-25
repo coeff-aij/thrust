@@ -40,7 +40,7 @@ fn stmt_str_literal(stmt: &rustc_hir::Stmt) -> Option<String> {
     }
 }
 
-fn is_annotated_as_extern_spec_fn_impl(tcx: &TyCtxt, local_def_id: &LocalDefId) -> bool {
+pub(super) fn is_annotated_as_extern_spec_fn_impl(tcx: &TyCtxt, local_def_id: &LocalDefId) -> bool {
     analyze::annot::has_thrust_attr(
         *tcx,
         local_def_id.to_def_id(),
@@ -57,7 +57,7 @@ fn is_annotated_as_extern_spec_fn_impl(tcx: &TyCtxt, local_def_id: &LocalDefId) 
 /// position that is not one of the spec's own type parameters is one the spec's own source
 /// fixed to a concrete type, and [`Analyzer::def_ty_with_args`] uses this to tell whether a
 /// later call's actual instantiation is the one the spec covers.
-fn extern_spec_fn_target_def_id_impl<'tcx>(
+pub(super) fn extern_spec_fn_target_def_id_impl<'tcx>(
     tcx: &TyCtxt<'tcx>,
     local_def_id: &LocalDefId,
     mir_body: &Body<'tcx>,
@@ -141,6 +141,9 @@ pub struct Analyzer<'tcx, 'ctx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     drop_points: HashMap<BasicBlock, analyze::basic_block::DropPoints>,
     block_contracts: Vec<analyze::block_contract::BlockContract>,
+    /// The variables formulas name in the windows of two-phase borrows, found before the body is
+    /// rewritten.
+    window_reads: analyze::two_phase_borrow::WindowReads<'tcx>,
     type_builder: TypeBuilder<'tcx>,
 }
 
@@ -756,9 +759,55 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
         let mut fn_ty = builder.build();
+        self.require_ghost_const_premises(sig, &mut fn_ty);
         self.conjoin_fn_mut_hist_inv(&mut fn_ty);
         self.conjoin_type_invariants(sig, &mut fn_ty);
         rty::RefinedType::unrefined(fn_ty.into())
+    }
+
+    /// Requires of each ghost const argument ([`analyze::ghost_const`]), the last parameters of
+    /// `sig`, to be in the range of its type, which the value of a call's const argument is and a
+    /// caller's own ghost argument is by this requirement; and, of an extern spec's, to be as its
+    /// call of the target has it ([`analyze::ghost_const::GhostTie`]), as the spec of a type
+    /// fixed by its call holds only there.
+    fn require_ghost_const_premises(
+        &self,
+        sig: mir_ty::FnSig<'tcx>,
+        fn_ty: &mut rty::FunctionType,
+    ) {
+        let ghosts = analyze::ghost_const::ghost_consts(self.ctx, self.local_def_id.to_def_id());
+        let first = sig.inputs().len() - ghosts.len();
+        for (offset, ghost) in ghosts.iter().enumerate() {
+            let value = chc::Term::var(rty::RefinedTypeVar::Value);
+            let mut premises = Vec::new();
+            if ghost.ty.is_integral() {
+                premises.push(
+                    analyze::basic_block::int_term_in_range(self.tcx, value.clone(), ghost.ty)
+                        .equal_to(chc::Term::bool(true)),
+                );
+            }
+            match ghost.tie {
+                analyze::ghost_const::GhostTie::Free => {}
+                analyze::ghost_const::GhostTie::SameAs(position) => {
+                    let other = rty::FunctionParamIdx::from_usize(first + position);
+                    premises.push(value.equal_to(chc::Term::var(rty::RefinedTypeVar::Free(other))));
+                }
+                analyze::ghost_const::GhostTie::Fixed(ct) => {
+                    let fixed = analyze::ghost_const::const_value_term(self.tcx, ghost.ty, ct)
+                        .unwrap_or_else(|| {
+                            self.tcx.dcx().fatal(
+                                "an extern spec passes a const parameter of its target as \
+                                 something other than a value or its own parameter",
+                            )
+                        });
+                    premises.push(value.equal_to(fixed));
+                }
+            }
+            let idx = rty::FunctionParamIdx::from_usize(first + offset);
+            for premise in premises {
+                fn_ty.params[idx].extend_refinement(premise.into());
+            }
+        }
     }
 
     /// Conjoins the type invariants of the parameters and the result to the contract, as
@@ -1267,7 +1316,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mentions = local_mentions(&self.body);
         let mut kept = HashSet::new();
         for (temp, def, place) in replaced {
-            self.reject_formula_read_of_changed_mut(*temp, *def, place, &formula_reads, &mentions);
             if defs[temp].len() != 1
                 || self.has_unknown_aliases(place)
                 || self.changed_before_use(place, *def, &uses[temp], &mentions)
@@ -1294,34 +1342,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         std::iter::once(*place)
             .chain(index_locals)
             .any(|read| self.written_before_use(&read, def, uses, mentions))
-    }
-
-    /// Stops at a formula that names a `&mut` deref temporary whose place may change between the
-    /// copy and the formula. The borrow checker does not see the formula's read, so the
-    /// program may write the referent through another `&mut` after the copy's last use, which
-    /// a kept copy, a second `&mut` the model keeps apart, would not see.
-    fn reject_formula_read_of_changed_mut(
-        &self,
-        temp: Local,
-        def: mir::Location,
-        place: &mir::Place<'tcx>,
-        formula_reads: &[(Local, mir::Location, rustc_span::Symbol)],
-        mentions: &HashMap<Local, Vec<mir::Location>>,
-    ) {
-        if self.body.local_decls[temp].ty.ref_mutability() != Some(mir::Mutability::Mut) {
-            return;
-        }
-        for (_, loc, name) in formula_reads.iter().filter(|(local, ..)| *local == temp) {
-            if self.changed_before_use(place, def, &[*loc], mentions) {
-                self.tcx.dcx().span_fatal(
-                    self.body.source_info(*loc).span,
-                    format!(
-                        "a formula refers to `{name}`, a `&mut` copied from a place that may \
-                         change between the copy and here"
-                    ),
-                );
-            }
-        }
     }
 
     /// The local each name of a formula over live variables resolves to in `body`, with the
@@ -2264,8 +2284,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     _ => None,
                 });
                 for place in places {
-                    let span = operands[0].span;
+                    let place = self
+                        .window_reads
+                        .read_by_formula(self.tcx, &self.body, span, place);
                     let node = mir::Operand::Copy(place);
+                    let span = operands[0].span;
                     operands.push(rustc_span::source_map::Spanned { node, span });
                 }
             }
@@ -2643,6 +2666,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .body(self.body.clone())
                 .drop_points(drop_points)
                 .block_contracts(self.block_contracts.clone())
+                .window_reads(self.window_reads.clone())
                 .run(&rty, expected_fn_ty);
         }
     }
@@ -2770,7 +2794,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn new(ctx: &'ctx mut analyze::Analyzer<'tcx>, local_def_id: LocalDefId) -> Self {
         let tcx = ctx.tcx;
-        let body = tcx.optimized_mir(local_def_id.to_def_id()).clone();
+        let mut body = tcx.optimized_mir(local_def_id.to_def_id()).clone();
+        let ghosts = analyze::ghost_const::ghost_consts(ctx, local_def_id.to_def_id());
+        if !ghosts.is_empty() {
+            analyze::ghost_const::add_ghost_args(tcx, &mut body, &ghosts);
+        }
         let drop_points = Default::default();
         let (owner_fn_id, owner_fn_id_args) =
             if is_annotated_as_extern_spec_fn_impl(&tcx, &local_def_id) {
@@ -2791,6 +2819,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             generic_args,
             drop_points,
             block_contracts: Vec::new(),
+            window_reads: Default::default(),
             type_builder,
         }
     }
@@ -2987,8 +3016,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .record(self.local_def_id, analyze::BodyCheck::Checked);
         self.ctx.enter_body(self.local_def_id);
         self.unelaborate_derefs();
+        self.window_reads =
+            analyze::two_phase_borrow::redirect_window_reads(self.tcx, &mut self.body);
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
-        analyze::two_phase_borrow::move_to_activation(self.tcx, &mut self.body);
         self.normalize_switch_int_discriminant_order();
         analyze::block_contract::separate_entries(self.ctx, &mut self.body);
         let move_data = self.move_data();

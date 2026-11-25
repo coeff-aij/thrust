@@ -264,6 +264,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let contract_generic = !self.tcx.is_closure_like(local_def_id.to_def_id())
             && self.ctx.contract_names_type_param(local_def_id);
         let has_constrained_type_param = !self.constrained_type_params(local_def_id).is_empty();
+        let has_const_param = self.has_const_param(local_def_id);
         let is_law_impl = self.is_law_impl(local_def_id);
         let per_instance = self.ctx.per_instance_generics();
         let per_instance_too = per_instance && !per_instance_generics_requested();
@@ -391,14 +392,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.ctx
                     .register_deferred_def(owner_fn_id, local_def_id, owner_fn_id_args);
             }
-        } else if sig.has_param() || trait_method || contract_generic || has_constrained_type_param
+        } else if sig.has_param()
+            || trait_method
+            || contract_generic
+            || has_constrained_type_param
+            || has_const_param
         {
             // A function is generic when its contract names a type parameter its signature does
             // not mention: a trait method's `Self::score(x)`, or `T::score(x)` of
             // `fn via<T: Score>`, resolves at each instance to the impl's own logic function.
             // Closures keep their treatment. So is a function with a trait-bounded type
             // parameter, its own or its parent's (`impl<T: K> W<T>`), since its body depends on
-            // the impl the parameter is instantiated with.
+            // the impl the parameter is instantiated with. So is a function with a const
+            // parameter, its own or its parent's, even when its signature does not mention it:
+            // as a concrete def its body would not be analyzed (a generic function is no walk
+            // root), and a call would take the contract with nothing checking the body against it.
             if trusted_derive {
                 let expected = analyzer.expected_ty();
                 self.ctx
@@ -922,6 +930,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn has_fn_mut_bounded_param(&self, local_def_id: LocalDefId) -> bool {
         self.tcx.def_kind(local_def_id).is_fn_like()
             && !analyze::fn_mut_bounded_params(self.tcx, local_def_id.to_def_id()).is_empty()
+    }
+
+    /// Whether `local_def_id` has a const parameter, its own or an enclosing item's.
+    fn has_const_param(&self, local_def_id: LocalDefId) -> bool {
+        let generics = self.tcx.generics_of(local_def_id);
+        (0..generics.count()).any(|idx| {
+            matches!(
+                generics.param_at(idx, self.tcx).kind,
+                mir_ty::GenericParamDefKind::Const { .. }
+            )
+        })
     }
 
     /// Indices of the type parameters bound by a trait other than `Sized`, including bounds
