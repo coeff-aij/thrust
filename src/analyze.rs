@@ -311,11 +311,12 @@ enum Reach {
 /// (`struct N<T>(Option<Box<N<(T, T)>>>)`) holds unboundedly many.
 const MAX_REACHED_TYS: usize = 1024;
 
-/// The longest chain of nested instances of one `FnMut`-bounded def, each at a strictly deeper
-/// type than the one it was reached from, that is analyzed before the recursion counts as
-/// polymorphic. It is small because each nested instance analyzes the body again, so memory grows
-/// fast; rustc's own recursion limit is far too large for that.
-const MAX_GROWING_FN_MUT_INSTANCES: usize = 3;
+/// The longest chain of nested instances of one def, each at a strictly deeper type than the one
+/// it was reached from, that is analyzed before the recursion counts as polymorphic. It is small
+/// because each nested instance analyzes the body again, at types that may double in size
+/// (`g((x, x), n - 1)`), so time and memory grow fast; rustc's own recursion limit is far too
+/// large for that.
+const MAX_GROWING_INSTANCES: usize = 3;
 
 /// Whether `visit` finds a type among `ty` and the types it holds ([`held_tys`]), looking into the
 /// parts of a type where it says so.
@@ -720,6 +721,8 @@ pub struct Analyzer<'tcx> {
     analyzed_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
     /// Every analysis of a body, in the order they ran; see [`Analyzer::record_body_analysis`].
     analyzed_bodies: RefCell<Vec<AnalysisKey<'tcx>>>,
+    /// See [`Analyzer::is_unselected_spec_target`].
+    unselected_spec_targets: HashSet<DefId>,
     /// See [`HistInvRelations`].
     hist_inv_relations: HistInvRelations<'tcx>,
     /// See [`FnMutReuse`].
@@ -729,8 +732,9 @@ pub struct Analyzer<'tcx> {
     /// The instances `(def, generic args, caller)` that use a generic def's contract as
     /// instantiated; see [`Analyzer::check_reused_spec_bounds`].
     reused_generic_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>, DefId)>>,
-    /// The instances of `FnMut`-bounded defs whose bodies are being analyzed, innermost last.
-    fn_mut_instances_in_analysis: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
+    /// The instances of defs whose bodies are being analyzed at a call's arguments, innermost
+    /// last.
+    instances_in_analysis: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
     /// See [`Analyzer::contract_written`].
     contract_written: RefCell<HashMap<LocalDefId, bool>>,
     /// The generic defs of a crate with an `Invariant` impl that are verified once over their
@@ -1100,11 +1104,12 @@ impl<'tcx> Analyzer<'tcx> {
             concrete_instances: Default::default(),
             analyzed_instances: Default::default(),
             analyzed_bodies: Default::default(),
+            unselected_spec_targets: Default::default(),
             hist_inv_relations: Default::default(),
             fn_mut_reuse: Default::default(),
             spec_assumptions: Default::default(),
             reused_generic_instances: Default::default(),
-            fn_mut_instances_in_analysis: Default::default(),
+            instances_in_analysis: Default::default(),
             contract_written: Default::default(),
             per_instance_too: Default::default(),
             called_fn_tys: Default::default(),
@@ -1901,6 +1906,20 @@ impl<'tcx> Analyzer<'tcx> {
         written
     }
 
+    /// Records that `def_id`, outside `THRUST_VERIFY_ONLY` and checked only per instance, takes
+    /// the contract its extern spec writes, built at each instance this run reaches
+    /// (`crate_::Analyzer::refine_fn_def_at_site`).
+    pub fn register_unselected_spec_target(&mut self, def_id: DefId) {
+        self.unselected_spec_targets.insert(def_id);
+    }
+
+    /// Whether `def_id` is a function outside `THRUST_VERIFY_ONLY` whose contract an extern spec
+    /// writes and whose body is checked only at the instances this run reaches: a written contract
+    /// whose building at an instance analyzes the body there.
+    pub fn is_unselected_spec_target(&self, def_id: DefId) -> bool {
+        self.unselected_spec_targets.contains(&def_id)
+    }
+
     pub fn concrete_def_ty(&self, def_id: DefId) -> Option<&rty::RefinedType> {
         self.defs.get(&def_id).and_then(|def_ty| match def_ty {
             DefTy::Concrete(rty, _) => Some(rty),
@@ -2597,7 +2616,7 @@ impl<'tcx> Analyzer<'tcx> {
                 "generic def at an instance"
             );
         }
-        if analyze_body && fn_mut_bounded {
+        if analyze_body {
             // A chain of nested instances of the same def whose type depth keeps growing stands
             // for polymorphic recursion, which would instantiate the def at ever larger types. A
             // call at a fixed other type (`g(inc, ..)`) reaches an instance already in analysis
@@ -2607,7 +2626,7 @@ impl<'tcx> Analyzer<'tcx> {
             };
             let mut growing = 1;
             let mut shallowest = depth(generic_args);
-            for (analyzed, args) in self.fn_mut_instances_in_analysis.borrow().iter().rev() {
+            for (analyzed, args) in self.instances_in_analysis.borrow().iter().rev() {
                 if *analyzed != def_id {
                     continue;
                 }
@@ -2617,7 +2636,7 @@ impl<'tcx> Analyzer<'tcx> {
                 growing += 1;
                 shallowest = depth(args);
             }
-            let recursive = growing > MAX_GROWING_FN_MUT_INSTANCES;
+            let recursive = growing > MAX_GROWING_INSTANCES;
             if recursive {
                 self.tcx.dcx().fatal(format!(
                     "`{}` is analyzed at an instance whose body calls it at other type arguments, \
@@ -2627,11 +2646,9 @@ impl<'tcx> Analyzer<'tcx> {
             }
         }
         if analyze_body {
-            if fn_mut_bounded {
-                self.fn_mut_instances_in_analysis
-                    .borrow_mut()
-                    .push((def_id, generic_args));
-            }
+            self.instances_in_analysis
+                .borrow_mut()
+                .push((def_id, generic_args));
             // The arguments the body is instantiated at: the spec's own body at the bound
             // arguments, a target's body at the call's.
             let body_args = if local_def_id.to_def_id() == def_id {
@@ -2662,9 +2679,7 @@ impl<'tcx> Analyzer<'tcx> {
             };
             let body_local_def_id = body_analyzer.local_def_id();
             body_analyzer.run(&expected);
-            if fn_mut_bounded {
-                self.fn_mut_instances_in_analysis.borrow_mut().pop();
-            }
+            self.instances_in_analysis.borrow_mut().pop();
             use mir_ty::TypeVisitableExt as _;
             if !body_args.has_param() {
                 self.concrete_instances

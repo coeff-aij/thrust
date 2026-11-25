@@ -724,6 +724,10 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         &mut self,
         instance: mir_ty::Instance<'tcx>,
     ) -> Option<rty::FunctionType> {
+        // Its extern spec writes the precondition; building it here would analyze the body.
+        if self.is_unselected_spec_target(instance.def_id()) {
+            return None;
+        }
         let template = self
             .concrete_def_ty(instance.def_id())
             .and_then(|def_ty| def_ty.ty.as_function().cloned());
