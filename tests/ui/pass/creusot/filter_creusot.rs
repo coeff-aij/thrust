@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+use thrust_models::FnParam;
 // slow: Creusot's Filter form; the pass side gets no answer within 120 s and answers within 300 s
 // Creusot's `examples/iterators/17_filter.rs` (3620de437): `Filter` and its `Iterator` impl, with
 // Creusot's code and Thrust's annotations, in Creusot's own form: `produces` relates the visited
@@ -17,7 +18,6 @@
 // empty body. The `resolve` of Creusot's `completed` has no counterpart: Thrust
 // has no `resolve` predicate (fork issue #156). The client calls `next` at `Range` where Creusot's
 // `less_than` collects a `Vec` from std's `filter`.
-use thrust_models::FnParam;
 use thrust_models::model::{Array, Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 

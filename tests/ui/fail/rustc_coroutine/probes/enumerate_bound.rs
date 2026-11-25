@@ -4,7 +4,7 @@
 
 // The enumerate position over a bit-set iterator stays below the domain size: `BitIter`'s model
 // is (bound, count), as in tests/ui/pass/rustc_coroutine/eligibility.rs.
-use thrust_models::{Model, model::{UInt, UIntN}};
+use thrust_models::{Model, model::UInt};
 use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, forall};
 

@@ -1,7 +1,7 @@
 //@compile-flags: -C debug-assertions=off
+use thrust_models::{exists, Model, model::Mut};
 // The closure holds `t` at `&mut &T`; restated at `&mut &i64`, the clause would read a `T` as an
 // integer, which `g::<bool>` makes ill-sorted.
-use thrust_models::{exists, Model, model::Mut};
 #[thrust_macros::requires(thrust_macros::pre!(f(&x)))]
 #[thrust_macros::ensures(exists(|g| thrust_macros::post!(Mut::new(f, g)(&x), result)))]
 fn call<F: FnMut(&i64) -> i64>(x: i64, mut f: F) -> i64 {

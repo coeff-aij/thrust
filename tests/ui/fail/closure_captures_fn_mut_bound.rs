@@ -1,9 +1,9 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+use thrust_models::Model;
 // A closure passed straight to `call`, whose `F: FnMut` bound makes it `FnMut` although its body
 // only reads `dl`, holds `dl` behind a `&mut`.
-use thrust_models::Model;
 struct D {
     a: i64,
     b: i64,

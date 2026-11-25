@@ -6,8 +6,8 @@ use thrust_models::Model;
 fn distinct<T: Model>(x: T, y: T) -> bool { x != y }
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
-#[thrust_macros::ensures(distinct::<&'static str>(result, a))] //~ ERROR: the trait bound `str: Model` is not satisfied
+#[thrust_macros::ensures(distinct::<&'static str>(result, a))] //~ ERROR: the trait bound `str: thrust_models::Model` is not satisfied
 //~^ ERROR: mismatched types
-fn different(a: &'static str) -> &'static str { if a == "x" { "y" } else { "x" } } //~ ERROR: the trait bound `str: Model` is not satisfied
+fn different(a: &'static str) -> &'static str { if a == "x" { "y" } else { "x" } } //~ ERROR: the trait bound `str: thrust_models::Model` is not satisfied
 fn main() { let _ = different("x"); assert!(1 == 2); }
 

@@ -2,7 +2,7 @@
 
 // A reference `iter!('l)` to a loop's ghost is resolved as `break 'l` is, and only to a `for`
 // loop that has ghosts.
-use thrust_models::{Ghost, model::Seq};
+
 use core::ops::Range;
 
 #[thrust_macros::context]

@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-use thrust_models::model::{UInt, UIntN};
+use thrust_models::model::UInt;
 use thrust_models::exists;
 
 /// The model of `usize`, which carries its width while `THRUST_INT_RANGE` is set.

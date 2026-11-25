@@ -6,7 +6,7 @@ trait Tr<A> {
     type Out;
 }
 
-#[thrust_macros::requires(thrust_macros::pre!(g(v)))] //~ ERROR: `pre!` passes a value of type `<<T as Tr<i64>>::Out as Model>::Ty` where the callee takes `<T as Tr<i32>>::Out`
+#[thrust_macros::requires(thrust_macros::pre!(g(v)))] //~ ERROR: `pre!` passes a value of type `<<T as Tr<i64>>::Out as thrust_models::Model>::Ty` where the callee takes `<T as Tr<i32>>::Out`
 #[thrust_macros::ensures(true)]
 fn apply<T: Tr<i32> + Tr<i64>, G: Fn(<T as Tr<i32>>::Out)>(g: G, v: <T as Tr<i64>>::Out)
 where

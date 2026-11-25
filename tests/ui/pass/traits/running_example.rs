@@ -147,9 +147,9 @@ impl Iterator for Range {
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*it))]
 #[thrust_macros::ensures(I::invariant(!it))]
-fn count<I: Iterator + thrust_models::Model>(it: &mut I) -> usize
+fn count<I: Iterator + Model>(it: &mut I) -> usize
 where
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     let mut n = 0;
     let b = it;

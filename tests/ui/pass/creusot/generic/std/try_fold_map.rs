@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1 THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::{Ghost, model::IntN};
+use thrust_models::Ghost;
 use thrust_models::{exists, forall};
 use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};
@@ -9,7 +9,7 @@ use thrust_models::Model;
 
 /// The model of `isize`, which carries its width while `THRUST_INT_RANGE` is set.
 #[cfg(not(thrust_int_range))]
-type ISize = thrust_models::model::Int;
+type ISize = Int;
 #[cfg(thrust_int_range)]
 type ISize = IntN<64>;
 

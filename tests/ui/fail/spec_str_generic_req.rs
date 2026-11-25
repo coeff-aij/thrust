@@ -5,5 +5,5 @@ use thrust_models::Model;
 #[thrust_macros::requires(a == b)]
 #[thrust_macros::ensures(true)]
 fn need_same<T: Model>(a: T, b: T) {}
-fn main() { need_same("x", "y"); } //~ ERROR: the trait bound `str: Model` is not satisfied
+fn main() { need_same("x", "y"); } //~ ERROR: the trait bound `str: thrust_models::Model` is not satisfied
 

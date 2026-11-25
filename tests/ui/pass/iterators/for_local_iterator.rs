@@ -45,7 +45,7 @@ impl IteratorSpec for Counter {
             && self.cur <= o.cur
             && o.cur <= o.end
             && visited.len() == o.cur - self.cur
-            && forall(|i: thrust_models::model::Int|
+            && forall(|i: Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.cur + i)
     }
 
@@ -58,9 +58,9 @@ impl IteratorSpec for Counter {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }

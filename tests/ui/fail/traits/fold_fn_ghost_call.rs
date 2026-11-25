@@ -88,7 +88,7 @@ struct Range {
     end: i64,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 

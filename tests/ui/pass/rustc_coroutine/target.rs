@@ -2152,7 +2152,7 @@ impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
 // //== Thrust model declarations
 //
 // Every user-defined type is modeled by itself (field by field). Without these,
-// projections such as `<&Size as Model>::Ty` in the injected
+// projections such as `<&Size as thrust_models::Model>::Ty` in the injected
 // std specs cannot be normalized and are treated as opaque sorts. IndexSlice
 // is unsized and has no model yet.
 

@@ -1,8 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-// A `post!` of a user's trait method at a concrete type takes the contract of the impl for it.
 use thrust_models::Model;
+// A `post!` of a user's trait method at a concrete type takes the contract of the impl for it.
 trait Inc {
     fn inc(x: i32) -> i32;
 }

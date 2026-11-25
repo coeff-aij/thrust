@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::model::{UInt, UIntN};
+use thrust_models::model::UInt;
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
