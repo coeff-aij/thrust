@@ -638,6 +638,8 @@ pub struct Analyzer<'tcx> {
 
     /// Collection of functions with `#[thrust::formula_fn]` attribute.
     formula_fns: HashMap<LocalDefId, DeferredFormulaFnDef<'tcx>>,
+    /// The variant of each lemma companion with one, collected once from the wrappers.
+    lemma_variants: HashMap<DefId, (DefId, mir_ty::GenericArgsRef<'tcx>)>,
     /// Instances of predicates with a Rust body; see [`Analyzer::predicate_with_args`].
     predicate_instances: Rc<RefCell<HashMap<PredicateInstanceKey<'tcx>, chc::UserDefinedPred>>>,
     /// The predicate instances whose bodies are being translated, innermost last.
@@ -1044,6 +1046,7 @@ impl<'tcx> Analyzer<'tcx> {
             tcx,
             defs,
             formula_fns,
+            lemma_variants: Default::default(),
             predicate_instances: Default::default(),
             defining_predicates: Default::default(),
             opaque_predicates: Default::default(),
@@ -3472,9 +3475,40 @@ impl<'tcx> Analyzer<'tcx> {
             .map(|(def_id, _)| def_id)
     }
 
+    /// The logic function that is the variant of the lemma companion `companion`, and the generic
+    /// arguments it is written with, in the companion's own parameter space (the variant's
+    /// wrapper, `#[thrust::lemma_variant_wrapper]`, has the lemma's generics).
+    pub fn lemma_variant_of(
+        &self,
+        companion: DefId,
+    ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        self.lemma_variants.get(&companion).copied()
+    }
+
+    /// Records the variant of the lemma companion that the wrapper `local_def_id` names, if it is
+    /// a `#[thrust::lemma_variant_wrapper]`; see [`Analyzer::lemma_variant_of`].
+    pub fn collect_lemma_variant(&mut self, local_def_id: LocalDefId) {
+        let wrapper_path = analyze::annot::lemma_variant_wrapper_path();
+        if !analyze::annot::has_thrust_attr(self.tcx, local_def_id.to_def_id(), &wrapper_path) {
+            return;
+        }
+        let companion_path = analyze::annot::lemma_variant_companion_path();
+        let Some((companion, _)) =
+            self.extract_path_and_args_with_attr(local_def_id, &companion_path)
+        else {
+            return;
+        };
+        let obligation_path = analyze::annot::lemma_variant_obligation_path();
+        let Some(variant) = self.extract_path_and_args_with_attr(local_def_id, &obligation_path)
+        else {
+            return;
+        };
+        self.lemma_variants.entry(companion).or_insert(variant);
+    }
+
     /// The definition a statement of `local_def_id`'s body marked with `attr_path` names, and the
     /// generic arguments it is written with, as type checking resolved them.
-    fn extract_path_and_args_with_attr(
+    pub fn extract_path_and_args_with_attr(
         &self,
         local_def_id: LocalDefId,
         attr_path: &[Symbol],
