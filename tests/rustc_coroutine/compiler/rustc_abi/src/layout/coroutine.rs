@@ -1557,6 +1557,8 @@ fn promote_locals<
                     && layout_wf::<F, FieldIdx, VariantIdx, C>(*calc, tag_layout)
                     && forall(|x: USize| !(0 <= x && x < (*local_layouts).len()) || 0 <= ts[x])
                     && DenseBitSet::<LocalIdx>::card(*ineligible_locals) <= (*local_layouts).len()
+                    // `picked` is an `IndexVec<u32, _>`: its next index is buildable.
+                    && <u32 as Idx>::can_new((*local_layouts).len())
                     && forall(|k: USize|
                         0 <= k && k <= (*prefix_layouts.at_entry()).len() + 1 + (*local_layouts).len() ==> <FieldIdx as Idx>::can_new(k))
                     && forall(|l: USize| !(iter_old.7[l] != 0) || DenseBitSet::<LocalIdx>::mem(*ineligible_locals, l))
@@ -1578,11 +1580,13 @@ fn promote_locals<
                     && forall(|k: USize| !(0 <= k && k < (*prefix_layouts.at_entry()).len())
                         || (*current)[k] == (*prefix_layouts.at_entry())[k])
                     && (*current)[(*prefix_layouts.at_entry()).len()] == tag_layout
+                    // Three conjuncts, so that the solver answers each on its own.
+                    && forall(|j: USize| !(0 <= j && j < produced.len()) || picked[j] == produced[j])
                     && forall(|j: USize| !(0 <= j && j < produced.len())
-                        || (picked[j] == produced[j]
-                            && <LocalIdx as Idx>::index_logic(picked[j]) < (*local_layouts).len()
-                            && (*current)[(*prefix_layouts.at_entry()).len() + 1 + j]
-                                == (*local_layouts)[<LocalIdx as Idx>::index_logic(picked[j])]))
+                        || <LocalIdx as Idx>::index_logic(picked[j]) < (*local_layouts).len())
+                    && forall(|j: USize| !(0 <= j && j < produced.len())
+                        || (*current)[(*prefix_layouts.at_entry()).len() + 1 + j]
+                            == (*local_layouts)[<LocalIdx as Idx>::index_logic(picked[j])])
                     && ts == super::weight_seq::<F>(*local_layouts, (*local_layouts).len())
                     && super::weight_total::<FieldIdx, F>(&*current)
                         == super::weight_total::<FieldIdx, F>(&*prefix_layouts.at_entry())
