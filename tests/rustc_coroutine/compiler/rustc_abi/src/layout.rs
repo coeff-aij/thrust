@@ -1546,7 +1546,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // results of `align_to` and `max`: the offset grows by less than the alignment's bytes,
         // and the struct's alignment's bytes by at most them.
         thrust_macros::block_contract!(
-            |offset: &mut Size, align: &mut Align, field_align: AbiAlign| -> ()
+            |mut offset: &mut Size, mut align: &mut Align, field_align: AbiAlign| -> ()
             requires((*offset).raw <= 4611686018427387904u64),
             ensures(
                 (*offset).raw <= (!offset).raw && (!offset).raw < (*offset).raw + 9223372036854775808u64
@@ -1571,7 +1571,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         // rest of the body reads in place of the result of `index_mut`. The assignment evaluates
         // `*offset` before the place, as the call evaluated its argument before the body.
         thrust_macros::block_contract!(
-            |offsets: &mut IndexVec<FieldIdx, Size>, i: FieldIdx, offset: &mut Size| -> ()
+            |mut offsets: &mut IndexVec<FieldIdx, Size>, i: FieldIdx, offset: &mut Size| -> ()
             requires(forall(|j: USize| !<FieldIdx as Idx>::index_is(i, j) || j < (*offsets).len())),
             ensures(
                 (!offsets).len() == (*offsets).len()
