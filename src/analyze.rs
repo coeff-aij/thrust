@@ -638,6 +638,8 @@ pub struct Analyzer<'tcx> {
 
     /// Collection of functions with `#[thrust::formula_fn]` attribute.
     formula_fns: HashMap<LocalDefId, DeferredFormulaFnDef<'tcx>>,
+    /// The variant of each lemma companion with one, collected once from the wrappers.
+    lemma_variants: HashMap<DefId, (DefId, mir_ty::GenericArgsRef<'tcx>)>,
     /// Instances of predicates with a Rust body; see [`Analyzer::predicate_with_args`].
     predicate_instances: Rc<RefCell<HashMap<PredicateInstanceKey<'tcx>, chc::UserDefinedPred>>>,
     /// The predicate instances whose bodies are being translated, innermost last.
@@ -1044,6 +1046,7 @@ impl<'tcx> Analyzer<'tcx> {
             tcx,
             defs,
             formula_fns,
+            lemma_variants: Default::default(),
             predicate_instances: Default::default(),
             defining_predicates: Default::default(),
             opaque_predicates: Default::default(),
@@ -3479,23 +3482,28 @@ impl<'tcx> Analyzer<'tcx> {
         &self,
         companion: DefId,
     ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        self.lemma_variants.get(&companion).copied()
+    }
+
+    /// Records the variant of the lemma companion that the wrapper `local_def_id` names, if it is
+    /// a `#[thrust::lemma_variant_wrapper]`; see [`Analyzer::lemma_variant_of`].
+    pub fn collect_lemma_variant(&mut self, local_def_id: LocalDefId) {
         let wrapper_path = analyze::annot::lemma_variant_wrapper_path();
-        let wrapper = self
-            .tcx
-            .hir_crate_items(())
-            .definitions()
-            .filter(|def| analyze::annot::has_thrust_attr(self.tcx, def.to_def_id(), &wrapper_path))
-            .find(|&def| {
-                self.extract_path_and_args_with_attr(
-                    def,
-                    &analyze::annot::lemma_variant_companion_path(),
-                )
-                .is_some_and(|(named, _)| named == companion)
-            })?;
-        self.extract_path_and_args_with_attr(
-            wrapper,
-            &analyze::annot::lemma_variant_obligation_path(),
-        )
+        if !analyze::annot::has_thrust_attr(self.tcx, local_def_id.to_def_id(), &wrapper_path) {
+            return;
+        }
+        let companion_path = analyze::annot::lemma_variant_companion_path();
+        let Some((companion, _)) =
+            self.extract_path_and_args_with_attr(local_def_id, &companion_path)
+        else {
+            return;
+        };
+        let obligation_path = analyze::annot::lemma_variant_obligation_path();
+        let Some(variant) = self.extract_path_and_args_with_attr(local_def_id, &obligation_path)
+        else {
+            return;
+        };
+        self.lemma_variants.entry(companion).or_insert(variant);
     }
 
     /// The definition a statement of `local_def_id`'s body marked with `attr_path` names, and the
