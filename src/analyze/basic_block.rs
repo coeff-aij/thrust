@@ -488,6 +488,43 @@ pub fn binding_idents(
     bindings.idents
 }
 
+/// The argument local the identifier `name` names ([`names_binding`]).
+pub fn function_param_local_of_name<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &mir::Body<'tcx>,
+    name: rustc_span::symbol::Ident,
+) -> Option<Local> {
+    let idents = binding_idents(tcx, body);
+    let mut found: Option<Local> = None;
+    for vdi in &body.var_debug_info {
+        tracing::debug!("comparing {name:?} with {vdi:?}...");
+        if !names_binding(&idents, name, vdi) {
+            tracing::debug!("another name or another hygiene, skip.");
+            continue;
+        }
+        let mir::VarDebugInfoContents::Place(place) = vdi.value else {
+            tracing::debug!("place, skip.");
+            continue;
+        };
+        if !place.projection.is_empty() {
+            tracing::debug!("empty projection, skip.");
+            continue;
+        }
+        let local = place.local;
+        if local.index() == 0 || local.index() > body.arg_count {
+            tracing::debug!("not param of local, skip.");
+            continue;
+        }
+        tracing::debug!("found.");
+        match found {
+            None => found = Some(local),
+            Some(prev) if prev == local => {}
+            Some(_) => panic!("multiple function arguments share the name `{name}`"),
+        }
+    }
+    found
+}
+
 /// Whether the identifier `name` names the variable of `vdi` where both are in scope, as rustc
 /// resolves a local: by the name and by the syntax context of the binding identifier's span and
 /// of `name`'s, normalized as for `macro_rules!` hygiene, so a variable a `macro_rules!` macro
@@ -581,7 +618,7 @@ fn bit_vec_to_int<'tcx, V>(bv: chc::Term<V>, ty: mir_ty::Ty<'tcx>) -> chc::Term<
 }
 
 /// Whether the integer `term` lies in the range of the integer type `ty`.
-fn int_term_in_range<'tcx, V: Clone>(
+pub(super) fn int_term_in_range<'tcx, V: Clone>(
     tcx: TyCtxt<'tcx>,
     term: chc::Term<V>,
     ty: mir_ty::Ty<'tcx>,
@@ -752,6 +789,8 @@ pub struct Analyzer<'tcx, 'ctx> {
     local_def_id: LocalDefId,
     analysis_key: analyze::AnalysisKey<'tcx>,
     drop_points: DropPoints,
+    /// The variables formulas name in the windows of two-phase borrows.
+    window_reads: analyze::two_phase_borrow::WindowReads<'tcx>,
     basic_block: BasicBlock,
     body: Cow<'tcx, Body<'tcx>>,
 
@@ -1084,7 +1123,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         };
         match ty.kind() {
             // A function item is a closure without captures.
-            mir_ty::TyKind::FnDef(..) => {
+            mir_ty::TyKind::FnDef(def_id, args) => {
+                self.reject_ghost_fn_item(*def_id, args);
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
             mir_ty::TyKind::Closure(_, args) if args.as_closure().upvar_tys().is_empty() => {
@@ -1219,7 +1259,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             (mir_ty::TyKind::Closure(_, args), _) if args.as_closure().upvar_tys().is_empty() => {
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
-            (mir_ty::TyKind::FnDef(..), _) => {
+            (mir_ty::TyKind::FnDef(def_id, args), _) => {
+                self.reject_ghost_fn_item(*def_id, args);
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
             (mir_ty::TyKind::Tuple(tys), ConstValue::ZeroSized) => {
@@ -1294,11 +1335,63 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    fn unknown_value_ty(&self, ty: mir_ty::Ty<'tcx>) -> PlaceType {
-        let ty = self.type_builder.build(ty).vacuous().ty;
+    /// Any value of `mir_ty`, in its range when it is an integer.
+    fn unknown_value_ty(&self, value_ty: mir_ty::Ty<'tcx>) -> PlaceType {
+        let is_integral = value_ty.is_integral();
+        let ty = self.type_builder.build(value_ty).vacuous().ty;
         let mut builder = PlaceTypeBuilder::default();
         let value = builder.push_existential(ty.to_sort());
-        builder.build(ty, chc::Term::var(value.into()))
+        let term = chc::Term::var(value.into());
+        if is_integral {
+            let in_range = int_term_in_range(self.tcx, term.clone(), value_ty);
+            builder.push_formula(in_range.equal_to(chc::Term::bool(true)));
+        }
+        builder.build(ty, term)
+    }
+
+    /// A function item that takes ghost const arguments ([`analyze::ghost_const`]) has one more
+    /// parameter than the closure type it would be used as, so it cannot be a value yet.
+    fn reject_ghost_fn_item(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) {
+        if analyze::ghost_const::ghost_consts(self.ctx(), def_id).is_empty() {
+            return;
+        }
+        self.tcx.dcx().fatal(format!(
+            "`{}` takes its const generic parameters as implicit arguments, so it cannot be \
+             used as a value in `{}` yet; call it, or wrap the call in a closure",
+            self.tcx.def_path_str_with_args(def_id, args),
+            self.tcx.def_path_str(self.type_builder.owner_fn_id()),
+        ));
+    }
+
+    /// [`Self::reject_ghost_fn_item`] for the function items the generic arguments of a call
+    /// name, which the callee may call as closures.
+    fn reject_ghost_fn_items_in(&self, generic_args: mir_ty::GenericArgsRef<'tcx>) {
+        for ty in generic_args
+            .iter()
+            .flat_map(|arg| arg.walk())
+            .filter_map(|arg| arg.as_type())
+        {
+            if let mir_ty::TyKind::FnDef(def_id, args) = ty.kind() {
+                self.reject_ghost_fn_item(*def_id, args);
+            }
+        }
+    }
+
+    /// A const parameter of the function being analyzed: its ghost argument when it takes one,
+    /// otherwise any value of its type, as the body is checked for every instance.
+    fn const_param_ty(&self, ty: mir_ty::Ty<'tcx>, ct: mir_ty::Const<'tcx>) -> PlaceType {
+        let mir_ty::ConstKind::Param(param) = ct.kind() else {
+            unreachable!("a const parameter");
+        };
+        let ghost = analyze::ghost_const::ghost_local(
+            self.ctx(),
+            self.local_def_id.to_def_id(),
+            param.index,
+        );
+        match ghost {
+            Some(local) => self.place_type(&mir::Place::from(local)),
+            None => self.unknown_value_ty(ty),
+        }
     }
 
     fn const_ty(&self, const_: &mir::Const<'tcx>) -> PlaceType {
@@ -1318,6 +1411,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     Err(mir::interpret::ErrorHandled::TooGeneric(_)) => self.unknown_value_ty(*ty),
                     Err(err) => panic!("failed to evaluate constant {unevaluated:?}: {err:?}"),
                 }
+            }
+            // A const parameter is any value of its type, as the body is checked for every
+            // instance.
+            mir::Const::Ty(ty, ct) if matches!(ct.kind(), mir_ty::ConstKind::Param(_)) => {
+                self.const_param_ty(*ty, *ct)
             }
             mir::Const::Ty(ty, _) => {
                 let scalar_int = const_
@@ -1677,6 +1775,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ) => {
                 let func_ty = match operand.const_fn_def() {
                     Some((def_id, args)) => {
+                        self.reject_ghost_fn_item(def_id, args);
                         self.record_called_fn(def_id, args);
                         self.callable_ty(def_id, args)
                     }
@@ -2659,6 +2758,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         I: IntoIterator<Item = Operand<'tcx>>,
     {
         // TODO: handle const_fn_def on Env side
+        if let Some((_, generic_args)) = func.const_fn_def() {
+            // Before any translation of such a function item's type, which has one more
+            // parameter than its use expects.
+            self.reject_ghost_fn_items_in(generic_args);
+        }
         let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
             self.record_called_fn(def_id, args);
             let ty = self.callable_ty(def_id, args);
@@ -2670,17 +2774,41 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.operand_type(func.clone()).ty
         };
         let operands: Vec<_> = args.into_iter().collect();
-        let expected_args: IndexVec<_, _> = operands
+        let mut expected_args: IndexVec<_, _> = operands
             .iter()
             .map(|op| self.operand_refined_type(op.clone()))
             .collect();
         if let Some((def_id, generic_args)) = func.const_fn_def() {
             self.hand_over_closures(def_id, generic_args, &operands, &expected_args);
+            self.push_ghost_const_args(def_id, generic_args, &mut expected_args);
         }
         let rty::Type::Function(func_ty) = func_ty else {
             panic!("unexpected def type: {:?}", func_ty);
         };
         (func_ty, expected_args)
+    }
+
+    /// Appends to `expected_args` the const arguments of a call of `def_id` at `generic_args` for
+    /// the const parameters `def_id` takes as ghost arguments ([`analyze::ghost_const`]): a value,
+    /// or the caller's own ghost argument for the parameter the call passes on.
+    fn push_ghost_const_args(
+        &mut self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        expected_args: &mut IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+    ) {
+        for ghost in analyze::ghost_const::ghost_consts(self.ctx(), def_id) {
+            let index = ghost
+                .param_index
+                .expect("a callee's ghost argument is a parameter");
+            let ct = generic_args[index as usize].expect_const();
+            let operand = Operand::Constant(Box::new(mir::ConstOperand {
+                span: rustc_span::DUMMY_SP,
+                user_ty: None,
+                const_: mir::Const::Ty(ghost.ty, ct),
+            }));
+            expected_args.push(self.operand_refined_type(operand));
+        }
     }
 
     fn type_box(&mut self, value: Operand<'tcx>, expected: &rty::RefinedType<Var>) {
@@ -2769,7 +2897,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     if !self.is_defined(place.local) {
                         continue;
                     }
-                    Operand::Copy(*place)
+                    Operand::Copy(
+                        self.window_reads.read_by_formula(
+                            self.tcx,
+                            &self.body,
+                            self.body.basic_blocks[self.basic_block]
+                                .terminator()
+                                .source_info
+                                .span,
+                            *place,
+                        ),
+                    )
                 }
                 mir::VarDebugInfoContents::Const(constant) => {
                     Operand::Constant(Box::new(*constant))
@@ -2799,6 +2937,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         formula_fn: FormulaFn<'tcx>,
         span: rustc_span::Span,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
         let what = match marker {
             FormulaMarker::Assert => "proof_assert!",
@@ -2816,8 +2955,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             formula_fn_def_id,
             generic_args,
             &formula_fn,
-            span,
-            scope,
+            mir::SourceInfo { span, scope },
+            outer_fn_param_vars,
         );
         let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
         if marker == FormulaMarker::Assert {
@@ -2837,17 +2976,86 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.env.assume(formula.map_var(PlaceTypeVar::Var));
     }
 
+    /// A call of a lemma's companion in the lemma's own body is its recursive call: the lemma's
+    /// variant at the call's actual arguments has to be non-negative and smaller than at the
+    /// lemma's parameters on entry, whose values are the analysis's own. The companion carries the
+    /// variant (`#[thrust::lemma_variant_obligation]`) as a logic function of all the lemma's
+    /// parameters, which is taken at their values on entry and at the call's arguments. The lemma
+    /// then terminates, since the variant decreases along every chain of recursive calls and is
+    /// never negative.
+    fn check_lemma_variant(
+        &mut self,
+        companion: DefId,
+        companion_generic_args: mir_ty::GenericArgsRef<'tcx>,
+        args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
+    ) {
+        let (variant_def_id, variant_args) = self
+            .ctx
+            .lemma_variant_of(companion)
+            .expect("the companion of a lemma with a variant has a variant");
+        // The variant is written over the lemma's generics; the call gives them.
+        let variant_args =
+            mir_ty::EarlyBinder::bind(variant_args).instantiate(self.tcx, companion_generic_args);
+        let variant_fn = self
+            .ctx
+            .formula_fn_with_args(
+                variant_def_id.expect_local(),
+                variant_args,
+                self.type_builder.owner_fn_id(),
+            )
+            .expect("the variant is a formula function");
+        let analyze::annot_fn::FormulaFnBody::Term(variant) = variant_fn.body() else {
+            panic!("a variant is a term");
+        };
+        // The variant takes every parameter of the lemma, in order.
+        let at_entry = variant.clone().map_var(|idx| outer_fn_param_vars[&idx]);
+        let arg_vars: IndexVec<rty::FunctionParamIdx, Var> = variant_fn
+            .params()
+            .indices()
+            .map(|idx| {
+                let arg = self.operand_refined_type(args[idx.index()].node.clone());
+                self.env.immut_bind_tmp(arg)
+            })
+            .collect();
+        let at_args = variant.clone().map_var(|idx| arg_vars[idx]);
+        let non_negative = chc::Atom::new(
+            chc::KnownPred::LESS_THAN_OR_EQUAL.into(),
+            vec![chc::Term::int(0), at_entry.clone()],
+        );
+        let smaller = chc::Atom::new(chc::KnownPred::LESS_THAN.into(), vec![at_args, at_entry]);
+        self.check_formula(chc::Formula::Atom(non_negative).and(chc::Formula::Atom(smaller)));
+    }
+
+    /// The local of the function's parameter `param_name` and the variable holding its value on
+    /// entry, which `old!(param_name)` names; `not_a_param` is the error if there is no such
+    /// parameter.
+    fn entry_value_of_param(
+        &self,
+        param_name: rustc_span::symbol::Ident,
+        span: rustc_span::Span,
+        not_a_param: String,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
+    ) -> (Local, Var) {
+        let local = function_param_local_of_name(self.tcx, &self.body, param_name)
+            .unwrap_or_else(|| self.tcx.dcx().span_fatal(span, not_a_param));
+        let entry = outer_fn_param_vars[&analyze::function_param_of_local(local)];
+        (local, entry)
+    }
+
     /// The values of the variables the parameters of a formula over live variables name, each
-    /// the binding its name stands for in `scope`.
+    /// the binding its name stands for in `scope`. A parameter written `old!(x)` (a
+    /// `proof_assert!`'s) is the entry value of the function's parameter `x`.
     fn formula_vars(
         &mut self,
         what: &str,
         formula_fn_def_id: DefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         formula_fn: &FormulaFn<'tcx>,
-        span: rustc_span::Span,
-        scope: mir::SourceScope,
+        source_info: mir::SourceInfo,
+        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) -> IndexVec<rty::FunctionParamIdx, Var> {
+        let mir::SourceInfo { span, scope } = source_info;
         let sig = self
             .tcx
             .fn_sig(formula_fn_def_id)
@@ -2860,6 +3068,26 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .map(|(idx, written_input_ty)| {
                 let ident =
                     formula_fn.param_idents()[idx].expect("formula parameters must be named");
+                if let Some(param_name) = analyze::annot_fn::entry_value_param_name(ident) {
+                    let (local, entry) = self.entry_value_of_param(
+                        param_name,
+                        span,
+                        format!(
+                            "{what} refers to `old!({param_name})`, but `{param_name}` \
+                             is not a parameter of the function"
+                        ),
+                        outer_fn_param_vars,
+                    );
+                    let operand = Operand::Copy(local.into());
+                    self.check_spec_param_ty(
+                        what,
+                        span,
+                        rustc_span::Symbol::intern(&format!("old!({param_name})")),
+                        *written_input_ty,
+                        &operand,
+                    );
+                    return entry;
+                }
                 let name = analyze::annot_fn::lifted_param_source_name(ident);
                 let operand = self.operand_of_name_in(name, scope).unwrap_or_else(|| {
                     self.tcx.dcx().span_fatal(
@@ -3602,6 +3830,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ..
         } = &term.kind
         {
+            if let Some((callee, callee_args)) = func.const_fn_def() {
+                if analyze::lemma::is_own_companion(self.tcx, self.local_def_id, callee) {
+                    self.check_lemma_variant(callee, callee_args, args, outer_fn_param_vars);
+                }
+            }
             let destination = match destination {
                 p if p.projection.is_empty() => p.local,
                 _ => unimplemented!(),
@@ -3637,6 +3870,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     args,
                     formula_fn,
                     term.source_info.span,
+                    outer_fn_param_vars,
                 );
                 self.bind_local(destination, rty::RefinedType::unrefined(rty::Type::unit()));
                 return;
@@ -4039,6 +4273,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             local_def_id,
             analysis_key,
             drop_points,
+            window_reads: Default::default(),
             basic_block,
             body,
             type_builder,
@@ -4051,6 +4286,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     pub fn drop_points(&mut self, drop_points: DropPoints) -> &mut Self {
         self.drop_points = drop_points;
+        self
+    }
+
+    pub fn window_reads(
+        &mut self,
+        window_reads: analyze::two_phase_borrow::WindowReads<'tcx>,
+    ) -> &mut Self {
+        self.window_reads = window_reads;
         self
     }
 
