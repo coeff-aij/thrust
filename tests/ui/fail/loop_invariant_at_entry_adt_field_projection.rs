@@ -4,7 +4,7 @@
 
 // The whole-ADT comparison against the entry state tracks the entry value, not the
 // current one: the loop raises `lo`, so the current bounds leave the entry bounds behind.
-
+use thrust_models::{FnParam, Model};
 use thrust_models::model::{Int, Seq};
 use thrust_models::Ghost;
 
@@ -14,7 +14,7 @@ struct Bounds {
     hi: i64,
 }
 
-impl thrust_models::Model for Bounds {
+impl Model for Bounds {
     type Ty = Bounds;
 }
 
@@ -23,7 +23,7 @@ struct Walk {
     seen: Ghost<Seq<Int>>,
 }
 
-impl thrust_models::Model for Walk {
+impl Model for Walk {
     type Ty = (Bounds, Seq<Int>);
 }
 
@@ -34,7 +34,7 @@ fn walk_upto(w: &mut Walk, n: i64) {
     let mut i = 0;
     while i < n {
         thrust_macros::invariant!(
-            |ww: &mut Walk, w: thrust_models::FnParam<&mut Walk>, i: i64, n: i64|
+            |ww: &mut Walk, w: FnParam<&mut Walk>, i: i64, n: i64|
             0 <= i
                 && i <= n
                 && (*ww).1.len() == i

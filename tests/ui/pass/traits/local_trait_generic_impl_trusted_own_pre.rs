@@ -4,7 +4,7 @@
 
 // A trusted method of a generic impl, whose body is not analysed, with a precondition of its own,
 // which the trait's has to imply.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Get {
     #[thrust_macros::requires(x > 0)]
@@ -14,17 +14,17 @@ trait Get {
 
 struct W<T>(T);
 
-impl<T> thrust_models::Model for W<T>
+impl<T> Model for W<T>
 where
-    T: thrust_models::Model,
+    T: Model,
 {
-    type Ty = (<T as thrust_models::Model>::Ty,);
+    type Ty = (<T as Model>::Ty,);
 }
 
 #[thrust_macros::context]
 impl<T> Get for W<T>
 where
-    T: thrust_models::Model,
+    T: Model,
 {
     #[thrust_macros::requires(x > 0)]
     #[thrust_macros::ensures(result == x)]

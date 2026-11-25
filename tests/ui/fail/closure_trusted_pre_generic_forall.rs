@@ -3,7 +3,7 @@
 // As `fail/closure_trusted_pre_generic_two_params.rs`, with `g` requiring that `f` accepts every
 // argument: `main` runs `g` at `Q = Wr<P>`, whose closure rejects the argument `h` calls it with.
 // `g` is analyzed at that instance, where the call stops.
-
+use thrust_models::forall;
 pub trait Call {
     fn call(&self, x: i64);
 }
@@ -26,7 +26,7 @@ fn h<P: Fn(i64), Q: Call>(f: P, q: Q) {
     q.call(0);
 }
 
-#[thrust_macros::requires(thrust_models::forall(|a: i64| thrust_macros::pre!(f(a))))]
+#[thrust_macros::requires(forall(|a: i64| thrust_macros::pre!(f(a))))]
 #[thrust_macros::ensures(true)]
 fn g<P: Fn(i64), Q: Call>(f: P, q: Q) {
     h(f, q) //~ ERROR: where Thrust cannot follow it

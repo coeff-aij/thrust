@@ -4,7 +4,7 @@
 
 // `C { n: 1 }` breaks `C`'s invariant, under which `bump` keeps its result at most 100, so it
 // cannot be packed into a trait object.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(result <= 100)]
@@ -15,7 +15,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

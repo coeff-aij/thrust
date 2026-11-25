@@ -6,20 +6,20 @@
 // quantifies over `<Filter<SliceIter<T>, {closure}> as Iterator>::Item` and passes it to
 // `SliceIter`'s `produces`, which takes the normalized `&T`. The local iterator trait,
 // `SliceIter`, `Map` and `Filter` are those of tests/ui/pass/rustc_coroutine/layout.rs.
-
+use thrust_models::{FnParam, Model};
 use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost};
 
 #[thrust_macros::context]
 trait Iterator
 where
-    Self: thrust_models::Model,
-    Self::Item: thrust_models::Model,
+    Self: Model,
+    Self::Item: Model,
 {
     type Item;
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool;
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool;
@@ -35,9 +35,9 @@ where
     #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
     fn produces_trans(
         a: &Self,
-        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -60,7 +60,7 @@ pub struct SliceIter<'a, T> {
 }
 
 #[thrust_macros::context]
-impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T> {
+impl<'a, T: Model> Iterator for SliceIter<'a, T> {
     type Item = &'a T;
 
     fn next(&mut self) -> Option<&'a T> {
@@ -79,7 +79,7 @@ impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T> {
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         self.0 == o.0
             && self.1 <= o.1
             && o.1 <= self.0.len()
@@ -93,8 +93,8 @@ impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T> {
     }
 }
 
-impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
-    type Ty = (<&'a [T] as thrust_models::Model>::Ty, Int);
+impl<'a, T: Model> Model for SliceIter<'a, T> {
+    type Ty = (<&'a [T] as Model>::Ty, Int);
 }
 
 struct Map<I, F> {
@@ -102,8 +102,8 @@ struct Map<I, F> {
     func: F,
 }
 
-impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
-    type Ty = (<I as thrust_models::Model>::Ty, Closure<F>);
+impl<I: Model, F> Model for Map<I, F> {
+    type Ty = (<I as Model>::Ty, Closure<F>);
 }
 
 // Creusot's `next_precondition`, `preservation_inv`, `reinitialize` and `produces`, and the lemma
@@ -112,9 +112,9 @@ impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
 impl<I, B, F> Map<I, F>
 where
     I: Iterator,
-    B: thrust_models::Model,
+    B: Model,
     F: FnMut(I::Item) -> B,
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     #[thrust_macros::requires(
         I::invariant(iter)
@@ -129,19 +129,19 @@ where
 
     #[thrust_macros::predicate]
     fn next_precondition(iter: I, func: F) -> bool {
-        forall(|e: <I::Item as thrust_models::Model>::Ty| forall(|i: <I as thrust_models::Model>::Ty|
+        forall(|e: <I::Item as Model>::Ty| forall(|i: <I as Model>::Ty|
             !I::produces(iter, Seq::singleton(e), i) || thrust_macros::pre!(func(e))))
     }
 
     #[thrust_macros::predicate]
     fn preservation_inv(iter: I, func: F) -> bool {
-        forall(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
-        forall(|e1: <I::Item as thrust_models::Model>::Ty|
-        forall(|e2: <I::Item as thrust_models::Model>::Ty|
-        forall(|i: <I as thrust_models::Model>::Ty|
+        forall(|s: Seq<<I::Item as Model>::Ty>|
+        forall(|e1: <I::Item as Model>::Ty|
+        forall(|e2: <I::Item as Model>::Ty|
+        forall(|i: <I as Model>::Ty|
         forall(|f1: Closure<F>|
         forall(|f2: Closure<F>|
-        forall(|b: <B as thrust_models::Model>::Ty|
+        forall(|b: <B as Model>::Ty|
             !(thrust_macros::hist_inv!(func, f1)
                 && I::produces(iter, s.push(e1).push(e2), i)
                 && thrust_macros::pre!(f1(e1))
@@ -151,14 +151,14 @@ where
 
     #[thrust_macros::predicate]
     fn reinitialize() -> bool {
-        forall(|cur: <I as thrust_models::Model>::Ty| forall(|fin: <I as thrust_models::Model>::Ty| forall(|f: Closure<F>|
+        forall(|cur: <I as Model>::Ty| forall(|fin: <I as Model>::Ty| forall(|f: Closure<F>|
             !I::completed(Mut::new(cur, fin))
                 || (Self::next_precondition(fin, f)
                     && Self::preservation_inv(fin, f)))))
     }
 
     #[thrust_macros::predicate]
-    fn produces_at(s0: Self, visited: Vec<B>, o: Self, s: Seq<<I::Item as thrust_models::Model>::Ty>, fs: Seq<F>) -> bool {
+    fn produces_at(s0: Self, visited: Vec<B>, o: Self, s: Seq<<I::Item as Model>::Ty>, fs: Seq<F>) -> bool {
         thrust_macros::hist_inv!(s0.1, o.1)
             && s.len() == visited.len()
             && I::produces(s0.0, s, o.0)
@@ -173,16 +173,16 @@ where
 
     // `produces_at` of the joined witnesses: the input items concatenated and the closure states
     // joined at their shared state.
-    #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as thrust_models::Model>::Ty>| forall(|sbc: Seq<<I::Item as thrust_models::Model>::Ty>|
+    #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as Model>::Ty>| forall(|sbc: Seq<<I::Item as Model>::Ty>|
         forall(|fab: Seq<Closure<F>>| forall(|fbc: Seq<Closure<F>>|
         !(Self::produces_at(a, ab, b, sab, fab) && Self::produces_at(b, bc, c, sbc, fbc))
             || Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc), fab.subsequence(0, ab.len()).concat(fbc)))))))]
     #[thrust_macros::lemma]
     fn produces_trans_at(
         a: Ghost<Self>,
-        ab: Ghost<Seq<<B as thrust_models::Model>::Ty>>,
+        ab: Ghost<Seq<<B as Model>::Ty>>,
         b: Ghost<Self>,
-        bc: Ghost<Seq<<B as thrust_models::Model>::Ty>>,
+        bc: Ghost<Seq<<B as Model>::Ty>>,
         c: Ghost<Self>,
     ) {
     }
@@ -192,9 +192,9 @@ where
 impl<I, B, F> Iterator for Map<I, F>
 where
     I: Iterator,
-    B: thrust_models::Model,
+    B: Model,
     F: FnMut(I::Item) -> B,
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     type Item = B;
 
@@ -224,9 +224,9 @@ where
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         thrust_macros::hist_inv!(self.1, o.1)
-            && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>| exists(|fs: Seq<Closure<F>>|
+            && exists(|s: Seq<<I::Item as Model>::Ty>| exists(|fs: Seq<Closure<F>>|
                 Self::produces_at(self, visited, o, s, fs)))
     }
 
@@ -238,16 +238,16 @@ where
 
     fn produces_trans(
         a: &Self,
-        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
         let ga = thrust_macros::ghost!(|a: &Self| -> Self { *a });
         let gb = thrust_macros::ghost!(|b: &Self| -> Self { *b });
         let gc = thrust_macros::ghost!(|c: &Self| -> Self { *c });
-        let gab = thrust_macros::ghost!(|ab: Seq<<B as thrust_models::Model>::Ty>| -> Seq<<B as thrust_models::Model>::Ty> { ab });
-        let gbc = thrust_macros::ghost!(|bc: Seq<<B as thrust_models::Model>::Ty>| -> Seq<<B as thrust_models::Model>::Ty> { bc });
+        let gab = thrust_macros::ghost!(|ab: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { ab });
+        let gbc = thrust_macros::ghost!(|bc: Seq<<B as Model>::Ty>| -> Seq<<B as Model>::Ty> { bc });
         Self::produces_trans_at(ga, gab, gb, gbc, gc);
         // Keeps the parameters live at the snapshots above.
         let _live = (a, &ab, b, &bc, c);
@@ -259,8 +259,8 @@ struct Filter<I, P> {
     predicate: P,
 }
 
-impl<I: thrust_models::Model, P> thrust_models::Model for Filter<I, P> {
-    type Ty = (<I as thrust_models::Model>::Ty, Closure<P>);
+impl<I: Model, P> Model for Filter<I, P> {
+    type Ty = (<I as Model>::Ty, Closure<P>);
 }
 
 #[thrust_macros::context]
@@ -268,7 +268,7 @@ impl<I, P> Filter<I, P>
 where
     I: Iterator,
     P: Fn(&I::Item) -> bool,
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     #[thrust_macros::requires(
         I::invariant(iter)
@@ -283,16 +283,16 @@ where
     // The closure's precondition holds on every item `iter` can yield, after any number of others.
     #[thrust_macros::predicate]
     fn pre_all(iter: I, func: P) -> bool {
-        forall(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
-        forall(|e: <I::Item as thrust_models::Model>::Ty|
-        forall(|i: <I as thrust_models::Model>::Ty|
+        forall(|s: Seq<<I::Item as Model>::Ty>|
+        forall(|e: <I::Item as Model>::Ty|
+        forall(|i: <I as Model>::Ty|
             !I::produces(iter, s.push(e), i) || thrust_macros::pre!(func(&e)))))
     }
 
     // Creusot's `reinitialize`: after completion, the precondition holds again.
     #[thrust_macros::predicate]
     fn reinitialize() -> bool {
-        forall(|cur: <I as thrust_models::Model>::Ty| forall(|fin: <I as thrust_models::Model>::Ty|
+        forall(|cur: <I as Model>::Ty| forall(|fin: <I as Model>::Ty|
             !I::completed(Mut::new(cur, fin))
                 || forall(|f: Closure<P>| Self::pre_all(fin, f))))
     }
@@ -316,22 +316,22 @@ where
 
     // `produces` with its input items `s` given.
     #[thrust_macros::predicate]
-    fn produces_at(s0: Self, visited: Vec<I::Item>, o: Self, s: Seq<<I::Item as thrust_models::Model>::Ty>) -> bool {
+    fn produces_at(s0: Self, visited: Vec<I::Item>, o: Self, s: Seq<<I::Item as Model>::Ty>) -> bool {
         s0.1 == o.1
             && I::produces(s0.0, s, o.0)
             && visited.len() <= s.len()
     }
 
     // `produces_at` of the joined witnesses.
-    #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as thrust_models::Model>::Ty>| forall(|sbc: Seq<<I::Item as thrust_models::Model>::Ty>|
+    #[thrust_macros::ensures(forall(|sab: Seq<<I::Item as Model>::Ty>| forall(|sbc: Seq<<I::Item as Model>::Ty>|
         !(Self::produces_at(a, ab, b, sab) && Self::produces_at(b, bc, c, sbc))
             || Self::produces_at(a, ab.concat(bc), c, sab.concat(sbc)))))]
     #[thrust_macros::lemma]
     fn produces_trans_at(
         a: Ghost<Self>,
-        ab: Ghost<Seq<<I::Item as thrust_models::Model>::Ty>>,
+        ab: Ghost<Seq<<I::Item as Model>::Ty>>,
         b: Ghost<Self>,
-        bc: Ghost<Seq<<I::Item as thrust_models::Model>::Ty>>,
+        bc: Ghost<Seq<<I::Item as Model>::Ty>>,
         c: Ghost<Self>,
     ) {
     }
@@ -342,7 +342,7 @@ impl<I, P> Iterator for Filter<I, P>
 where
     I: Iterator,
     P: Fn(&I::Item) -> bool,
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     type Item = I::Item;
 
@@ -352,7 +352,7 @@ where
         let mut skipped: Vec<I::Item> = Vec::new();
         loop {
             thrust_macros::invariant!(
-                |this: &mut Filter<I, P>, skipped: Vec<I::Item>, self: thrust_models::FnParam<&mut Filter<I, P>>|
+                |this: &mut Filter<I, P>, skipped: Vec<I::Item>, self: FnParam<&mut Filter<I, P>>|
                     !this == !self.at_entry()
                         && Filter::<I, P>::reinitialize()
                         && Filter::<I, P>::pre_all((*this).0, (*this).1)
@@ -383,8 +383,8 @@ where
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
-        exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
+        exists(|s: Seq<<I::Item as Model>::Ty>|
             Self::produces_at(self, visited, o, s))
     }
 
@@ -392,23 +392,23 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         (*self).1 == (!self).1
-            && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>| exists(|mid: <I as thrust_models::Model>::Ty|
+            && exists(|s: Seq<<I::Item as Model>::Ty>| exists(|mid: <I as Model>::Ty|
                 I::produces((*self).0, s, mid)
                     && I::completed(Mut::new(mid, (!self).0))))
     }
 
     fn produces_trans(
         a: &Self,
-        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
         let ga = thrust_macros::ghost!(|a: &Self| -> Self { *a });
         let gb = thrust_macros::ghost!(|b: &Self| -> Self { *b });
         let gc = thrust_macros::ghost!(|c: &Self| -> Self { *c });
-        let gab = thrust_macros::ghost!(|ab: Seq<<I::Item as thrust_models::Model>::Ty>| -> Seq<<I::Item as thrust_models::Model>::Ty> { ab });
-        let gbc = thrust_macros::ghost!(|bc: Seq<<I::Item as thrust_models::Model>::Ty>| -> Seq<<I::Item as thrust_models::Model>::Ty> { bc });
+        let gab = thrust_macros::ghost!(|ab: Seq<<I::Item as Model>::Ty>| -> Seq<<I::Item as Model>::Ty> { ab });
+        let gbc = thrust_macros::ghost!(|bc: Seq<<I::Item as Model>::Ty>| -> Seq<<I::Item as Model>::Ty> { bc });
         Self::produces_trans_at(ga, gab, gb, gbc, gc);
         // Keeps the parameters live at the snapshots above.
         let _live = (a, &ab, b, &bc, c);
@@ -417,7 +417,7 @@ where
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
-fn others<T: thrust_models::Model + PartialEq + Copy>(a: &[T], k: &T) {
+fn others<T: Model + PartialEq + Copy>(a: &[T], k: &T) {
     let m = Map::new(Filter::new(SliceIter { raw: a, pos: 0 }, |x: &&T| **x != *k), |x: &T| *x);
 }
 

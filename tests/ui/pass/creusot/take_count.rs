@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+use thrust_models::FnParam;
 use thrust_models::forall;
 use thrust_models::model::{Int, Mut, Seq, UInt};
 use thrust_models::Model;
@@ -152,7 +153,7 @@ fn take_count(start: isize, end: isize, n: usize) -> usize {
     let mut t = Take { iter: Range { start, end }, n };
     let mut cnt: usize = 0;
     while let Some(_x) = t.next() {
-        thrust_macros::invariant!(|t: Take<Range>, cnt: usize, n: thrust_models::FnParam<usize>|
+        thrust_macros::invariant!(|t: Take<Range>, cnt: usize, n: FnParam<usize>|
             cnt + t.1 == n.at_entry() && Take::<Range>::invariant(t));
         cnt += 1;
     }

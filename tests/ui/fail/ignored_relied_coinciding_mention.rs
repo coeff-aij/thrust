@@ -3,10 +3,10 @@
 
 // `t`'s own `s == s` at `S` is the trusted author's fixed choice, but `*x == *x` at `T = S`
 // resolves to the same `S::eq`, which `t`'s contract relies on at `S`: it is verified code.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
