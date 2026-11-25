@@ -19,5 +19,5 @@ fn bump<T: Copy>(mut x: i64, t: T) -> i64 {
 }
 
 fn main() {
-    assert!(bump(0, 'a') == 1);
+    assert!(bump(0, 5i64) == 1);
 }
