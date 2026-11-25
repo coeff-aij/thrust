@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+use thrust_models::FnParam;
 use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
@@ -99,7 +100,7 @@ impl Iterator for Range {
 fn find(start: isize, end: isize, k: isize) -> Option<isize> {
     let mut it = Range { start, end };
     while let Some(x) = it.next() {
-        thrust_macros::invariant!(|it: Range, start: thrust_models::FnParam<isize>, end: thrust_models::FnParam<isize>, k: isize|
+        thrust_macros::invariant!(|it: Range, start: FnParam<isize>, end: FnParam<isize>, k: isize|
             it.start >= start.at_entry()
                 && it.end == end.at_entry()
                 && (it.start <= start.at_entry() || it.start <= k));

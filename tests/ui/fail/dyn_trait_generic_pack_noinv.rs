@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The trait's contract gives at least 3 sides through the trait object, not 4.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape {
     #[thrust_macros::ensures(result >= 3)]
@@ -12,7 +12,7 @@ trait Shape {
 
 struct Square;
 
-impl thrust_models::Model for Square {
+impl Model for Square {
     type Ty = ();
 }
 

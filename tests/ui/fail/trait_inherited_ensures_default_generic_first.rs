@@ -4,14 +4,14 @@
 
 // A trait method's inherited `ensures` holds at a concrete call whichever of the call and a
 // generic caller (`get`) is analyzed first.
-
+use thrust_models::Model;
 #[derive(PartialEq)]
 enum Tag<V> {
     A(V),
     B,
 }
 
-impl<V> thrust_models::Model for Tag<V> {
+impl<V> Model for Tag<V> {
     type Ty = Tag<V>;
 }
 

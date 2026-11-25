@@ -5,10 +5,10 @@
 // resolves to, `J = Bad`, which has no `IteratorSpec` impl. Without that check it verified.
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::{Model, model::{Int, Seq}};
 struct Bad;
 
-impl thrust_models::Model for Bad {
+impl Model for Bad {
     type Ty = Self;
 }
 
@@ -36,11 +36,11 @@ impl Iterator for Bad {
 
 struct W<J>(Option<J>);
 
-impl<J: thrust_models::Model> thrust_models::Model for W<J> {
-    type Ty = Option<<J as thrust_models::Model>::Ty>;
+impl<J: Model> Model for W<J> {
+    type Ty = Option<<J as Model>::Ty>;
 }
 
-impl<J: Iterator<Item = i64> + thrust_models::Model> Iterator for W<J> {
+impl<J: Iterator<Item = i64> + Model> Iterator for W<J> {
     type Item = i64;
 
     fn next(&mut self) -> Option<i64> {
@@ -52,7 +52,7 @@ impl<J: Iterator<Item = i64> + thrust_models::Model> Iterator for W<J> {
 }
 
 #[thrust_macros::context]
-impl<J: Iterator<Item = i64> + thrust_models::Model> IteratorSpec for W<J> {
+impl<J: Iterator<Item = i64> + Model> IteratorSpec for W<J> {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         true
@@ -72,9 +72,9 @@ impl<J: Iterator<Item = i64> + thrust_models::Model> IteratorSpec for W<J> {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<thrust_models::model::Int>,
+        ab: Seq<Int>,
         b: &Self,
-        bc: thrust_models::model::Seq<thrust_models::model::Int>,
+        bc: Seq<Int>,
         c: &Self,
     ) {
     }
@@ -85,7 +85,7 @@ impl<J: Iterator<Item = i64> + thrust_models::Model> IteratorSpec for W<J> {
 #[thrust_macros::ensures(true)]
 fn step<I: IteratorSpec>(it: &mut I)
 where
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     let _ = it.next();
 }

@@ -5,7 +5,7 @@
 // A precondition at a call outside the impl concludes `Range::produces` of an item: the inferred
 // relation includes it. Accepted: the relation is the solver's, not the least one, and the
 // program does not depend on what it is.
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait Iter {
     type Item;
@@ -13,7 +13,7 @@ trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: Self::Item) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
 }
 
@@ -23,7 +23,7 @@ struct Range {
     end: isize,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 

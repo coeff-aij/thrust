@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::Model;
 // The struct's model has no order of its own, so `<` compares through the derived
 // `partial_cmp`, which compares the fields in order.
 #[derive(PartialEq, PartialOrd)]
@@ -9,7 +9,7 @@ struct P {
     b: i64,
 }
 
-impl thrust_models::Model for P {
+impl Model for P {
     type Ty = P;
 }
 

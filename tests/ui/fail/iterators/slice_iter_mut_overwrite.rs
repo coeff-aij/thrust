@@ -5,7 +5,7 @@
 // The first element is stepped over before the loop starts, so it keeps whatever the caller
 // passed in, and the claim that every element ends up equal to `v` is false of every slice
 // whose first element differs from `v`.
-
+use thrust_models::{FnParam, Model};
 use thrust_models::forall;
 use thrust_models::model::Int;
 
@@ -16,13 +16,13 @@ use thrust_models::model::Int;
         && forall(|j: Int| (0 <= j && j < (!s).len()) ==> ((!s)[j] == v))
 )]
 fn overwrite<T>(s: &mut [T], v: T)
-    where T: thrust_models::Model + Copy, T::Ty: PartialEq
+    where T: Model + Copy, T::Ty: PartialEq
 {
     let mut it = s.iter_mut();
     let _skipped = it.next();
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: core::slice::IterMut<'_, T>, v: T, s: thrust_models::FnParam<&mut [T]>|
+            |it: core::slice::IterMut<'_, T>, v: T, s: FnParam<&mut [T]>|
                 it.0 == *s.at_entry()
                     && it.1 == !s.at_entry()
                     && it.1.len() == it.0.len()

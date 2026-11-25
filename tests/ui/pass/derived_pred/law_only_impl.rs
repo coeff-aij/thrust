@@ -4,7 +4,7 @@
 
 // An impl with no function leaves the derived `r` out: its rule is the inherited law `r_refl`,
 // analyzed under the impl itself.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Rel {
     #[thrust_macros::predicate(derived)]
@@ -20,7 +20,7 @@ struct S {
     a: isize,
 }
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = S;
 }
 

@@ -2,10 +2,10 @@
 
 // A destructor takes no precondition: Rust runs it wherever a value is dropped, also in code
 // Thrust does not analyze, which would not establish one.
-
+use thrust_models::Model;
 struct Guard(i32);
 
-impl thrust_models::Model for Guard {
+impl Model for Guard {
     type Ty = Self;
 }
 

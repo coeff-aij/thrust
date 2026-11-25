@@ -6,7 +6,7 @@
 // inherits it with `ok` true: the law, checked for `Unit`, and `next`'s rule contradict each
 // other whatever relation is inferred, since the derived predicate depends on no forall predicate
 // and so cannot be chosen after `ok`.
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait Iter {
     type Item;
@@ -14,7 +14,7 @@ trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: Self::Item) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
 }
 
@@ -24,7 +24,7 @@ struct Small {
     n: isize,
 }
 
-impl thrust_models::Model for Small {
+impl Model for Small {
     type Ty = Small;
 }
 
@@ -56,7 +56,7 @@ trait Other {
 #[derive(PartialEq, Clone, Copy)]
 struct Unit;
 
-impl thrust_models::Model for Unit {
+impl Model for Unit {
     type Ty = Unit;
 }
 
@@ -70,7 +70,7 @@ impl Other for Unit {
 
 #[thrust_macros::requires(T::ok(*t))]
 #[thrust_macros::ensures(!Small::produces(*r, k))]
-fn g<T: Other + thrust_models::Model>(t: &T, r: &Small, k: isize) where <T as thrust_models::Model>::Ty: thrust_models::Model<Ty = <T as thrust_models::Model>::Ty> {}
+fn g<T: Other + Model>(t: &T, r: &Small, k: isize) where <T as Model>::Ty: Model<Ty = <T as Model>::Ty> {}
 
 fn main() {
     let mut s = Small { n: 0 };

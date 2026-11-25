@@ -4,7 +4,7 @@
 
 // A derived Hash impl hashes field by field through Hash::hash, which has a
 // spec saying only that it does not panic.
-
+use thrust_models::Model;
 use std::hash::{Hash, Hasher};
 
 #[derive(Hash)]
@@ -13,7 +13,7 @@ struct Pair {
     b: bool,
 }
 
-impl thrust_models::Model for Pair {
+impl Model for Pair {
     type Ty = Pair;
 }
 
@@ -21,7 +21,7 @@ struct CountingHasher {
     writes: i64,
 }
 
-impl thrust_models::Model for CountingHasher {
+impl Model for CountingHasher {
     type Ty = CountingHasher;
 }
 

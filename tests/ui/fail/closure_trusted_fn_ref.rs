@@ -1,10 +1,10 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 // A closure taking a reference, handed to a trusted function that states no `pre!` of it.
-
+use thrust_models::Model;
 struct S;
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

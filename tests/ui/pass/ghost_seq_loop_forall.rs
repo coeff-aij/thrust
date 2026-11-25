@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::{FnParam, Model};
 use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Ghost;
@@ -11,7 +11,7 @@ struct Recorder {
     hist: Ghost<Seq<Int>>,
 }
 
-impl thrust_models::Model for Recorder {
+impl Model for Recorder {
     type Ty = (Int, Seq<Int>);
 }
 
@@ -23,7 +23,7 @@ fn record_bounded(r: &mut Recorder, n: i64) {
     let mut i = 0;
     while i < n {
         thrust_macros::invariant!(
-            |rr: &mut Recorder, r: thrust_models::FnParam<&mut Recorder>, i: i64, n: i64|
+            |rr: &mut Recorder, r: FnParam<&mut Recorder>, i: i64, n: i64|
             0 <= i && i <= n && (*rr).1.len() == i && !rr == !r.at_entry()
                 && forall(|k: Int| 0 <= k && k < (*rr).1.len() ==> (*rr).1[k] < n)
         );
