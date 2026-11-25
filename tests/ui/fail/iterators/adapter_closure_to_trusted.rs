@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_VERIFY_ONLY=main
 // The twin of `pass/iterators/adapter_closure_to_trusted.rs`: the closure panics on items the
 // adapter yields, so `inv` does not hold at the call.
-
+use thrust_models::{forall, Model, model::{Closure, Seq}};
 use thrust_models::model::Int;
 
 pub struct Keep<P> {
@@ -12,8 +12,8 @@ pub struct Keep<P> {
     pred: P,
 }
 
-impl<P> thrust_models::Model for Keep<P> {
-    type Ty = (i64, i64, thrust_models::model::Closure<P>);
+impl<P> Model for Keep<P> {
+    type Ty = (i64, i64, Closure<P>);
 }
 
 impl<P: Fn(&i64) -> bool> Iterator for Keep<P> {
@@ -36,7 +36,7 @@ impl<P: Fn(&i64) -> bool> IteratorSpec for Keep<P> {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         self.0 <= self.1
-            && thrust_models::forall(|x: Int| !(self.0 <= x && x < self.1) || thrust_macros::pre!(self.2(&x)))
+            && forall(|x: Int| !(self.0 <= x && x < self.1) || thrust_macros::pre!(self.2(&x)))
     }
 
     #[thrust_macros::predicate]
@@ -53,9 +53,9 @@ impl<P: Fn(&i64) -> bool> IteratorSpec for Keep<P> {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -66,7 +66,7 @@ impl<P: Fn(&i64) -> bool> IteratorSpec for Keep<P> {
 #[thrust_macros::ensures(true)]
 fn consume<I: IteratorSpec<Item = i64>>(mut it: I)
 where
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     let _ = it.next();
 }

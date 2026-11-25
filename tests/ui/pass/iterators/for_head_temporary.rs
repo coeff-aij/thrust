@@ -4,7 +4,7 @@
 
 // The temporaries of an annotated `for` head live as long as the loop, as in rustc's lowering:
 // `make().iter()` borrows the vector `make` returns.
-
+use thrust_models::Ghost;
 fn make() -> Vec<i64> {
     let mut v = Vec::new();
     v.push(1);
@@ -16,7 +16,7 @@ fn make() -> Vec<i64> {
 #[thrust_macros::ensures(true)]
 fn f() {
     for x in make().iter() {
-        thrust_macros::invariant!(|iter: core::slice::Iter<'_, i64>, iter_old: thrust_models::Ghost<core::slice::Iter<'_, i64>>| true);
+        thrust_macros::invariant!(|iter: core::slice::Iter<'_, i64>, iter_old: Ghost<core::slice::Iter<'_, i64>>| true);
         let _ = x;
     }
 }

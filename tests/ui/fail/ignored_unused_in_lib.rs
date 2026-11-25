@@ -3,10 +3,10 @@
 
 // A verified function that unwraps a `Result` with an error of `&S` can run `S`'s ignored
 // `Debug::fmt`, which `unwrap` prints on its way to a panic.
-
+use thrust_models::Model;
 pub struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

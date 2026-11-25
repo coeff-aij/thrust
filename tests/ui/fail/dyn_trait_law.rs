@@ -4,7 +4,7 @@
 
 // A trait object of a trait with a law is rejected, as Creusot rejects it (`unsound_dyn`):
 // `dyn Level` implements `Level`, but no impl proves the law of it.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Level {
     #[thrust_macros::predicate]
@@ -24,7 +24,7 @@ trait Level {
 
 struct A;
 
-impl thrust_models::Model for A {
+impl Model for A {
     type Ty = A;
 }
 

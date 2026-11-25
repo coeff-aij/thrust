@@ -4,7 +4,7 @@
 
 // The loops of `pass/loop_invariant_old_param.rs`, whose invariants name a parameter's entry
 // value as `old!(x)`. Unsat: `push_two` pushes two items, not three.
-
+use thrust_models::Model;
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
 #[thrust::trusted]
@@ -17,7 +17,7 @@ struct Counter {
     value: i64,
 }
 
-impl thrust_models::Model for Counter {
+impl Model for Counter {
     type Ty = Counter;
 }
 

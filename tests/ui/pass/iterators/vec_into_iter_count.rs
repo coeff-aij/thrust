@@ -5,7 +5,7 @@
 // `vec::IntoIter` at a type parameter element type: the consuming `into_iter`, which starts at
 // position 0 over the sequence the vector held. The vector is gone by the loop header, so the
 // invariant names its entry value through `FnParam` rather than the parameter itself.
-
+use thrust_models::FnParam;
 #[thrust_macros::context]
 #[thrust_macros::requires(v.len() >= 0)]
 #[thrust_macros::ensures(result == v.len())]
@@ -15,7 +15,7 @@ fn count<T>(v: Vec<T>) -> usize
     let mut n = 0;
     while let Some(_x) = it.next() {
         thrust_macros::invariant!(
-            |it: std::vec::IntoIter<T>, n: usize, v: thrust_models::FnParam<Vec<T>>|
+            |it: std::vec::IntoIter<T>, n: usize, v: FnParam<Vec<T>>|
                 it.0 == v.at_entry() && n == it.1 && it.1 <= it.0.len());
         n = n + 1;
     }

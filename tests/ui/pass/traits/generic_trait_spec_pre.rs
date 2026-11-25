@@ -4,7 +4,7 @@
 
 // `pre!` of a trait method at a type parameter is the trait's precondition, which a call there
 // takes too.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Get {
     #[thrust_macros::requires(x > 0)]
@@ -14,7 +14,7 @@ trait Get {
 
 struct One;
 
-impl thrust_models::Model for One {
+impl Model for One {
     type Ty = ();
 }
 

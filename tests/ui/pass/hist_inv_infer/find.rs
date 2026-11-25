@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+use thrust_models::FnParam;
 use thrust_models::{exists, forall};
 use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};
@@ -130,7 +131,7 @@ where
     let mut g = f;
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: &mut I, g: F, f: thrust_models::FnParam<F>|
+            |it: &mut I, g: F, f: FnParam<F>|
             I::invariant(*it)
                 && thrust_macros::hist_inv!(f.at_entry(), g)
                 && forall(|c: Closure<F>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c((), x)))

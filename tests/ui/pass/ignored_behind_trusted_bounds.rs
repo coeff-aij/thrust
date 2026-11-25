@@ -4,10 +4,10 @@
 
 // The twin of `fail/ignored_behind_trusted_bounds.rs`: `refl`'s trusted contract holds where `T`'s
 // `eq` meets the trait's spec, as `S`'s, which is checked, does.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -20,7 +20,7 @@ impl PartialEq for S {
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == true)]
-fn refl<T: PartialEq + thrust_models::Model>(a: &T) -> bool {
+fn refl<T: PartialEq + Model>(a: &T) -> bool {
     a == a
 }
 

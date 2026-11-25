@@ -6,7 +6,7 @@
 // `&mut self` borrow outlives the call and its contract does not ensure `C`'s invariant. Code
 // Thrust does not analyze may call it through the trait object and leave the invariant broken for
 // `bump`, so the packing stops.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     fn get(&mut self) -> &mut u32;
@@ -22,7 +22,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

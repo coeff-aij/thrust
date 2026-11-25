@@ -4,7 +4,7 @@
 
 // The loop visits each element of the vector exactly once, so it counts the length and not one
 // more than the length. A vector of length 0 already refutes the claim.
-
+use thrust_models::FnParam;
 #[thrust_macros::context]
 #[thrust_macros::requires((*v).len() >= 0)]
 #[thrust_macros::ensures(result == (*v).len() + 1)]
@@ -27,7 +27,7 @@ fn zero(v: &mut Vec<i64>) {
     let mut it = (&mut *v).into_iter();
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: core::slice::IterMut<'_, i64>, v: thrust_models::FnParam<&mut Vec<i64>>|
+            |it: core::slice::IterMut<'_, i64>, v: FnParam<&mut Vec<i64>>|
                 it.0 == *v.at_entry()
                     && it.1 == !v.at_entry()
                     && it.1.len() == it.0.len()

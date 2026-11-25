@@ -4,18 +4,18 @@
 
 // A `Model` supertrait fixes the receiver's model to `C` in the trait's contracts, while a trait
 // object's model is opaque, so a trait object of such a trait is rejected.
-
+use thrust_models::Model;
 #[derive(PartialEq)]
 struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 
 #[thrust_macros::context]
-trait Tick: thrust_models::Model<Ty = C> {
+trait Tick: Model<Ty = C> {
     #[thrust_macros::ensures(result >= 1)]
     fn tick(&mut self) -> u32;
 }

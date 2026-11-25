@@ -5,13 +5,13 @@
 // Unsat. `Wrap<T>` leaves the derived `produces` out, and the law `only_zero` of the subtrait
 // `Fused`, which `Wrap<T>` implements generically, is checked at the instance `Wrap<bool>` that
 // `main` uses. There `next` yields 1, which the law excludes, whatever relation is inferred.
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: isize) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<isize>;
 }
 
@@ -21,12 +21,12 @@ struct Wrap<T> {
     n: isize,
 }
 
-impl<T: thrust_models::Model> thrust_models::Model for Wrap<T> {
+impl<T: Model> Model for Wrap<T> {
     type Ty = (T::Ty, isize);
 }
 
 #[thrust_macros::context]
-impl<T: thrust_models::Model> Iter for Wrap<T> {
+impl<T: Model> Iter for Wrap<T> {
     fn next(&mut self) -> Option<isize> {
         let k = self.n;
         self.n += 1;
@@ -42,7 +42,7 @@ trait Fused: Iter {
 }
 
 #[thrust_macros::context]
-impl<T: thrust_models::Model> Fused for Wrap<T> {}
+impl<T: Model> Fused for Wrap<T> {}
 
 fn main() {
     let mut w = Wrap { v: true, n: 1 };
