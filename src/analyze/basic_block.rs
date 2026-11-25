@@ -24,9 +24,9 @@ use crate::rty::{
     self, ClauseBuilderExt as _, ClauseScope as _, ShiftExistential as _, Subtyping as _,
 };
 
-mod closure_escape;
 mod drop_point;
 mod trait_object;
+mod unanalyzed_call;
 mod visitor;
 
 pub use drop_point::{DropPoints, MoveState, MovedOut};
@@ -2809,7 +2809,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .map(|op| self.operand_refined_type(op.clone()))
             .collect();
         if let Some((def_id, generic_args)) = func.const_fn_def() {
-            self.hand_over_closures(def_id, generic_args, &operands, &expected_args);
+            self.cover_unanalyzed_call(def_id, generic_args, &operands, &expected_args);
             self.push_ghost_const_args(def_id, generic_args, &mut expected_args);
         }
         let rty::Type::Function(func_ty) = func_ty else {
