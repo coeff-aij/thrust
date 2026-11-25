@@ -59,6 +59,27 @@ mod std_transcriptions {
         panic!()
     }
 
+    // std's `Result::unwrap` reports through its own `unwrap_failed`, which also ends in a panic (generic
+    // over the error, as Thrust reads no `dyn` of a std trait);
+    // the spec's precondition keeps it unreachable.
+    pub mod result_unwrap_transcription {
+        use super::thrust_models;
+
+        fn unwrap_failed<E: std::fmt::Debug>(_msg: &str, _error: &E) -> ! {
+            panic!()
+        }
+        pub fn result_unwrap<T, E>(res: Result<T, E>) -> T
+        where
+            T: thrust_models::Model,
+            E: thrust_models::Model + std::fmt::Debug,
+        {
+            match res {
+                Ok(t) => t,
+                Err(e) => unwrap_failed("called `Result::unwrap()` on an `Err` value", &e),
+            }
+        }
+    }
+
     // library/core/src/option.rs, `impl<T> Option<T>`, `fn unwrap(self) -> T`
     pub fn option_unwrap<T>(opt: Option<T>) -> T {
         match opt {
