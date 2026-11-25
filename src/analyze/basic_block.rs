@@ -1753,7 +1753,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                             .into_iter()
                             .map(|operand| self.operand_type(operand).boxed())
                             .collect();
-                        PlaceType::tuple(field_tys)
+                        let ty = PlaceType::tuple(field_tys);
+                        if let mir::AggregateKind::Closure(def_id, args) = *kind {
+                            self.check_closure_captures(def_id, args, &ty);
+                        }
+                        ty
                     }
                     _ => unimplemented!("aggregate kind: {:?}", kind),
                 }
@@ -2794,6 +2798,46 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             panic!("unexpected def type: {:?}", func_ty);
         };
         (func_ty, expected_args)
+    }
+
+    /// Checks the function pointers among the captures `captures` of a closure value built here
+    /// against the types its body is analyzed with, as a direct call of the closure checks its
+    /// receiver. A `pre!` or `post!` of the closure states the body's contract as a formula of the
+    /// closure value, which says nothing of a function pointer the closure holds: such a value has
+    /// no term, so without this check the body's assumption of what the pointer returns holds of
+    /// no closure the program builds. The refinements of the captures are left to the calls: they
+    /// are part of the closure's precondition, which a direct call and a `pre!` require, and one
+    /// that no built value meets says that the closure is never called.
+    /// Outside its body the closure's pointers are then opaque (`Unrefined::closure` in
+    /// `refine::template`).
+    fn check_closure_captures(
+        &mut self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        captures: &PlaceType,
+    ) {
+        let parent_count = self.tcx.generics_of(def_id).parent_count;
+        let parent_args = self.tcx.mk_args(&args[..parent_count]);
+        let caller_def_id = self.type_builder.owner_fn_id();
+        let Some(def_ty) = self
+            .ctx
+            .def_ty_with_args(def_id, parent_args, caller_def_id)
+        else {
+            // A closure without a type is one in a body Thrust skips: no body is analyzed under
+            // its capture types, and it has no contract a `pre!`, `post!` or call could read.
+            return;
+        };
+        let expected = def_ty
+            .ty
+            .as_function()
+            .expect("closure def type is a function")
+            .closure_captures()
+            .strip_refinement();
+        let expected = rty::RefinedType::unrefined(expected);
+        let clauses = self
+            .env
+            .relate_sub_refined_type(&captures.clone().into(), &expected);
+        self.ctx.extend_clauses(clauses);
     }
 
     /// Appends to `expected_args` the const arguments of a call of `def_id` at `generic_args` for

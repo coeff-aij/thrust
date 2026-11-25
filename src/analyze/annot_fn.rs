@@ -2216,6 +2216,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let from = self.to_term(from);
         let to = self.to_term(to);
         let formula = match closure_ty.kind() {
+            mir_ty::TyKind::Closure(_, args)
+                if args.as_closure().kind() == mir_ty::ClosureKind::FnOnce =>
+            {
+                self.tcx.dcx().span_fatal(
+                    from_span,
+                    format!(
+                        "thrust: `hist_inv!` is not supported at `{closure_ty}`: an `FnOnce` \
+                         closure is called once, so it has no history of states"
+                    ),
+                )
+            }
             mir_ty::TyKind::Closure(..) => {
                 let upvars_sort = self.type_builder.build(model_ty).to_sort();
                 self.analyzer
@@ -2248,9 +2259,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .unwrap_or_else(|| panic!("hist_inv! at {param_ty:?}, which has no closure bound"));
         let param = param_ty.to_ty(self.tcx);
         let sort = self.type_builder.build(param).to_sort();
+        let param_def_id = self.type_builder.param_def_id(&param_ty);
         let pred = refine::closure_hist_inv_forall_pred(
             self.tcx,
-            self.type_builder.param_def_id(&param_ty),
+            param_def_id,
             self.type_builder
                 .generic_args_symbol(self.tcx.mk_args(&[param.into()])),
             vec![sort.clone()],
@@ -2263,6 +2275,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 &mut system,
                 &pred,
                 &contract,
+                analyze::closure_hist_inv::fn_bounded_where_declared(self.tcx, param_def_id),
                 &self.analyzer.enum_defs,
             ) {
                 system.add_law(pred.clone(), law);
