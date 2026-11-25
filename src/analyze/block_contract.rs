@@ -339,6 +339,11 @@ fn replace_region<'tcx>(
             ),
         );
     }
+    let is_marker = |def_id| {
+        Some(def_id) == ctx.def_ids().block_region_open_marker()
+            || Some(def_id) == ctx.def_ids().block_region_close_marker()
+    };
+    analyze::block_callees::check_callees_agree(tcx, body, &blocks, bc_local, bc_args, &is_marker);
     let mut assignments = Vec::new();
     let mut destination = result_place;
     if in_out {
