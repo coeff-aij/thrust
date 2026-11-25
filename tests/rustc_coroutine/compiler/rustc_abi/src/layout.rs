@@ -288,6 +288,29 @@ pub(crate) fn selection_weight_bound<'a, F: Weighted, J: Idx + thrust_models::Mo
     thrust_macros::proof!(crate::case_study::selection_weights::sel_list_le_upto::<J, L>(ts, p, c, n, nv));
     thrust_macros::proof!(crate::case_study::selection_weights::sel_list_disjoint_upto::<J, L, K, T>(c, nv));
     thrust_macros::proof!(crate::case_study::selection_weights::wat_sel_nonneg_upto::<J, L>(ts, n, nv));
+    // Isolated assumption (the solver gives no answer on the postcondition after the steps above):
+    // the postcondition for a selection given by its index map `f` and length `m`, which is what
+    // `selection_of`, revealed, says of `fs`. It follows from the lemmas called above
+    // (`weight_total_of_selection_upto`, `sel_list_le_upto`, `sel_list_disjoint_upto`,
+    // `wat_sel_nonneg_upto`, `sel_ok_intro`) at `fs`, `f` and `m`.
+    thrust_macros::assume!(
+        |local_layouts: &crate::rustc_index::IndexSlice<L, F>,
+         vf: &crate::rustc_index::IndexVec<J, L>,
+         a: &crate::rustc_index::IndexVec<K, T>,
+         e: &T,
+         p: Ghost<crate::rustc_index::IndexVec<u32, L>>,
+         c: usize,
+         n: usize|
+            forall(|fs: Seq<<F as thrust_models::Model>::Ty>, f: crate::thrust_models::model::Array<Int, Int>, m: Int|
+                !(m == fs.len()
+                    && crate::case_study::counts::selects::<J, L, K, T>(*vf, *a, *e, f, m, (*vf).len())
+                    && forall(|k: Int| !(0 <= k && k < fs.len())
+                        || fs[k] == (*local_layouts)[L::index_logic((*vf)[f[k]])]))
+                    || (0 <= sum_first(weight_seq::<F>(fs, fs.len()), fs.len())
+                        && sum_first(weight_seq::<F>(fs, fs.len()), fs.len())
+                            + crate::case_study::weights::weight_at::<L>(weight_seq::<F>(*local_layouts, n), p, c)
+                            <= sum_first(weight_seq::<F>(*local_layouts, n), n)))
+        );
     thrust_macros::proof!(weight_first_is_sum_first(n));
 }
 
