@@ -2904,66 +2904,52 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// A call of a lemma's companion in the lemma's own body is its recursive call: the lemma's
     /// variant at the call's actual arguments has to be non-negative and smaller than at the
     /// lemma's parameters on entry, whose values are the analysis's own. The companion carries the
-    /// formula (`#[thrust::lemma_variant_obligation]`), over the parameters the variant reads and their
-    /// entry values `old!(p)`. The lemma then terminates, since the variant decreases along every
-    /// chain of recursive calls and is never negative.
+    /// variant (`#[thrust::lemma_variant_obligation]`) as a logic function of all the lemma's
+    /// parameters, which is taken at their values on entry and at the call's arguments. The lemma
+    /// then terminates, since the variant decreases along every chain of recursive calls and is
+    /// never negative.
     fn check_lemma_variant(
         &mut self,
         companion: DefId,
         companion_generic_args: mir_ty::GenericArgsRef<'tcx>,
         args: &[rustc_span::source_map::Spanned<Operand<'tcx>>],
-        span: rustc_span::Span,
         outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
-        let companion_local = companion.expect_local();
-        let (formula_def_id, companion_args) = self
+        let (variant_def_id, variant_args) = self
             .ctx
-            .extract_path_and_args_with_attr(
-                companion_local,
-                &analyze::annot::lemma_variant_obligation_path(),
-            )
-            .expect("the companion of a lemma with a variant carries the variant's formula");
-        // The formula is written over the companion's generics; the call gives them.
-        let formula_args =
-            mir_ty::EarlyBinder::bind(companion_args).instantiate(self.tcx, companion_generic_args);
-        let formula_fn = self
+            .lemma_variant_of(companion)
+            .expect("the companion of a lemma with a variant has a variant");
+        // The variant is written over the lemma's generics; the call gives them.
+        let variant_args =
+            mir_ty::EarlyBinder::bind(variant_args).instantiate(self.tcx, companion_generic_args);
+        let variant_fn = self
             .ctx
             .formula_fn_with_args(
-                formula_def_id.expect_local(),
-                formula_args,
+                variant_def_id.expect_local(),
+                variant_args,
                 self.type_builder.owner_fn_id(),
             )
-            .expect("the variant's formula is a formula function");
-        let param_names = self.tcx.fn_arg_idents(companion);
-        let vars: IndexVec<rty::FunctionParamIdx, Var> = formula_fn
+            .expect("the variant is a formula function");
+        let analyze::annot_fn::FormulaFnBody::Term(variant) = variant_fn.body() else {
+            panic!("a variant is a term");
+        };
+        // The variant takes every parameter of the lemma, in order.
+        let at_entry = variant.clone().map_var(|idx| outer_fn_param_vars[&idx]);
+        let arg_vars: IndexVec<rty::FunctionParamIdx, Var> = variant_fn
             .params()
             .indices()
             .map(|idx| {
-                let ident =
-                    formula_fn.param_idents()[idx].expect("formula parameters must be named");
-                if let Some(param_name) = analyze::annot_fn::entry_value_param_name(ident) {
-                    let (_, entry) = self.entry_value_of_param(
-                        param_name,
-                        span,
-                        format!("`{param_name}` is not a parameter of the lemma"),
-                        outer_fn_param_vars,
-                    );
-                    return entry;
-                }
-                let position = param_names
-                    .iter()
-                    .position(|name| name.is_some_and(|name| name.name == ident.name))
-                    .expect("the variant reads a parameter of the lemma");
-                let arg = self.operand_refined_type(args[position].node.clone());
+                let arg = self.operand_refined_type(args[idx.index()].node.clone());
                 self.env.immut_bind_tmp(arg)
             })
             .collect();
-        self.check_formula(
-            formula_fn
-                .witnessed_formula()
-                .clone()
-                .map_var(|idx| vars[idx]),
+        let at_args = variant.clone().map_var(|idx| arg_vars[idx]);
+        let non_negative = chc::Atom::new(
+            chc::KnownPred::LESS_THAN_OR_EQUAL.into(),
+            vec![chc::Term::int(0), at_entry.clone()],
         );
+        let smaller = chc::Atom::new(chc::KnownPred::LESS_THAN.into(), vec![at_args, at_entry]);
+        self.check_formula(chc::Formula::Atom(non_negative).and(chc::Formula::Atom(smaller)));
     }
 
     /// The local of the function's parameter `param_name` and the variable holding its value on
@@ -3911,19 +3897,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             func,
             args,
             destination,
-            fn_span,
             ..
         } = &term.kind
         {
             if let Some((callee, callee_args)) = func.const_fn_def() {
                 if analyze::lemma::is_own_companion(self.tcx, self.local_def_id, callee) {
-                    self.check_lemma_variant(
-                        callee,
-                        callee_args,
-                        args,
-                        *fn_span,
-                        outer_fn_param_vars,
-                    );
+                    self.check_lemma_variant(callee, callee_args, args, outer_fn_param_vars);
                 }
             }
             let destination = match destination {

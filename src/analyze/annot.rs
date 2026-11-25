@@ -42,7 +42,9 @@ thrust_paths! {
     logic_path = "logic";
     lemma_path = "lemma";
     lemma_rec_path = "lemma_rec";
+    lemma_variant_wrapper_path = "lemma_variant_wrapper";
     lemma_variant_obligation_path = "lemma_variant_obligation";
+    lemma_variant_companion_path = "lemma_variant_companion";
     derived_path = "derived";
     law_path = "law";
     ignored_path = "ignored";

@@ -3472,6 +3472,32 @@ impl<'tcx> Analyzer<'tcx> {
             .map(|(def_id, _)| def_id)
     }
 
+    /// The logic function that is the variant of the lemma companion `companion`, and the generic
+    /// arguments it is written with, in the companion's own parameter space (the variant's
+    /// wrapper, `#[thrust::lemma_variant_wrapper]`, has the lemma's generics).
+    pub fn lemma_variant_of(
+        &self,
+        companion: DefId,
+    ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        let wrapper_path = analyze::annot::lemma_variant_wrapper_path();
+        let wrapper = self
+            .tcx
+            .hir_crate_items(())
+            .definitions()
+            .filter(|def| analyze::annot::has_thrust_attr(self.tcx, def.to_def_id(), &wrapper_path))
+            .find(|&def| {
+                self.extract_path_and_args_with_attr(
+                    def,
+                    &analyze::annot::lemma_variant_companion_path(),
+                )
+                .is_some_and(|(named, _)| named == companion)
+            })?;
+        self.extract_path_and_args_with_attr(
+            wrapper,
+            &analyze::annot::lemma_variant_obligation_path(),
+        )
+    }
+
     /// The definition a statement of `local_def_id`'s body marked with `attr_path` names, and the
     /// generic arguments it is written with, as type checking resolved them.
     pub fn extract_path_and_args_with_attr(

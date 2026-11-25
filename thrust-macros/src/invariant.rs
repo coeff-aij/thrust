@@ -198,23 +198,6 @@ fn expand_invariant(
     context: Option<&EnclosingContext>,
     marker: Marker,
 ) -> syn::Result<syn::Expr> {
-    let LiftedFormulaFn { item, reference } = lift_closure(closure, local_types, context, marker)?;
-    let marker = marker.ident();
-
-    Ok(syn::parse_quote!({
-        #item
-
-        crate::thrust_models::#marker(#reference)
-    }))
-}
-
-/// Lifts a predicate closure into a `#[thrust::formula_fn]` and the reference that names it.
-fn lift_closure(
-    closure: &syn::ExprClosure,
-    local_types: &syn::Generics,
-    context: Option<&EnclosingContext>,
-    marker: Marker,
-) -> syn::Result<LiftedFormulaFn> {
     if !marker.is_statement() && !local_types.params.is_empty() {
         return Err(syn::Error::new_spanned(
             local_types,
@@ -237,25 +220,17 @@ fn lift_closure(
 
     let id = COUNTER.fetch_add(1, Ordering::Relaxed);
     let name = format_ident!("{}_{}", marker.item_prefix(), id);
-    if marker.is_statement() {
+    let lifted = if marker.is_statement() {
         formula_fn_lifting::lift_statement(&name, &params, &closure.body, context, local_types)
     } else {
         formula_fn_lifting::lift(&name, &params, &closure.body, context)
-    }
-}
+    };
+    let LiftedFormulaFn { item, reference } = lifted?;
+    let marker = marker.ident();
 
-/// The formula function of the statement closure `tokens` (`|x: T, old!(y): U| formula`), and the
-/// reference that names it, for a caller that gives the formula's parameters their values itself.
-/// The generics `context` declares are re-declared on the formula function.
-pub fn lift_statement_closure(
-    tokens: proc_macro2::TokenStream,
-    context: &EnclosingContext,
-) -> syn::Result<LiftedFormulaFn> {
-    let tokens = rename_entry_values(tokens, Marker::Assert)?;
-    let tokens = crate::formula::wrap_closure_body(tokens);
-    let ClosureWithLocalTypes {
-        local_types,
-        closure,
-    } = syn::parse2(tokens)?;
-    lift_closure(&closure, &local_types, Some(context), Marker::Assert)
+    Ok(syn::parse_quote!({
+        #item
+
+        crate::thrust_models::#marker(#reference)
+    }))
 }

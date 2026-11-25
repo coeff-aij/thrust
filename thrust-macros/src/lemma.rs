@@ -3,18 +3,18 @@
 //! A lemma is an ordinary function whose contract is the statement and whose body is the proof.
 //! With `#[thrust_macros::variant(e)]`, each call the body makes to the lemma itself is redirected
 //! to a companion `_thrust_lemma_rec_<name>`, which has the lemma's contract. The companion
-//! carries the formula that `e` is non-negative at the parameters' values on entry and that it is
-//! smaller at the call's arguments than there, which the analyzer proves at each call in the
-//! lemma's own body
-//! (`analyze::basic_block`); it checks the rest of what makes a lemma terminate (`analyze::lemma`).
+//! names the variant as a logic function of all the lemma's parameters
+//! (`_thrust_lemma_variant_<name>`). The analyzer proves at each call in the lemma's own body that
+//! the variant is non-negative at the parameters' values on entry and smaller at the call's
+//! arguments than there (`analyze::basic_block`); it checks the rest of what makes a lemma
+//! terminate (`analyze::lemma`).
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote, ToTokens};
 use syn::visit_mut::VisitMut;
 
-use crate::formula_fn_lifting::{EnclosingContext, LiftedFormulaFn};
-use crate::invariant::lift_statement_closure;
+use crate::formula_fn_type_lowering::FormulaFnTypeLowering;
 use crate::spec::{generic_params_tokens, generic_turbofish, has_last_segment, take_variant};
 
 pub fn expand(item: TokenStream) -> TokenStream {
@@ -48,8 +48,10 @@ fn expand_recursive(mut func: syn::ItemFn, variant: TokenStream2) -> syn::Result
     let params = typed_params(&func.sig)?;
     let name = func.sig.ident.clone();
     let rec_name = format_ident!("_thrust_lemma_rec_{}", name);
-    let variant: syn::Expr = syn::parse2(variant)?;
-    let obligation = variant_obligation(&func.sig, &params, &variant)?;
+    let variant_name = format_ident!("_thrust_lemma_variant_{}", name);
+    let wrapper_name = format_ident!("_thrust_lemma_variant_of_{}", name);
+    let variant_fn = variant_fn(&variant_name, &func.sig, variant);
+    let wrapper = variant_wrapper(&wrapper_name, &variant_name, &rec_name, &func.sig);
 
     RedirectSelfCalls {
         name: &name,
@@ -68,90 +70,77 @@ fn expand_recursive(mut func: syn::ItemFn, variant: TokenStream2) -> syn::Result
     let output = &func.sig.output;
     let call_params = params.iter().map(|(param, ty)| quote!(#param: #ty));
     let call_args = params.iter().map(|(param, _)| param);
-    let LiftedFormulaFn { item, reference } = obligation;
     Ok(quote! {
         #func
+
+        #variant_fn
+        #wrapper
 
         #(#contract)*
         #[thrust::lemma_rec]
         #[allow(dead_code, non_snake_case, unused_variables, path_statements)]
         fn #rec_name #generics(#(#call_params),*) #output #where_clause {
-            #item
-            #[thrust::lemma_variant_obligation]
-            #reference;
             #name #turbofish(#(#call_args),*)
         }
     })
 }
 
-/// The formula a call of the lemma in its own body has to prove, as a formula function over the
-/// parameters that the variant reads, at the call's arguments, and `old!(p)`, the value `p` had
-/// on entry: the variant at the arguments is non-negative and smaller than at the parameters on
-/// entry. Thrust gives the entry values itself; no code of the lemma supplies them.
-fn variant_obligation(
+/// What ties the companion to its variant: a function with the variant's `Model` bounds, as the
+/// extern specification a contract makes has them, naming the companion and the variant's logic
+/// function at the lemma's generics. The companion itself has only the lemma's bounds, which the
+/// lemma's own body satisfies, so it cannot name the variant.
+fn variant_wrapper(
+    name: &syn::Ident,
+    variant_name: &syn::Ident,
+    rec_name: &syn::Ident,
     sig: &syn::Signature,
-    params: &[(syn::Ident, syn::Type)],
-    variant: &syn::Expr,
-) -> syn::Result<LiftedFormulaFn> {
-    reject_shadowing_binders(params, &mut variant.clone())?;
-    let mut read = Reads {
-        params,
-        names: Vec::new(),
-    };
-    read.visit_expr_mut(&mut variant.clone());
-    let at_args = variant;
-    let mut at_entry = variant.clone();
-    EntryValues { params }.visit_expr_mut(&mut at_entry);
-    let args = read.names.iter().map(|&i| {
-        let (param, ty) = &params[i];
-        quote!(#param: #ty)
-    });
-    let entries = read.names.iter().map(|&i| {
-        let (param, ty) = &params[i];
-        quote!(old!(#param): #ty)
-    });
-    lift_statement_closure(
-        quote! {
-            |#(#args,)* #(#entries),*| (#at_entry) >= 0 && (#at_args) < (#at_entry)
-        },
-        &EnclosingContext::of_signature(sig),
-    )
-}
-
-/// Rejects a variant that binds a name a parameter has (in a pattern, a closure or a quantifier),
-/// since the variant's reads of that name are the binder's, not the parameter's, and the
-/// substitution by entry values cannot tell them apart.
-fn reject_shadowing_binders(
-    params: &[(syn::Ident, syn::Type)],
-    variant: &mut syn::Expr,
-) -> syn::Result<()> {
-    let mut shadowing = ShadowingBinder {
-        params,
-        error: None,
-    };
-    shadowing.visit_expr_mut(variant);
-    shadowing.error.map_or(Ok(()), Err)
-}
-
-/// Finds the first binder in a variant named like a parameter.
-struct ShadowingBinder<'a> {
-    params: &'a [(syn::Ident, syn::Type)],
-    error: Option<syn::Error>,
-}
-
-impl VisitMut for ShadowingBinder<'_> {
-    fn visit_pat_ident_mut(&mut self, pat: &mut syn::PatIdent) {
-        syn::visit_mut::visit_pat_ident_mut(self, pat);
-        if self.error.is_some() || !self.params.iter().any(|(param, _)| *param == pat.ident) {
-            return;
+) -> TokenStream2 {
+    let generics = generic_params_tokens(&sig.generics);
+    let turbofish = generic_turbofish(&sig.generics);
+    let where_clause = variant_where_clause(sig);
+    quote! {
+        #[allow(dead_code, non_snake_case, path_statements)]
+        #[thrust::lemma_variant_wrapper]
+        fn #name #generics() #where_clause {
+            #[thrust::lemma_variant_obligation]
+            #variant_name #turbofish;
+            #[thrust::lemma_variant_companion]
+            #rec_name #turbofish;
         }
-        self.error = Some(syn::Error::new_spanned(
-            &pat.ident,
-            format!(
-                "a variant cannot bind `{}`, the name of a parameter of the lemma; rename the binder",
-                pat.ident
-            ),
-        ));
+    }
+}
+
+/// The lemma's own predicates and the `Model` bounds of its types.
+fn variant_where_clause(sig: &syn::Signature) -> TokenStream2 {
+    let model_preds = FormulaFnTypeLowering::new(sig).model_where_predicates();
+    let existing = sig
+        .generics
+        .where_clause
+        .iter()
+        .flat_map(|clause| clause.predicates.iter());
+    quote!(where #(#existing,)* #(#model_preds),*)
+}
+
+/// The variant as a logic function of all the lemma's parameters, with the lemma's generics, as
+/// for a recursive logic function (`spec::expand_spec_fn`). The analyzer instantiates it at the
+/// parameters' values on entry and at a recursive call's arguments (`analyze::basic_block`), so
+/// rustc resolves the variant's names, binders and macros.
+fn variant_fn(name: &syn::Ident, sig: &syn::Signature, variant: TokenStream2) -> TokenStream2 {
+    let generics = generic_params_tokens(&sig.generics);
+    let type_lowering = FormulaFnTypeLowering::new(sig);
+    let model_params = type_lowering.lower_params(&sig.inputs);
+    let where_clause = variant_where_clause(sig);
+    let variant = crate::formula::expand(variant);
+    quote! {
+        #[allow(dead_code, unused_variables, non_snake_case)]
+        #[thrust::formula_fn]
+        #[thrust::logic]
+        fn #name #generics(#model_params)
+            -> impl crate::thrust_models::Model<Ty: crate::thrust_models::model::Integer>
+            #where_clause
+        {
+            #variant
+        }
     }
 }
 
@@ -200,49 +189,6 @@ impl VisitMut for RedirectSelfCalls<'_> {
         }
         last.ident = syn::Ident::new(&self.rec_name.to_string(), proc_macro2::Span::call_site());
     }
-}
-
-/// The indices of the parameters a variant reads.
-struct Reads<'a> {
-    params: &'a [(syn::Ident, syn::Type)],
-    names: Vec<usize>,
-}
-
-impl VisitMut for Reads<'_> {
-    fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
-        if let Some(i) = param_index(self.params, expr) {
-            if !self.names.contains(&i) {
-                self.names.push(i);
-            }
-            return;
-        }
-        syn::visit_mut::visit_expr_mut(self, expr);
-    }
-}
-
-/// Replaces each parameter a variant reads by `old!(param)`.
-struct EntryValues<'a> {
-    params: &'a [(syn::Ident, syn::Type)],
-}
-
-impl VisitMut for EntryValues<'_> {
-    fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
-        if let Some(i) = param_index(self.params, expr) {
-            let param = &self.params[i].0;
-            *expr = syn::parse_quote!(old!(#param));
-            return;
-        }
-        syn::visit_mut::visit_expr_mut(self, expr);
-    }
-}
-
-/// The index of the parameter `expr` names, if it is one.
-fn param_index(params: &[(syn::Ident, syn::Type)], expr: &syn::Expr) -> Option<usize> {
-    let syn::Expr::Path(path) = expr else {
-        return None;
-    };
-    let ident = path.path.get_ident()?;
-    params.iter().position(|(param, _)| param == ident)
 }
 
 /// `proof!(lemma(args))`: the arguments are evaluated, and the call is made in a branch the
