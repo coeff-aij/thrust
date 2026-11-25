@@ -1631,6 +1631,49 @@ fn _extern_spec_result_partialeq_eq<T, E>(x: &Result<T, E>, y: &Result<T, E>) ->
 }
 
 #[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == (x == y))]
+fn _extern_spec_control_flow_partialeq_eq<B, C>(x: &std::ops::ControlFlow<B, C>, y: &std::ops::ControlFlow<B, C>) -> bool
+  where B: thrust_models::Model + thrust_models::ModelEq + PartialEq,
+        C: thrust_models::Model + thrust_models::ModelEq + PartialEq,
+{
+    <std::ops::ControlFlow<B, C> as PartialEq>::eq(x, y)
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    thrust_models::exists(|b| cf == std::ops::ControlFlow::Break(b) && result == Some(b))
+    || (thrust_models::exists(|c| cf == std::ops::ControlFlow::Continue(c)) && result == None)
+)]
+fn _extern_spec_control_flow_break_value<B, C>(cf: std::ops::ControlFlow<B, C>) -> Option<B>
+  where B: thrust_models::Model,
+        C: thrust_models::Model,
+{
+    thrust_std_target!(
+        <std::ops::ControlFlow<B, C>>::break_value(cf),
+        crate::std_transcriptions::control_flow_break_value(cf)
+    )
+}
+
+// The transcription of `break_value` is the target of its spec under `cfg(thrust_std_conformance)`,
+// so a transcription that calls it (`find`'s default body) finds no spec of std's. This copy of the
+// contract above is the spec of std's method in that build.
+#[cfg(thrust_std_conformance)]
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    thrust_models::exists(|b| cf == std::ops::ControlFlow::Break(b) && result == Some(b))
+    || (thrust_models::exists(|c| cf == std::ops::ControlFlow::Continue(c)) && result == None)
+)]
+fn _extern_spec_control_flow_break_value_std<B, C>(cf: std::ops::ControlFlow<B, C>) -> Option<B>
+  where B: thrust_models::Model,
+        C: thrust_models::Model,
+{
+    <std::ops::ControlFlow<B, C>>::break_value(cf)
+}
+
+#[thrust::extern_spec_fn]
 #[thrust_macros::requires(thrust_models::exists(|x| res == Ok(x)))]
 #[thrust_macros::ensures(Ok(result) == res)]
 fn _extern_spec_result_unwrap<T, E: std::fmt::Debug>(res: Result<T, E>) -> T
@@ -4785,6 +4828,89 @@ fn _extern_spec_iterator_try_fold_option<I, B, F>(it: &mut I, init: B, f: F) -> 
     thrust_std_target!(
         <I as std::iter::Iterator>::try_fold::<B, F, Option<B>>(it, init, f),
         <crate::std_transcriptions::StdBodies as crate::std_transcriptions::IteratorTryFoldMethods<I, B, F>>::iterator_try_fold(it, init, f)
+    )
+}
+
+// `try_fold` at `ControlFlow<C, B>`: the chain of the `Option` form above with each step's result
+// `Continue(accs[k + 1])`. The result is `Continue` of the last accumulator once the iterator is
+// completed, or `Break(c)` where the closure returned it on an item, after which the iterator has
+// produced that item and no more.
+#[thrust_macros::predicate]
+fn _iter_spec_try_fold_control_flow_chain<I, B, C, F>(
+    iter: I,
+    init: B,
+    f: F,
+    s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+    it: I,
+    accs: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+    fs: thrust_models::model::Seq<F>,
+) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+    B: thrust_models::Model,
+    C: thrust_models::Model,
+    F: FnMut(B, I::Item) -> std::ops::ControlFlow<C, B>,
+{
+    I::produces(iter, s, it)
+        && accs.len() == s.len() + 1
+        && fs.len() == s.len() + 1
+        && accs[0] == init
+        && fs[0] == f
+        && thrust_macros::hist_inv!(f, fs[s.len()])
+        && thrust_models::forall(|k: thrust_models::model::Int| !(0 <= k && k < s.len())
+            || (thrust_macros::hist_inv!(f, fs[k])
+                && thrust_macros::post!(thrust_models::model::Mut::new(fs[k], fs[k + 1])(accs[k], s[k]), std::ops::ControlFlow::<<C as thrust_models::Model>::Ty, <B as thrust_models::Model>::Ty>::Continue(accs[k + 1]))))
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(
+    I::inv(*it)
+        && thrust_models::forall(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                  it1: <I as thrust_models::Model>::Ty,
+                                  accs: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+                                  fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>,
+                                  x: <I::Item as thrust_models::Model>::Ty,
+                                  it2: <I as thrust_models::Model>::Ty|
+            (_iter_spec_try_fold_control_flow_chain::<I, B, C, F>(*it, init, f, s, it1, accs, fs)
+                && I::produces(it1, thrust_models::model::Seq::singleton(x), it2))
+                ==> thrust_macros::pre!(fs[s.len()](accs[s.len()], x)))
+)]
+#[thrust_macros::ensures(I::inv(!it))]
+#[thrust_macros::ensures(
+    thrust_models::forall(|r: <B as thrust_models::Model>::Ty|
+        !(result == std::ops::ControlFlow::Continue(r))
+            || thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                      it1: <I as thrust_models::Model>::Ty,
+                                      accs: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+                                      fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>|
+                _iter_spec_try_fold_control_flow_chain::<I, B, C, F>(*it, init, f, s, it1, accs, fs)
+                    && accs[s.len()] == r
+                    && I::completed(thrust_models::model::Mut::new(it1, !it))))
+)]
+#[thrust_macros::ensures(
+    thrust_models::forall(|c: <C as thrust_models::Model>::Ty|
+        !(result == std::ops::ControlFlow::Break(c))
+            || thrust_models::exists(|s: thrust_models::model::Seq<<I::Item as thrust_models::Model>::Ty>,
+                                      it1: <I as thrust_models::Model>::Ty,
+                                      accs: thrust_models::model::Seq<<B as thrust_models::Model>::Ty>,
+                                      fs: thrust_models::model::Seq<thrust_models::model::Closure<F>>,
+                                      x: <I::Item as thrust_models::Model>::Ty,
+                                      g: thrust_models::model::Closure<F>|
+                _iter_spec_try_fold_control_flow_chain::<I, B, C, F>(*it, init, f, s, it1, accs, fs)
+                    && I::produces(it1, thrust_models::model::Seq::singleton(x), !it)
+                    && thrust_macros::post!(thrust_models::model::Mut::new(fs[s.len()], g)(accs[s.len()], x), std::ops::ControlFlow::<<C as thrust_models::Model>::Ty, <B as thrust_models::Model>::Ty>::Break(c))))
+)]
+fn _extern_spec_iterator_try_fold_control_flow<I, B, C, F>(it: &mut I, init: B, f: F) -> std::ops::ControlFlow<C, B>
+    where I: IteratorSpec,
+          I::Item: thrust_models::Model,
+          B: thrust_models::Model,
+          C: thrust_models::Model,
+          F: FnMut(B, I::Item) -> std::ops::ControlFlow<C, B>
+{
+    thrust_std_target!(
+        <I as std::iter::Iterator>::try_fold::<B, F, std::ops::ControlFlow<C, B>>(it, init, f),
+        <crate::std_transcriptions::StdBodies as crate::std_transcriptions::IteratorTryFoldControlFlowMethods<I, B, C, F>>::iterator_try_fold(it, init, f)
     )
 }
 
