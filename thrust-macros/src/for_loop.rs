@@ -8,9 +8,10 @@
 //! `produced` the sequence of the items `next` has returned so far, and the invariant is conjoined
 //! with the structural `inv(iter)` and `produces(iter_old, produced, iter)` of `IteratorSpec`.
 //!
-//! A loop with no invariant gets the same ghosts, and `inv(iter)` and
-//! `produces(iter_old, produced, iter)` are conjoined to the invariant Thrust infers, so that the
-//! inferred part can relate the loop's state to `produced`, as Creusot does for every loop.
+//! A loop with no invariant gets the same ghosts, and Thrust conjoins `inv(iter)` and
+//! `produces(iter_old, produced, iter)` to the invariant it infers where the iterator implements
+//! `IteratorSpec`, so that the inferred part can relate the loop's state to `produced`, as Creusot
+//! does for every loop. A body that starts with `no_structural_invariant!()` gets neither.
 //!
 //! The variables of an annotated loop get names of their own for each loop, and the invariant's
 //! `iter`, `iter_old` and `produced` are renamed to them, so the loop body sees its own variables
@@ -38,13 +39,13 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let label_name = for_loop.label.as_ref().map(|label| label.name.to_string());
     let label_name = label_name.as_deref();
-    let stmts = &for_loop.body.stmts;
+    let (opted_out, stmts) = split_opt_out(&for_loop.body.stmts);
     let named_by_label =
         label_name.is_some_and(|label| crate::loop_label::is_referenced_in_body(stmts, label));
     match labelled_ghosts(for_loop) {
         LabelledGhosts::None => return None,
         LabelledGhosts::Iter if !named_by_label => {
-            return Some(desugar_with_inferred_invariant(for_loop));
+            return (!opted_out).then(|| desugar_with_inferred_invariant(for_loop));
         }
         LabelledGhosts::Iter | LabelledGhosts::All => {}
     }
@@ -216,9 +217,8 @@ pub enum LabelledGhosts {
 /// The ghosts of `for_loop` that a reference to its label can name.
 pub fn labelled_ghosts(for_loop: &syn::ExprForLoop) -> LabelledGhosts {
     let label = for_loop.label.as_ref().map(|label| label.name.to_string());
-    let leading: Vec<_> = for_loop
-        .body
-        .stmts
+    let leading: Vec<_> = split_opt_out(&for_loop.body.stmts)
+        .1
         .iter()
         .map_while(|stmt| invariant_params(stmt, label.as_deref()))
         .collect();
@@ -233,6 +233,24 @@ pub fn labelled_ghosts(for_loop: &syn::ExprForLoop) -> LabelledGhosts {
         LabelledGhosts::All
     } else {
         LabelledGhosts::None
+    }
+}
+
+/// Whether `stmts` starts with `no_structural_invariant!()`, and the statements after it.
+fn split_opt_out(stmts: &[syn::Stmt]) -> (bool, &[syn::Stmt]) {
+    let Some((syn::Stmt::Macro(first), rest)) = stmts.split_first() else {
+        return (false, stmts);
+    };
+    let is_marker = first
+        .mac
+        .path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "no_structural_invariant");
+    if is_marker {
+        (true, rest)
+    } else {
+        (false, stmts)
     }
 }
 

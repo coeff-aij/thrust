@@ -140,6 +140,22 @@ pub fn invariant(input: TokenStream) -> TokenStream {
     invariant::expand(input, invariant::Marker::Full)
 }
 
+/// Starts the body of a `for` loop that is to get no structural invariant: the loop is checked
+/// against the invariants written and the facts Thrust infers, without the `inv(iter)` and
+/// `produces(iter_old, produced, iter)` of `IteratorSpec` that it adds to a `for` loop by default.
+/// It expands to nothing; [`mod@context`] reads it.
+///
+/// ```ignore
+/// for x in iter {
+///     thrust_macros::no_structural_invariant!();
+///     ...
+/// }
+/// ```
+#[proc_macro]
+pub fn no_structural_invariant(_input: TokenStream) -> TokenStream {
+    TokenStream::new()
+}
+
 /// Declares a partial loop invariant: the same closure as [`invariant`], whose
 /// predicate is conjoined with the invariant Thrust infers at the loop head
 /// instead of replacing it. The loop head is partial when any of its invariants is.
