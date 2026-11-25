@@ -1307,11 +1307,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    fn unknown_value_ty(&self, ty: mir_ty::Ty<'tcx>) -> PlaceType {
-        let ty = self.type_builder.build(ty).vacuous().ty;
+    /// Any value of `mir_ty`, in its range when it is an integer.
+    fn unknown_value_ty(&self, value_ty: mir_ty::Ty<'tcx>) -> PlaceType {
+        let is_integral = value_ty.is_integral();
+        let ty = self.type_builder.build(value_ty).vacuous().ty;
         let mut builder = PlaceTypeBuilder::default();
         let value = builder.push_existential(ty.to_sort());
-        builder.build(ty, chc::Term::var(value.into()))
+        let term = chc::Term::var(value.into());
+        if is_integral {
+            let in_range = int_term_in_range(self.tcx, term.clone(), value_ty);
+            builder.push_formula(in_range.equal_to(chc::Term::bool(true)));
+        }
+        builder.build(ty, term)
     }
 
     fn const_ty(&self, const_: &mir::Const<'tcx>) -> PlaceType {

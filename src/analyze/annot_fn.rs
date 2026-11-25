@@ -2876,6 +2876,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     rustc_hir::def::DefKind::Const | rustc_hir::def::DefKind::AssocConst,
                     const_did,
                 ) => FormulaOrTerm::Term(self.const_term(const_did, hir)),
+                rustc_hir::def::Res::Def(rustc_hir::def::DefKind::ConstParam, _) => {
+                    self.tcx.dcx().span_fatal(
+                        hir.span,
+                        "a contract cannot mention a const generic parameter yet",
+                    )
+                }
                 _ => unimplemented!("unsupported path in formula: {:?}", qpath),
             },
             ExprKind::Tup(exprs) => {
