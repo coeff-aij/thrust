@@ -35,6 +35,15 @@ impl Parse for EnclosingContext {
 }
 
 impl EnclosingContext {
+    /// The context of a function that generates code from its own signature (a lemma's companion):
+    /// the signature's generics, with no enclosing `impl` or `trait`.
+    pub fn of_signature(sig: &Signature) -> Self {
+        Self {
+            sig: sig.clone(),
+            outer: None,
+        }
+    }
+
     /// Gives this context to the spec macros nested in `expr` (`context::inject_into_expr`).
     pub fn inject_into(&self, expr: &mut syn::Expr) {
         crate::context::inject_into_expr(&self.sig, self.outer.as_ref(), expr);

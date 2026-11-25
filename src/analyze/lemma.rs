@@ -3,9 +3,9 @@
 //!
 //! As in Verus's proof mode and Creusot's ghost code, a lemma calls only what is known to
 //! terminate without effects: other lemmas without a cycle, itself through the companion
-//! `#[thrust_macros::variant]` makes, after a `proof_assert!` that the variant is non-negative and
-//! smaller than at the parameters on entry, logic functions and predicates, and the model
-//! operations of the injected `thrust_models`.
+//! `#[thrust_macros::variant]` makes (the analysis proves at each such call that the variant is
+//! non-negative at the parameters' values on entry and smaller at the call's arguments), logic
+//! functions and predicates, and the model operations of the injected `thrust_models`.
 //! The operations MIR has as statements (arithmetic, comparisons, field and index access) need
 //! no call. A lemma has no loop and no unsafe code, and takes no `&mut`, so that what it
 //! assigns stays its own. A law is stated for every value of its parameters, so it takes no

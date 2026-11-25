@@ -246,12 +246,16 @@ fn lift_closure(
 
 /// The formula function of the statement closure `tokens` (`|x: T, old!(y): U| formula`), and the
 /// reference that names it, for a caller that gives the formula's parameters their values itself.
-pub fn lift_statement_closure(tokens: proc_macro2::TokenStream) -> syn::Result<LiftedFormulaFn> {
+/// The generics `context` declares are re-declared on the formula function.
+pub fn lift_statement_closure(
+    tokens: proc_macro2::TokenStream,
+    context: &EnclosingContext,
+) -> syn::Result<LiftedFormulaFn> {
     let tokens = rename_entry_values(tokens, Marker::Assert)?;
     let tokens = crate::formula::wrap_closure_body(tokens);
     let ClosureWithLocalTypes {
         local_types,
         closure,
     } = syn::parse2(tokens)?;
-    lift_closure(&closure, &local_types, None, Marker::Assert)
+    lift_closure(&closure, &local_types, Some(context), Marker::Assert)
 }
