@@ -996,8 +996,9 @@ impl<'tcx> TypeBuilder<'tcx> {
         if ty.is_trait() {
             return rty::Type::opaque();
         }
-        // Only a closure type at the top of `ty` reaches here: `resolve_model_ty` below folds every
-        // closure inside a type into `Closure<upvars>` before the arms recurse.
+        // A closure type at the top of `ty`, or the element of an array (its arm below recurses
+        // on the element first), reaches here: `resolve_model_ty` below folds every other closure
+        // inside a type into `Closure<upvars>` before the arms recurse.
         if let mir_ty::TyKind::Closure(..) = ty.kind() {
             if let Some(ty) = m.closure(self, ty) {
                 return ty;
