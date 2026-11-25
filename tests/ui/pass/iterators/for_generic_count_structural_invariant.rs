@@ -6,8 +6,8 @@
 // A `for` loop without a written invariant over a generic iterator, not instantiated per
 // instance: the postcondition names the sequence the iterator produces, which the structural
 // invariant (`produces(iter_old, produced, iter)`) relates to the loop's count. With it the query
-// is answered; the same loop of `tests/ui/fail/iterators/for_generic_count_structural_invariant.rs` has
-// `no_structural_invariant!()`, for which the solver gives no answer.
+// is answered; with `no_structural_invariant!()` the solver gives no answer. The expansion of the
+// opt-out is tested in `thrust-macros/src/for_loop.rs`.
 
 use thrust_models::model::{Mut, Seq};
 use thrust_models::Model;

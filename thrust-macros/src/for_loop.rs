@@ -28,6 +28,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proc_macro2::{Ident, TokenStream, TokenTree};
 use quote::format_ident;
+use syn::ext::IdentExt as _;
 use syn::spanned::Spanned as _;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -39,7 +40,7 @@ static COUNTER: AtomicUsize = AtomicUsize::new(0);
 /// the leading run names the loop's ghosts.
 pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let (opted_out, rest) = split_opt_out(&for_loop.body.stmts);
-    let desugared = desugar_loop(for_loop, opted_out);
+    let desugared = desugar_loop(for_loop, opted_out, rest);
     if desugared.is_none() && opted_out {
         let mut plain = for_loop.clone();
         plain.body.stmts = rest.to_vec();
@@ -48,10 +49,13 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     desugared
 }
 
-fn desugar_loop(for_loop: &syn::ExprForLoop, opted_out: bool) -> Option<syn::Expr> {
+fn desugar_loop(
+    for_loop: &syn::ExprForLoop,
+    opted_out: bool,
+    stmts: &[syn::Stmt],
+) -> Option<syn::Expr> {
     let label_name = for_loop.label.as_ref().map(|label| label.name.to_string());
     let label_name = label_name.as_deref();
-    let (_, stmts) = split_opt_out(&for_loop.body.stmts);
     let named_by_label =
         label_name.is_some_and(|label| crate::loop_label::is_referenced_in_body(stmts, label));
     match labelled_ghosts(for_loop) {
@@ -275,7 +279,7 @@ const GHOST_NAMES: [&str; 4] = [
 
 fn names_a_ghost(tokens: TokenStream) -> bool {
     tokens.into_iter().any(|token| match token {
-        TokenTree::Ident(ident) => GHOST_NAMES.iter().any(|name| ident == name),
+        TokenTree::Ident(ident) => GHOST_NAMES.iter().any(|name| ident.unraw() == name),
         TokenTree::Group(group) => names_a_ghost(group.stream()),
         _ => false,
     })
@@ -409,4 +413,48 @@ fn invariant_params(stmt: &syn::Stmt, label: Option<&str>) -> Option<Vec<(syn::I
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::desugar;
+    use quote::ToTokens as _;
+
+    fn expansion(source: &str) -> String {
+        let for_loop: syn::ExprForLoop = syn::parse_str(source).unwrap();
+        let desugared = desugar(&for_loop).expect("the loop is desugared");
+        desugared.to_token_stream().to_string().replace(' ', "")
+    }
+
+    #[test]
+    fn inferred_loop_has_the_history_marker() {
+        let out = expansion("for x in it { f(x); }");
+        assert!(out.contains("__for_loop_history_marker"));
+    }
+
+    #[test]
+    fn opted_out_inferred_loop_has_no_ghosts() {
+        let out = expansion("for x in it { thrust_macros::no_structural_invariant!(); f(x); }");
+        assert!(!out.contains("__for_loop_history_marker"));
+        assert!(!out.contains("__thrust_for_produced"));
+        assert!(!out.contains("no_structural_invariant"));
+    }
+
+    const ANNOTATED: &str = "for x in it { INVARIANT thrust_macros::invariant!(|iter: Range<i64>, produced: Ghost<Seq<Int>>| produced.len() >= 0); f(x); }";
+
+    #[test]
+    fn annotated_loop_conjoins_the_structural_invariant() {
+        let out = expansion(&ANNOTATED.replace("INVARIANT", ""));
+        assert!(out.contains("IteratorSpec>::produces"));
+    }
+
+    #[test]
+    fn opted_out_annotated_loop_keeps_its_ghosts_without_the_structural_invariant() {
+        let out = expansion(
+            &ANNOTATED.replace("INVARIANT", "thrust_macros::no_structural_invariant!();"),
+        );
+        assert!(out.contains("__thrust_for_produced_"));
+        assert!(!out.contains("IteratorSpec>::produces"));
+        assert!(!out.contains("no_structural_invariant"));
+    }
 }
