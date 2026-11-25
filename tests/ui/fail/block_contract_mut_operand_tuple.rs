@@ -1,8 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 
-// A `&mut` in a tuple field passed to a call in the code under the contract is reborrowed, so
-// the call changes the tuple and the contract does not keep the value it had before.
+// As the pass twin, but the borrowed variable is asserted to hold 1, the value the call's
+// reborrow gave the field, while `*s.0 = 3` wrote it afterwards.
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(!r == 1)]
 fn set(r: &mut i64) {
@@ -15,6 +15,7 @@ fn main() {
     thrust_macros::block_contract!(requires(|| true), ensures(|| true), {
         set(s.0);
     });
-    let k = s.1;
-    assert!(x == 0);
+    *s.0 = 3;
+    assert!(s.1 == 5);
+    assert!(x == 1);
 }

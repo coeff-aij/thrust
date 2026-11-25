@@ -29,7 +29,7 @@ mod drop_point;
 mod trait_object;
 mod visitor;
 
-use crate::analyze::block_contract::{self, BlockContract, Change};
+use crate::analyze::block_contract::{BlockContract, Change};
 pub use drop_point::{DropPoints, MoveState, MovedOut};
 
 /// Whether a basic block needs a precondition of its own, rather than
@@ -764,7 +764,7 @@ pub struct Analyzer<'tcx, 'ctx> {
     local_def_id: LocalDefId,
     analysis_key: analyze::AnalysisKey<'tcx>,
     drop_points: DropPoints,
-    block_contracts: Vec<BlockContract>,
+    block_contracts: Vec<BlockContract<'tcx>>,
     basic_block: BasicBlock,
     body: Cow<'tcx, Body<'tcx>>,
 
@@ -2902,12 +2902,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Goes past the code under `contract`, from its opening block to the block after it, as
     /// past a call to a function with that contract: each local the code may change takes a
-    /// fresh value, a `&mut` written only through it keeping its final value, the `ensures`
-    /// formula is assumed of the values, and the other locals keep theirs. A local the code
+    /// fresh value, the `ensures` formula is assumed of the values, and the other locals keep
+    /// theirs. A `&mut` written only through it keeps its final value. For a `&mut` reached
+    /// through tuple or struct fields and reborrowed by the code, the reborrowed field keeps its
+    /// final value with a fresh current value, and the sibling fields on its path keep their
+    /// values. A local the code
     /// leaves unchanged and drops is dropped here, with the parts moved out of it before.
     fn pass_over_block_contract(
         &mut self,
-        contract: &BlockContract,
+        contract: &BlockContract<'tcx>,
         outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
         let closing = self.body.basic_blocks[contract.closing]
@@ -2979,23 +2982,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let old = defined.then(|| self.env.local_type(local));
             // The fields of a local reborrowed in its `&mut` fields, as they were: the final
             // value of each reborrowed field and every field beside it are kept.
-            let field_facts: Vec<(mir::Place<'tcx>, bool, PlaceType)> =
-                match (change, contract.changed_fields.get(&local)) {
-                    (Change::Fields, Some(paths)) if defined => {
-                        let places = block_contract::field_places(self.tcx, local, decl_ty, paths)
-                            .expect("fields that a contract reborrows are of a tuple or a struct");
-                        let reborrowed = places.reborrowed.into_iter().map(|p| (p, true));
-                        let kept = places.kept.into_iter().map(|p| (p, false));
-                        reborrowed
-                            .chain(kept)
-                            .map(|(place, reborrowed)| {
-                                let ty = self.place_type(&place);
-                                (place, reborrowed, ty)
-                            })
-                            .collect()
-                    }
-                    _ => Vec::new(),
-                };
+            let field_facts: Option<(Vec<_>, Vec<_>)> = contract
+                .field_places
+                .get(&local)
+                .filter(|_| change == Change::Fields && defined)
+                .map(|places| {
+                    let typed = |places: &[mir::Place<'tcx>]| {
+                        places
+                            .iter()
+                            .map(|&place| (place, self.place_type(&place)))
+                            .collect::<Vec<_>>()
+                    };
+                    (typed(&places.reborrowed), typed(&places.kept))
+                });
             let mut ty = self.type_builder.build(decl_ty).vacuous().ty;
             match &old {
                 Some(old) if self.is_mut_local(local) => {
@@ -3025,18 +3024,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 None => {}
             }
             self.bind_local(local, rty::RefinedType::unrefined(ty));
-            if !field_facts.is_empty() {
+            if let Some((reborrowed, kept)) = field_facts {
                 let mut builder = PlaceTypeBuilder::default();
-                for (place, reborrowed, old_ty) in field_facts {
+                for (place, old_ty) in reborrowed {
                     let new_ty = self.place_type(&place);
                     let (_, old_term) = builder.subsume(old_ty);
                     let (_, new_term) = builder.subsume(new_ty);
-                    let fact = if reborrowed {
-                        new_term.mut_final().equal_to(old_term.mut_final())
-                    } else {
-                        new_term.equal_to(old_term)
-                    };
-                    builder.push_formula(fact);
+                    builder.push_formula(new_term.mut_final().equal_to(old_term.mut_final()));
+                }
+                for (place, old_ty) in kept {
+                    let new_ty = self.place_type(&place);
+                    let (_, old_term) = builder.subsume(old_ty);
+                    let (_, new_term) = builder.subsume(new_ty);
+                    builder.push_formula(new_term.equal_to(old_term));
                 }
                 self.env.assume(builder.build_assumption());
             }
@@ -3980,7 +3980,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 );
             }
             TerminatorKind::Call { target, .. } => {
-                let block_contract = |a: &Self, at: fn(&BlockContract) -> BasicBlock| {
+                let block_contract = |a: &Self, at: fn(&BlockContract<'tcx>) -> BasicBlock| {
                     a.block_contracts
                         .iter()
                         .find(|contract| at(contract) == a.basic_block)
@@ -4286,7 +4286,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self
     }
 
-    pub fn block_contracts(&mut self, block_contracts: Vec<BlockContract>) -> &mut Self {
+    pub fn block_contracts(&mut self, block_contracts: Vec<BlockContract<'tcx>>) -> &mut Self {
         self.block_contracts = block_contracts;
         self
     }

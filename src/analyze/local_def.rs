@@ -140,7 +140,7 @@ pub struct Analyzer<'tcx, 'ctx> {
     /// to substitute HIR types during translation in [`crate::analyze::annot_fn`]
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     drop_points: HashMap<BasicBlock, analyze::basic_block::DropPoints>,
-    block_contracts: Vec<analyze::block_contract::BlockContract>,
+    block_contracts: Vec<analyze::block_contract::BlockContract<'tcx>>,
     type_builder: TypeBuilder<'tcx>,
 }
 
@@ -2230,7 +2230,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// marker call that ends its opening block.
     fn block_requires_site(
         &self,
-        contract: &analyze::block_contract::BlockContract,
+        contract: &analyze::block_contract::BlockContract<'tcx>,
     ) -> WrittenPrecondition<'tcx> {
         let terminator = self.body.basic_blocks[contract.opening].terminator();
         let mir::TerminatorKind::Call { func, args, .. } = &terminator.kind else {

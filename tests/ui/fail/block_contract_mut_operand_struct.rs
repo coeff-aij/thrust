@@ -1,8 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 
-// A `&mut` in a struct field passed to a call in the code under the contract is reborrowed, so
-// the call changes the struct and the contract does not keep the value it had before.
+// As the pass twin, but the borrowed variable is asserted to hold 1, the value the call's
+// reborrow gave the field, while `*s.r = 3` wrote it afterwards.
 struct S<'a> {
     r: &'a mut i64,
     k: i64,
@@ -20,6 +20,7 @@ fn main() {
     thrust_macros::block_contract!(requires(|| true), ensures(|| true), {
         set(s.r);
     });
-    let k = s.k;
-    assert!(x == 0);
+    *s.r = 3;
+    assert!(s.k == 5);
+    assert!(x == 1);
 }

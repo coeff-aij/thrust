@@ -9,7 +9,8 @@
 //! a call's result and its `&mut` arguments are given in RustHorn. The other locals keep the
 //! values and the facts they had at the opening, which is the frame of the contract.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::btree_map::Entry;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rustc_abi::FieldIdx;
 
@@ -29,14 +30,14 @@ pub enum Change {
     /// Written only through a dereference of it: a `&mut` keeps its final value.
     ThroughDeref,
     /// Reborrowed in fields that are `&mut`: each such field keeps its final value and the
-    /// other fields keep their values (`BlockContract::changed_fields`).
+    /// other fields keep their values (`BlockContract::field_places`).
     Fields,
     /// Assigned or borrowed mutably as a whole or in a part of its own.
     Whole,
 }
 
 #[derive(Debug, Clone)]
-pub struct BlockContract {
+pub struct BlockContract<'tcx> {
     /// The block that ends in the `block_requires!` marker call.
     pub opening: BasicBlock,
     /// The first block of the code under the contract, the opening marker's target.
@@ -49,8 +50,9 @@ pub struct BlockContract {
     pub blocks: HashSet<BasicBlock>,
     /// The locals the code under the contract may change.
     pub changed: BTreeMap<Local, Change>,
-    /// For a local changed as `Change::Fields`, the paths of the `&mut` fields the code reborrows.
-    pub changed_fields: BTreeMap<Local, BTreeSet<Vec<FieldIdx>>>,
+    /// For a local changed as `Change::Fields`, the places of the `&mut` fields the code
+    /// reborrows and of the fields beside them.
+    pub field_places: BTreeMap<Local, FieldPlaces<'tcx>>,
     /// The locals the code under the contract drops, with the parts moved out of each, as the
     /// drop points of its blocks give them.
     pub ends: Vec<(Local, MovedOut)>,
@@ -110,7 +112,7 @@ pub fn separate_entries<'tcx>(ctx: &analyze::Analyzer<'tcx>, body: &mut Body<'tc
 
 /// The block contracts of `body`. Stops at a `block_requires!` whose code can be left other
 /// than through one `block_ensures!`, and at a `block_ensures!` that closes none.
-pub fn collect<'tcx>(ctx: &analyze::Analyzer<'tcx>, body: &Body<'tcx>) -> Vec<BlockContract> {
+pub fn collect<'tcx>(ctx: &analyze::Analyzer<'tcx>, body: &Body<'tcx>) -> Vec<BlockContract<'tcx>> {
     let mut contracts = Vec::new();
     for (bb, data) in body.basic_blocks.iter_enumerated() {
         if data.is_cleanup || marker_of(ctx, body, bb) != Some(FormulaMarker::BlockRequires) {
@@ -136,7 +138,7 @@ fn contract_opened_at<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     body: &Body<'tcx>,
     opening: BasicBlock,
-) -> BlockContract {
+) -> BlockContract<'tcx> {
     let terminator = body.basic_blocks[opening].terminator();
     let span = terminator.source_info.span;
     let fatal = |msg: &str| -> ! { ctx.tcx.dcx().span_fatal(span, msg.to_string()) };
@@ -207,7 +209,7 @@ fn contract_opened_at<'tcx>(
         tcx: ctx.tcx,
         local_decls: &body.local_decls,
         changes: BTreeMap::new(),
-        field_paths: BTreeMap::new(),
+        field_places: BTreeMap::new(),
     };
     for &bb in &blocks {
         let data = &body.basic_blocks[bb];
@@ -233,7 +235,7 @@ fn contract_opened_at<'tcx>(
         exit,
         blocks,
         changed: changed.changes,
-        changed_fields: changed.field_paths,
+        field_places: changed.field_places,
         ends: Vec::new(),
     }
 }
@@ -265,7 +267,7 @@ struct ChangedLocals<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
     local_decls: &'a mir::LocalDecls<'tcx>,
     changes: BTreeMap<Local, Change>,
-    field_paths: BTreeMap<Local, BTreeSet<Vec<FieldIdx>>>,
+    field_places: BTreeMap<Local, FieldPlaces<'tcx>>,
 }
 
 impl ChangedLocals<'_, '_> {
@@ -296,21 +298,22 @@ impl<'tcx> Visitor<'tcx> for ChangedLocals<'_, 'tcx> {
         if let Some(place) = operand.place() {
             let ty = place.ty(self.local_decls, self.tcx).ty;
             if ty.ref_mutability() == Some(rustc_middle::ty::Mutability::Mut) {
-                match field_path(&place) {
-                    Some(path)
-                        if !path.is_empty()
-                            && field_places(
-                                self.tcx,
-                                place.local,
-                                self.local_decls[place.local].ty,
-                                &BTreeSet::from([path.clone()]),
-                            )
-                            .is_some() =>
-                    {
-                        self.field_paths
-                            .entry(place.local)
-                            .or_default()
-                            .insert(path);
+                let places = field_path(&place).and_then(|path| {
+                    field_places(
+                        self.tcx,
+                        place.local,
+                        self.local_decls[place.local].ty,
+                        &path,
+                    )
+                });
+                match places {
+                    Some(places) if !places.reborrowed.is_empty() => {
+                        match self.field_places.entry(place.local) {
+                            Entry::Occupied(mut entry) => entry.get_mut().merge(places),
+                            Entry::Vacant(entry) => {
+                                entry.insert(places);
+                            }
+                        }
                         self.record(place.local, Change::Fields);
                     }
                     _ => {
@@ -368,7 +371,7 @@ pub fn drops_in_code(
 /// liveness from the blocks after its first.
 pub fn body_ending_at_closings<'tcx>(
     mut body: Body<'tcx>,
-    contracts: &[BlockContract],
+    contracts: &[BlockContract<'tcx>],
 ) -> Body<'tcx> {
     for contract in contracts {
         let terminator = body.basic_blocks.as_mut()[contract.closing].terminator_mut();
@@ -411,6 +414,7 @@ fn field_path(place: &mir::Place<'_>) -> Option<Vec<FieldIdx>> {
 
 /// The places of a local's fields that a contract treats differently when the code reborrows
 /// the `&mut` fields at some paths.
+#[derive(Debug, Clone)]
 pub struct FieldPlaces<'tcx> {
     /// The `&mut` fields the code reborrows.
     pub reborrowed: Vec<mir::Place<'tcx>>,
@@ -418,11 +422,35 @@ pub struct FieldPlaces<'tcx> {
     pub kept: Vec<mir::Place<'tcx>>,
 }
 
-/// The fields of a tuple or a struct, with their types, or `None` for any other type.
+impl<'tcx> FieldPlaces<'tcx> {
+    /// Adds the places of another path of the same local: a field beside one path that holds
+    /// the reborrowed field of another is not kept.
+    fn merge(&mut self, other: FieldPlaces<'tcx>) {
+        for place in other.reborrowed {
+            if !self.reborrowed.contains(&place) {
+                self.reborrowed.push(place);
+            }
+        }
+        for place in other.kept {
+            if !self.kept.contains(&place) {
+                self.kept.push(place);
+            }
+        }
+        let reborrowed = &self.reborrowed;
+        self.kept.retain(|kept| {
+            !reborrowed
+                .iter()
+                .any(|r| r.projection.starts_with(kept.projection))
+        });
+    }
+}
+
+/// The fields of a tuple or a struct other than a `Box`, with their types, or `None` for any
+/// other type.
 fn fields_of<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> Option<Vec<mir_ty::Ty<'tcx>>> {
     match ty.kind() {
         mir_ty::TyKind::Tuple(tys) => Some(tys.iter().collect()),
-        mir_ty::TyKind::Adt(def, args) if def.is_struct() => Some(
+        mir_ty::TyKind::Adt(def, args) if def.is_struct() && !def.is_box() => Some(
             def.non_enum_variant()
                 .fields
                 .iter()
@@ -433,46 +461,36 @@ fn fields_of<'tcx>(tcx: TyCtxt<'tcx>, ty: mir_ty::Ty<'tcx>) -> Option<Vec<mir_ty
     }
 }
 
-/// The places of the fields `paths` of `local`, and of the fields beside them, or `None` where a
-/// path passes through a type that is not a tuple or a struct.
+/// The places of the field at `path` of `local`, and of the fields beside it on the way, or
+/// `None` where the path passes through a type that is not a tuple or a struct.
 pub fn field_places<'tcx>(
     tcx: TyCtxt<'tcx>,
     local: Local,
     local_ty: mir_ty::Ty<'tcx>,
-    paths: &BTreeSet<Vec<FieldIdx>>,
+    path: &[FieldIdx],
 ) -> Option<FieldPlaces<'tcx>> {
     let place = |elems: &[mir::PlaceElem<'tcx>]| mir::Place {
         local,
         projection: tcx.mk_place_elems(elems),
     };
-    let mut reborrowed = Vec::new();
-    let mut beside = Vec::new();
-    for path in paths {
-        let mut ty = local_ty;
-        let mut elems: Vec<mir::PlaceElem<'tcx>> = Vec::new();
-        for idx in path {
-            let fields = fields_of(tcx, ty)?;
-            for (k, &field_ty) in fields.iter().enumerate() {
-                if k == idx.as_usize() {
-                    continue;
-                }
-                let mut sibling = elems.clone();
-                sibling.push(mir::PlaceElem::Field(FieldIdx::from_usize(k), field_ty));
-                beside.push(place(&sibling));
+    let mut ty = local_ty;
+    let mut elems: Vec<mir::PlaceElem<'tcx>> = Vec::new();
+    let mut kept = Vec::new();
+    for idx in path {
+        let fields = fields_of(tcx, ty)?;
+        for (k, &field_ty) in fields.iter().enumerate() {
+            if k == idx.as_usize() {
+                continue;
             }
-            ty = fields[idx.as_usize()];
-            elems.push(mir::PlaceElem::Field(*idx, ty));
+            let mut sibling = elems.clone();
+            sibling.push(mir::PlaceElem::Field(FieldIdx::from_usize(k), field_ty));
+            kept.push(place(&sibling));
         }
-        reborrowed.push(place(&elems));
+        ty = fields[idx.as_usize()];
+        elems.push(mir::PlaceElem::Field(*idx, ty));
     }
-    let mut kept: Vec<mir::Place<'tcx>> = Vec::new();
-    for sibling in beside {
-        let holds_reborrowed = reborrowed
-            .iter()
-            .any(|r| r.projection.starts_with(sibling.projection));
-        if !holds_reborrowed && !kept.contains(&sibling) {
-            kept.push(sibling);
-        }
-    }
-    Some(FieldPlaces { reborrowed, kept })
+    Some(FieldPlaces {
+        reborrowed: vec![place(&elems)],
+        kept,
+    })
 }
