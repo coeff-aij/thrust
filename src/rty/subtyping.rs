@@ -219,6 +219,13 @@ where
         }
         (Type::Param(got), Type::Param(expected))
             if got.forall_sort_idx == expected.forall_sort_idx => {}
+        // An opaque function pointer, as a closure seen from outside its body holds one, relates
+        // to no function type (`OpaqueFnPtrs` in `refine::template`). Relying on this is sound
+        // because every closure value passed the construction check in `check_closure_captures`,
+        // so a function pointer seen as opaque outside the body was already related to the type
+        // the body takes it at. The other sources of opaque types that meet a function type here
+        // (trait objects, raw pointers, `DynModel`) have no function pointer's Rust type.
+        (Type::Function(_), Type::Opaque) | (Type::Opaque, Type::Function(_)) => {}
         (Type::Alias(got), Type::Alias(expected))
             if got.forall_sort_index() == expected.forall_sort_index() => {}
         _ => rustc_middle::ty::tls::with(|tcx| {

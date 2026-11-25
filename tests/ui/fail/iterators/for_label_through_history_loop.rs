@@ -1,8 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_FOR_LOOP_HISTORY=1 THRUST_SOLVER_TIMEOUT_SECS=120
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 
-// With `THRUST_FOR_LOOP_HISTORY=1`, a loop with no invariant between the outer loop `'rows` and
+// A loop with no invariant between the outer loop `'rows` and
 // the annotated loop that names `iter!('rows)` gets the history, whose ghosts have fixed names;
 // the reference still names the outer loop's iterator, not the middle loop's of the same type.
 // Fail twin: the outer range's `end` is `n`, not the middle range's `1`.
