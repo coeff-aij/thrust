@@ -48,6 +48,8 @@ thrust_paths! {
     derived_path = "derived";
     law_path = "law";
     ignored_path = "ignored";
+    /// `#[thrust::extracted_block]` on the function a `block_contract!` block is extracted into.
+    extracted_block_path = "extracted_block";
     formula_fn_path = "formula_fn";
     variant_path_path = "variant_path";
     requires_path_path = "requires_path";

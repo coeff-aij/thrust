@@ -27,6 +27,7 @@ use crate::rty;
 pub(crate) mod annot;
 mod annot_fn;
 mod basic_block;
+mod block_callees;
 mod block_contract;
 mod block_region;
 mod closure_hist_inv;

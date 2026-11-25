@@ -104,6 +104,14 @@ fn host_of_extracted_block(name: Symbol) -> Option<Symbol> {
     (after_number.len() < rest.len() && !host.is_empty()).then(|| Symbol::intern(host))
 }
 
+/// Whether `def_id` is a function a `block_contract!` block is extracted into, or a closure
+/// written in one: the function the macro marks with `#[thrust::extracted_block]`.
+pub fn is_extracted_block(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
+    let root = tcx.typeck_root_def_id(def_id);
+    tcx.def_kind(root).is_fn_like()
+        && super::annot::has_thrust_attr(tcx, root, &super::annot::extracted_block_path())
+}
+
 fn impl_self_name(tcx: TyCtxt<'_>, impl_def_id: DefId) -> Symbol {
     tcx.type_of(impl_def_id)
         .instantiate_identity()
