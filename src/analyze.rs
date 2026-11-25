@@ -751,17 +751,9 @@ pub struct Analyzer<'tcx> {
     assumptions: Vec<AssumeSite>,
     /// The fn-like defs whose bodies are trusted rather than analyzed.
     trusted_bodies: HashSet<LocalDefId>,
-    /// What each analyzed body's calls into code Thrust does not analyze cover, by the body and
-    /// the function called with its generic arguments.
-    handovers: Vec<(
-        DefId,
-        DefId,
-        mir_ty::GenericArgsRef<'tcx>,
-        unanalyzed_entry::HandedOver<'tcx>,
-    )>,
-    /// How many values of a closure type each analyzed call into code Thrust does not analyze
-    /// states the obligation of.
-    handover_counts: Vec<unanalyzed_entry::HandoverCount<'tcx>>,
+    /// The functions whose `pre!` each analyzed body's calls into code Thrust does not analyze
+    /// state.
+    stated_function_pres: Vec<unanalyzed_entry::StatedFunctionPre<'tcx>>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
     /// The functions each body calls, for the report.
@@ -1099,8 +1091,7 @@ impl<'tcx> Analyzer<'tcx> {
             invariant_annotations: Default::default(),
             assumptions: Default::default(),
             trusted_bodies: Default::default(),
-            handovers: Default::default(),
-            handover_counts: Default::default(),
+            stated_function_pres: Default::default(),
             body_checks: Default::default(),
             called_fns: Default::default(),
         }
