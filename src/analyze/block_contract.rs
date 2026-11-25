@@ -29,6 +29,11 @@ use crate::analyze::block_region::{region_under, Region, RegionMarkers};
 /// before the closing marker.
 const RESULT_NAME: &str = "__block_contract_result";
 
+/// The name of the local that holds the extracted function, which the macro declares before the
+/// region so that both markers and the dead call share the function's type arguments; the closing
+/// marker reads it inside the region.
+const CALLEE_NAME: &str = "__block_contract_callee";
+
 /// What to write instead of an exit that leaves the block.
 const LEAVE_HINT: &str = ". To exit the function, return a `Result` as the block's value and apply \
      `?` after the block (for `return` and `?`); to exit a loop, return a `ControlFlow` and `match` \
@@ -619,6 +624,9 @@ fn check_region_uses<'tcx>(
         let Some(name) = names.get(key) else {
             continue;
         };
+        if name.as_str() == CALLEE_NAME {
+            continue;
+        }
         let is_outer = !locals.declared.contains(&key.0) && !listed.contains(key);
         if is_outer && reported.insert(*key) {
             tcx.dcx().span_err(

@@ -39,6 +39,9 @@ mod kw {
 
 /// The parsed form: the parameters, the result type, the contract and the block.
 pub struct BlockContract {
+    /// The type parameters the block declares, `<P: Bound>`, that its parameters' types and its
+    /// contract name; they are generics of the extracted function.
+    generics: syn::Generics,
     params: Vec<Param>,
     output: syn::ReturnType,
     requires: Vec<TokenStream>,
@@ -46,10 +49,20 @@ pub struct BlockContract {
     body: syn::Block,
 }
 
-/// A parameter: `mut? name: ty`.
+/// A parameter: `mut? name: ty`, or `mut? name` for a parameter whose type is the outer
+/// variable's, whatever it is: the extracted function takes it as a type parameter of its own
+/// (`__T<i>`, without bounds) that the call instantiates at the variable's type.
 struct Param {
     pat: syn::PatIdent,
     ty: syn::Type,
+    /// Whether `ty` is the type parameter generated for a parameter written without a type.
+    is_generated: bool,
+}
+
+/// The type parameter of the extracted function for the untyped parameter `index`.
+fn generated_type(index: usize) -> syn::Type {
+    let ident = format_ident!("__T{index}");
+    syn::parse_quote!(#ident)
 }
 
 impl Param {
@@ -62,12 +75,10 @@ impl Param {
 
 impl Parse for Param {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let pat_type: syn::PatType = input.parse()?;
-        let syn::Pat::Ident(pat) = *pat_type.pat else {
-            return Err(syn::Error::new_spanned(
-                pat_type.pat,
-                "a parameter is a name: it takes the outer variable of that name",
-            ));
+        let syn::Pat::Ident(pat) = syn::Pat::parse_single(input)? else {
+            return Err(
+                input.error("a parameter is a name: it takes the outer variable of that name")
+            );
         };
         if pat.by_ref.is_some() || pat.subpat.is_some() {
             return Err(syn::Error::new_spanned(
@@ -75,9 +86,19 @@ impl Parse for Param {
                 "a parameter is a name: it takes the outer variable of that name",
             ));
         }
+        if input.peek(syn::Token![:]) {
+            input.parse::<syn::Token![:]>()?;
+            return Ok(Param {
+                pat,
+                ty: input.parse()?,
+                is_generated: false,
+            });
+        }
+        // the index is set once the parameters are collected
         Ok(Param {
             pat,
-            ty: *pat_type.ty,
+            ty: generated_type(0),
+            is_generated: true,
         })
     }
 }
@@ -96,10 +117,18 @@ impl BlockContract {
     }
 
     fn parse_in(input: ParseStream) -> syn::Result<Self> {
+        let generics = match input.peek(syn::Token![<]) {
+            true => input.parse()?,
+            false => syn::Generics::default(),
+        };
         input.parse::<syn::Token![|]>()?;
-        let mut params = Vec::new();
+        let mut params: Vec<Param> = Vec::new();
         while !input.peek(syn::Token![|]) {
-            params.push(input.parse()?);
+            let mut param: Param = input.parse()?;
+            if param.is_generated {
+                param.ty = generated_type(params.len());
+            }
+            params.push(param);
             if input.peek(syn::Token![,]) {
                 input.parse::<syn::Token![,]>()?;
             }
@@ -122,6 +151,7 @@ impl BlockContract {
         let body = input.parse()?;
         input.parse::<Option<syn::Token![,]>>()?;
         Ok(BlockContract {
+            generics,
             params,
             output,
             requires,
@@ -152,12 +182,12 @@ impl BlockContract {
             params, requires, ..
         } = self;
         let (output, ensures, body) = self.in_out_form();
-        let params = params.iter().map(|Param { pat, ty }| quote!(#pat: #ty));
+        let params_tokens = params.iter().map(|Param { pat, ty, .. }| quote!(#pat: #ty));
         let (_, _, where_clause) = generics.split_for_impl();
-        let generic_params = &generics.params;
+        let generic_params = self.extracted_generics(generics);
         let generics = match generic_params.is_empty() {
             true => quote!(),
-            false => quote!(<#generic_params>),
+            false => quote!(<#(#generic_params),*>),
         };
         quote! {
             #(#[::thrust_macros::requires(#requires)])*
@@ -165,8 +195,24 @@ impl BlockContract {
             #attrs
             // a `mut` `&mut` parameter is written through only, which rustc takes for an unused `mut`
             #[allow(unused_mut)]
-            fn #name #generics (#(#params),*) #output #where_clause #body
+            fn #name #generics (#(#params_tokens),*) #output #where_clause #body
         }
+    }
+
+    /// The generic parameters of the extracted function: the host's, the block's own and one
+    /// for each parameter written without a type.
+    fn extracted_generics(&self, host: &syn::Generics) -> Vec<TokenStream> {
+        let generated = self
+            .params
+            .iter()
+            .filter(|param| param.is_generated)
+            .map(|param| &param.ty);
+        host.params
+            .iter()
+            .chain(self.generics.params.iter())
+            .map(|param| quote!(#param))
+            .chain(generated.map(|ty| quote!(#ty)))
+            .collect()
     }
 
     /// The result type, the `ensures` and the body of the extracted function of a block:
@@ -231,15 +277,18 @@ impl BlockContract {
             syn::ReturnType::Type(_, ty) => quote!(#ty),
         };
         quote! {{
+            // one path for the call and the markers, so that the type parameters of the extracted
+            // function that the call's arguments fix are the markers' too
+            let __block_contract_callee = #callee;
             // the arguments have the outer variables' types, as the call of `callee` would pass
             if false {
-                let _ = #callee(#(#arguments),*);
+                let _ = __block_contract_callee(#(#arguments),*);
                 loop {}
             }
-            crate::thrust_models::__block_region_open_marker(#callee);
+            crate::thrust_models::__block_region_open_marker(__block_contract_callee);
             #[allow(unused_variables)]
             let __block_contract_result: #result_ty = #body;
-            crate::thrust_models::__block_region_close_marker(#callee);
+            crate::thrust_models::__block_region_close_marker(__block_contract_callee);
             __block_contract_result
         }}
     }
@@ -253,9 +302,25 @@ impl BlockContract {
         quote!({ #function #call })
     }
 
+    /// The number of type and const parameters the block adds to its host's, which the call
+    /// leaves to inference.
+    fn extra_generic_count(&self) -> usize {
+        let own = self
+            .generics
+            .params
+            .iter()
+            .filter(|param| !matches!(param, syn::GenericParam::Lifetime(_)));
+        own.count()
+            + self
+                .params
+                .iter()
+                .filter(|param| param.is_generated)
+                .count()
+    }
+
     /// The block in place, for the function `name` hoisted next to its host.
     pub fn hoisted_block(&self, name: &syn::Ident, host: &HoistHost) -> TokenStream {
-        let turbofish = host.turbofish();
+        let turbofish = host.turbofish(self.extra_generic_count());
         let callee = match host.is_method {
             true => quote!(Self::#name #turbofish),
             false => quote!(#name #turbofish),
@@ -299,9 +364,10 @@ pub struct HoistHost<'a> {
 }
 
 impl HoistHost<'_> {
-    /// `::<T, N>`: the type and const parameters, which a hoisted function whose arguments do not
-    /// mention them cannot infer. Lifetimes are inferred.
-    fn turbofish(&self) -> TokenStream {
+    /// `::<T, N, _>`: the host's type and const parameters, which a hoisted function whose
+    /// arguments do not mention them cannot infer, and `extra` placeholders for the parameters the
+    /// block adds, which its arguments fix. Lifetimes are inferred.
+    fn turbofish(&self, extra: usize) -> TokenStream {
         let arguments: Vec<TokenStream> = self
             .generics
             .params
@@ -312,6 +378,7 @@ impl HoistHost<'_> {
                 syn::GenericParam::Lifetime(_) => None,
             })
             .map(|ident| quote!(#ident))
+            .chain((0..extra).map(|_| quote!(_)))
             .collect();
         match arguments.is_empty() {
             true => quote!(),
