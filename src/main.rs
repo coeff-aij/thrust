@@ -71,8 +71,8 @@ impl Callbacks for CompilerCalls {
             .push(("RemoveZsts".to_owned(), false));
 
         // `InstSimplify` turns a reborrow `&mut *p` into `copy p`, which loses the borrow's kind.
-        // Without it the reborrows stay explicit with rustc's two-phase kind, by which
-        // `two_phase_borrow` decides where to create each borrow.
+        // Without it the reborrows stay explicit with rustc's two-phase kind, which
+        // `two_phase_borrow` reads to find the window in which a reserved place may be read.
         for pass in [
             "InstSimplify-before-inline",
             "InstSimplify-after-simplifycfg",

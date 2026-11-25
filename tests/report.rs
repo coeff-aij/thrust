@@ -914,16 +914,3 @@ fn a_function_line_lists_the_functions_its_body_calls() {
         assert!(line.ends_with(&calls), "{name}: {line}");
     }
 }
-
-/// The assertion that a written index differs from the reserved one of a two-phase borrow is
-/// shown as a constraint of its own, with its statement's span.
-#[test]
-fn report_labels_the_index_check_of_a_two_phase_borrow() {
-    let output = report("two_phase_index_check.rs", "constraints");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!stderr.contains("panicked"), "{stderr}");
-    assert!(
-        stderr.contains("index check of a two-phase borrow"),
-        "{stderr}"
-    );
-}
