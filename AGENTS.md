@@ -71,7 +71,7 @@ stays with the developer and is not delegated to the review:
   probe programs that try to make Thrust accept a wrong program, and runs them;
 - no full `cargo test --test ui` with the CoAR wrappers for the change alone. Pull requests merge
   into `develop` after an independent audit or review and green CI, each feature as its own merge
-  commit. `develop` reaches `main` through a release pull request:
+  commit. `develop` reaches `main` through a release pull request, opened when the maintainer decides on a release:
   - Before it, the full ui suite with the CoAR wrappers and the case-study roots run once on
     `develop`'s head, and the run is compared with the baseline recorded at the previous release.
     A failure is traced from its logs, then the features are run one by one.
@@ -82,7 +82,7 @@ stays with the developer and is not delegated to the review:
     request of its merge commit, `git revert -m 1`, or of its whole dependent group) before the
     release pull request merges, so that `main` equals `develop`'s head after the merge. A fix or
     a rework comes back later as a new pull request into `develop`.
-  - After the merge, `main` is tagged `release-<YYYY-MM-DD>` and the run is recorded as the next
+  - After the merge, `main` is tagged `release-<YYYY-MM-DD>.<n>` (`n` counts that day's releases from 1) and the run is recorded as the next
     baseline. `main` is not run again for a comparison.
 
 Without Docker (claude.ai/code), the CoAR runs go to the person who merges; say in the pull
