@@ -513,7 +513,7 @@ impl PlaceType {
     pub fn seq_elem(self, offset: u64, from_end: bool) -> PlaceType {
         let mut builder = PlaceTypeBuilder::default();
         let (seq_ty, seq) = builder.subsume(self);
-        let rty::Type::Seq(elem_rty) = seq_ty else {
+        let rty::Type::Seq { elem: elem_rty, .. } = seq_ty else {
             panic!("slice pattern on a value that is not a sequence: {seq_ty:?}")
         };
         let offset = chc::Term::int(offset);
