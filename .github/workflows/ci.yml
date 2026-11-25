@@ -1,9 +1,10 @@
 on:
   pull_request:
-  # Branches other than main get CI through a pull request or a manual run.
+  # Branches other than main and develop get CI through a pull request or a manual run.
   push:
     branches:
       - main
+      - develop
   workflow_dispatch:
 
 permissions: {}

@@ -69,7 +69,13 @@ stays with the developer and is not delegated to the review:
 - for a change to the analysis or the emitted constraints, an audit by an agent that did not
   write the change: it compares the design with how other verifiers handle the case, writes
   probe programs that try to make Thrust accept a wrong program, and runs them;
-- before the merge of such a change, a full `cargo test --test ui` with the CoAR wrappers.
+- no full `cargo test --test ui` with the CoAR wrappers for the change alone: pull requests
+  target `develop`, which collects changes, and `develop` reaches `main` in batches through a
+  pull request of its own. Before that merge, the full ui suite with the CoAR wrappers and the
+  case-study roots run once on `develop`; the run is compared with the one recorded at the
+  previous batch, and recorded as the next one when the batch is merged. A failure is traced
+  from its logs, then the batch's changes are run one by one. `main` is not run again for a
+  comparison.
 
 Without Docker (claude.ai/code), the CoAR runs go to the person who merges; say in the pull
 request which of them did not run.
