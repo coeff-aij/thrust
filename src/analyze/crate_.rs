@@ -747,6 +747,15 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .copied()
             .filter(|def_id| !self.ctx.has_analyzed_body(*def_id))
             .collect();
+        for def_id in &self.unselected_per_instance {
+            let reached = !unreached.contains(def_id);
+            let def = self.tcx.def_path_str(*def_id);
+            tracing::info!(
+                def,
+                reached,
+                "outside THRUST_VERIFY_ONLY, checked per instance"
+            );
+        }
         for def_id in self.tcx.mir_keys(()) {
             let root = self.tcx.typeck_root_def_id(def_id.to_def_id());
             if root
