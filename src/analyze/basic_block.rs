@@ -593,7 +593,7 @@ fn bit_vec_to_int<'tcx, V>(bv: chc::Term<V>, ty: mir_ty::Ty<'tcx>) -> chc::Term<
 }
 
 /// Whether the integer `term` lies in the range of the integer type `ty`.
-fn int_term_in_range<'tcx, V: Clone>(
+pub(super) fn int_term_in_range<'tcx, V: Clone>(
     tcx: TyCtxt<'tcx>,
     term: chc::Term<V>,
     ty: mir_ty::Ty<'tcx>,
@@ -1097,7 +1097,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         };
         match ty.kind() {
             // A function item is a closure without captures.
-            mir_ty::TyKind::FnDef(..) => {
+            mir_ty::TyKind::FnDef(def_id, args) => {
+                self.reject_ghost_fn_item(*def_id, args);
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
             mir_ty::TyKind::Closure(_, args) if args.as_closure().upvar_tys().is_empty() => {
@@ -1232,7 +1233,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             (mir_ty::TyKind::Closure(_, args), _) if args.as_closure().upvar_tys().is_empty() => {
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
-            (mir_ty::TyKind::FnDef(..), _) => {
+            (mir_ty::TyKind::FnDef(def_id, args), _) => {
+                self.reject_ghost_fn_item(*def_id, args);
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
             (mir_ty::TyKind::Tuple(tys), ConstValue::ZeroSized) => {
@@ -1321,6 +1323,51 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         builder.build(ty, term)
     }
 
+    /// A function item that takes ghost const arguments ([`analyze::ghost_const`]) has one more
+    /// parameter than the closure type it would be used as, so it cannot be a value yet.
+    fn reject_ghost_fn_item(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) {
+        if analyze::ghost_const::ghost_consts(self.ctx(), def_id).is_empty() {
+            return;
+        }
+        self.tcx.dcx().fatal(format!(
+            "`{}` takes its const generic parameters as implicit arguments, so it cannot be \
+             used as a value in `{}` yet; call it, or wrap the call in a closure",
+            self.tcx.def_path_str_with_args(def_id, args),
+            self.tcx.def_path_str(self.type_builder.owner_fn_id()),
+        ));
+    }
+
+    /// [`Self::reject_ghost_fn_item`] for the function items the generic arguments of a call
+    /// name, which the callee may call as closures.
+    fn reject_ghost_fn_items_in(&self, generic_args: mir_ty::GenericArgsRef<'tcx>) {
+        for ty in generic_args
+            .iter()
+            .flat_map(|arg| arg.walk())
+            .filter_map(|arg| arg.as_type())
+        {
+            if let mir_ty::TyKind::FnDef(def_id, args) = ty.kind() {
+                self.reject_ghost_fn_item(*def_id, args);
+            }
+        }
+    }
+
+    /// A const parameter of the function being analyzed: its ghost argument when it takes one,
+    /// otherwise any value of its type, as the body is checked for every instance.
+    fn const_param_ty(&self, ty: mir_ty::Ty<'tcx>, ct: mir_ty::Const<'tcx>) -> PlaceType {
+        let mir_ty::ConstKind::Param(param) = ct.kind() else {
+            return self.unknown_value_ty(ty);
+        };
+        let ghost = analyze::ghost_const::ghost_local(
+            self.ctx(),
+            self.local_def_id.to_def_id(),
+            param.index,
+        );
+        match ghost {
+            Some(local) => self.place_type(&mir::Place::from(local)),
+            None => self.unknown_value_ty(ty),
+        }
+    }
+
     fn const_ty(&self, const_: &mir::Const<'tcx>) -> PlaceType {
         match const_ {
             mir::Const::Val(val, ty) => self.const_value_ty(val, ty),
@@ -1342,7 +1389,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             // A const parameter is any value of its type, as the body is checked for every
             // instance.
             mir::Const::Ty(ty, ct) if matches!(ct.kind(), mir_ty::ConstKind::Param(_)) => {
-                self.unknown_value_ty(*ty)
+                self.const_param_ty(*ty, *ct)
             }
             mir::Const::Ty(ty, _) => {
                 let scalar_int = const_
@@ -2699,17 +2746,39 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.operand_type(func.clone()).ty
         };
         let operands: Vec<_> = args.into_iter().collect();
-        let expected_args: IndexVec<_, _> = operands
+        let mut expected_args: IndexVec<_, _> = operands
             .iter()
             .map(|op| self.operand_refined_type(op.clone()))
             .collect();
         if let Some((def_id, generic_args)) = func.const_fn_def() {
             self.hand_over_closures(def_id, generic_args, &operands, &expected_args);
+            self.reject_ghost_fn_items_in(generic_args);
+            self.push_ghost_const_args(def_id, generic_args, &mut expected_args);
         }
         let rty::Type::Function(func_ty) = func_ty else {
             panic!("unexpected def type: {:?}", func_ty);
         };
         (func_ty, expected_args)
+    }
+
+    /// Appends to `expected_args` the const arguments of a call of `def_id` at `generic_args` for
+    /// the const parameters `def_id` takes as ghost arguments ([`analyze::ghost_const`]): a value,
+    /// or the caller's own ghost argument for the parameter the call passes on.
+    fn push_ghost_const_args(
+        &mut self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        expected_args: &mut IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+    ) {
+        for ghost in analyze::ghost_const::ghost_consts(self.ctx(), def_id) {
+            let ct = generic_args[ghost.param_index as usize].expect_const();
+            let operand = Operand::Constant(Box::new(mir::ConstOperand {
+                span: rustc_span::DUMMY_SP,
+                user_ty: None,
+                const_: mir::Const::Ty(ghost.ty, ct),
+            }));
+            expected_args.push(self.operand_refined_type(operand));
+        }
     }
 
     fn type_box(&mut self, value: Operand<'tcx>, expected: &rty::RefinedType<Var>) {

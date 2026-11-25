@@ -40,7 +40,7 @@ fn stmt_str_literal(stmt: &rustc_hir::Stmt) -> Option<String> {
     }
 }
 
-fn is_annotated_as_extern_spec_fn_impl(tcx: &TyCtxt, local_def_id: &LocalDefId) -> bool {
+pub(super) fn is_annotated_as_extern_spec_fn_impl(tcx: &TyCtxt, local_def_id: &LocalDefId) -> bool {
     analyze::annot::has_thrust_attr(
         *tcx,
         local_def_id.to_def_id(),
@@ -57,7 +57,7 @@ fn is_annotated_as_extern_spec_fn_impl(tcx: &TyCtxt, local_def_id: &LocalDefId) 
 /// position that is not one of the spec's own type parameters is one the spec's own source
 /// fixed to a concrete type, and [`Analyzer::def_ty_with_args`] uses this to tell whether a
 /// later call's actual instantiation is the one the spec covers.
-fn extern_spec_fn_target_def_id_impl<'tcx>(
+pub(super) fn extern_spec_fn_target_def_id_impl<'tcx>(
     tcx: &TyCtxt<'tcx>,
     local_def_id: &LocalDefId,
     mir_body: &Body<'tcx>,
@@ -756,9 +756,28 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
         }
         let mut fn_ty = builder.build();
+        self.require_ghost_const_ranges(sig, &mut fn_ty);
         self.conjoin_fn_mut_hist_inv(&mut fn_ty);
         self.conjoin_type_invariants(sig, &mut fn_ty);
         rty::RefinedType::unrefined(fn_ty.into())
+    }
+
+    /// Requires each ghost const argument ([`analyze::ghost_const`]), the last parameters of
+    /// `sig`, to be in the range of its type, which the value of a call's const argument is and a
+    /// caller's own ghost argument is by this requirement.
+    fn require_ghost_const_ranges(&self, sig: mir_ty::FnSig<'tcx>, fn_ty: &mut rty::FunctionType) {
+        let ghosts = analyze::ghost_const::ghost_consts(self.ctx, self.local_def_id.to_def_id());
+        let first = sig.inputs().len() - ghosts.len();
+        for (offset, ghost) in ghosts.iter().enumerate() {
+            if !ghost.ty.is_integral() {
+                continue;
+            }
+            let value = chc::Term::var(rty::RefinedTypeVar::Value);
+            let range = analyze::basic_block::int_term_in_range(self.tcx, value, ghost.ty)
+                .equal_to(chc::Term::bool(true));
+            let idx = rty::FunctionParamIdx::from_usize(first + offset);
+            fn_ty.params[idx].extend_refinement(range.into());
+        }
     }
 
     /// Conjoins the type invariants of the parameters and the result to the contract, as
@@ -2798,7 +2817,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     pub fn new(ctx: &'ctx mut analyze::Analyzer<'tcx>, local_def_id: LocalDefId) -> Self {
         let tcx = ctx.tcx;
-        let body = tcx.optimized_mir(local_def_id.to_def_id()).clone();
+        let mut body = tcx.optimized_mir(local_def_id.to_def_id()).clone();
+        let ghosts = analyze::ghost_const::ghost_consts(ctx, local_def_id.to_def_id());
+        if !ghosts.is_empty() {
+            analyze::ghost_const::add_ghost_args(tcx, &mut body, &ghosts);
+        }
         let drop_points = Default::default();
         let (owner_fn_id, owner_fn_id_args) =
             if is_annotated_as_extern_spec_fn_impl(&tcx, &local_def_id) {
