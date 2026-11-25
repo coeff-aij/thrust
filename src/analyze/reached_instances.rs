@@ -33,11 +33,13 @@ pub struct InstanceWalk<'tcx> {
 
 /// An instance of a def the walk looks for, with the def in whose typing environment its
 /// arguments live: the function a call there would be made from.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ReachedInstance<'tcx> {
     pub def_id: DefId,
     pub generic_args: mir_ty::GenericArgsRef<'tcx>,
     pub env_def_id: DefId,
+    /// The functions (typeck roots) whose bodies the walk went through to reach it.
+    pub through: HashSet<DefId>,
 }
 
 struct Walker<'a, 'tcx, M, T> {
@@ -119,10 +121,17 @@ where
         if matches!(instance.def, mir_ty::InstanceKind::Item(_))
             && (self.is_checked_per_instance)(def_id)
         {
+            let tcx = self.tcx();
+            let through = self
+                .route
+                .iter()
+                .map(|on_route| tcx.typeck_root_def_id(on_route.def_id()))
+                .collect();
             self.reached.push(ReachedInstance {
                 def_id,
                 generic_args: instance.args,
                 env_def_id,
+                through,
             });
         }
         if !self.analyzer.runs_body(instance) {

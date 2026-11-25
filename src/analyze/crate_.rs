@@ -745,7 +745,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             }
             for instance in reached {
                 if self.ctx.analyzed_at(instance.def_id, instance.generic_args)
-                    || self.closure_of_trusted_body(instance.generic_args)
+                    || self.closure_of_trusted_body(instance.generic_args, &instance.through)
                 {
                     continue;
                 }
@@ -765,14 +765,20 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         analyzed
     }
 
-    /// Whether `generic_args` name a closure written in a `#[thrust::trusted]` body: the
-    /// instance is that body's choice, and what a trusted body runs or hands out is its author's
-    /// responsibility, as a trusted body's own calls are. A closure of a body trusted only for its
-    /// contract outside `THRUST_VERIFY_ONLY` is not skipped: that body may only hand the closure
-    /// out, and then no run analyzes the instance, so it is analyzed here (and stops there if the
-    /// closure has no contract to analyze it with). The walk still follows a skipped instance, for
-    /// what it runs at the type arguments this run fixes.
-    fn closure_of_trusted_body(&self, generic_args: mir_ty::GenericArgsRef<'tcx>) -> bool {
+    /// Whether `generic_args` name a closure written in a trusted body (`trusted`) whose own code
+    /// runs the instance: `through` holds that body, or the body is `#[thrust::trusted]`. The
+    /// instance is then the body's own choice. A `#[thrust::trusted]` body's choices are its
+    /// author's responsibility. A body trusted for its contract outside `THRUST_VERIFY_ONLY` is
+    /// verified in the run that selects it, whose walk finds the instances its code runs at its type
+    /// parameters. A closure such a body only hands out (returns or stores) is run by other code:
+    /// that instance is not skipped, so it is analyzed here, and stops if the closure has no
+    /// contract to analyze it with. The walk still follows a skipped instance, for what it runs at
+    /// the type arguments this run fixes.
+    fn closure_of_trusted_body(
+        &self,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        through: &HashSet<rustc_span::def_id::DefId>,
+    ) -> bool {
         generic_args.iter().any(|arg| {
             arg.walk().any(|part| {
                 let Some(ty) = part.as_type() else {
@@ -785,12 +791,16 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     return false;
                 };
                 let root = self.tcx.typeck_root_def_id(def_id);
-                root.is_local()
-                    && analyze::annot::has_thrust_attr(
-                        self.tcx,
-                        root,
-                        &analyze::annot::trusted_path(),
-                    )
+                let Some(local_root) = root.as_local() else {
+                    return false;
+                };
+                self.trusted.contains(&local_root)
+                    && (through.contains(&root)
+                        || analyze::annot::has_thrust_attr(
+                            self.tcx,
+                            root,
+                            &analyze::annot::trusted_path(),
+                        ))
             })
         })
     }
