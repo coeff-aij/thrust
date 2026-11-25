@@ -2339,9 +2339,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .unwrap_or_else(|e| {
                 let hint = if matches!(e, rustc_middle::mir::interpret::ErrorHandled::TooGeneric(_))
                 {
-                    "its value depends on a type parameter, which is not supported in a contract"
+                    format!(
+                        "its value depends on {}, which is not supported in a contract",
+                        generic_param_kind(generic_args)
+                    )
                 } else {
-                    "its evaluation failed"
+                    "its evaluation failed".to_owned()
                 };
                 self.tcx.dcx().span_fatal(
                     hir.span,
@@ -3392,4 +3395,17 @@ fn positional_subpats<'tcx>(
         .enumerate()
         .map(|(i, p)| (if i < split { i } else { i + skipped }, p))
         .collect()
+}
+
+/// The kind of generic parameter `args` depend on, for a message about a value that cannot be
+/// evaluated at them.
+fn generic_param_kind(args: mir_ty::GenericArgsRef<'_>) -> &'static str {
+    use mir_ty::TypeVisitableExt as _;
+    let on_type = args.has_type_flags(mir_ty::TypeFlags::HAS_TY_PARAM);
+    let on_const = args.has_type_flags(mir_ty::TypeFlags::HAS_CT_PARAM);
+    match (on_type, on_const) {
+        (true, true) => "a type or const parameter",
+        (false, true) => "a const parameter",
+        (true, false) | (false, false) => "a type parameter",
+    }
 }
