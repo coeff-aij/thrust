@@ -196,35 +196,14 @@ fn contract_opened_at<'tcx>(
         fatal("the code under `block_requires!` is also reached by a path that does not pass it");
     }
 
-    let mut changed = ChangedLocals {
-        tcx: ctx.tcx,
-        local_decls: &body.local_decls,
-        changes: BTreeMap::new(),
-    };
-    for &bb in &blocks {
-        let data = &body.basic_blocks[bb];
-        for (statement_index, statement) in data.statements.iter().enumerate() {
-            let location = mir::Location {
-                block: bb,
-                statement_index,
-            };
-            changed.visit_statement(statement, location);
-        }
-        if bb != closing {
-            let location = mir::Location {
-                block: bb,
-                statement_index: data.statements.len(),
-            };
-            changed.visit_terminator(data.terminator(), location);
-        }
-    }
+    let changed = changed_locals(ctx.tcx, body, &blocks, Some(closing));
     BlockContract {
         opening,
         entry,
         closing,
         exit,
         blocks,
-        changed: changed.changes,
+        changed,
         ends: Vec::new(),
     }
 }
@@ -248,6 +227,38 @@ fn entered_from_outside(body: &Body<'_>, blocks: &HashSet<BasicBlock>, entry: Ba
         .iter()
         .filter(|&&bb| bb != entry)
         .any(|&bb| predecessors[bb].iter().any(way_in))
+}
+
+/// The locals the blocks `blocks` may change, other than by the terminator of `unvisited`.
+pub fn changed_locals<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    blocks: &HashSet<BasicBlock>,
+    unvisited: Option<BasicBlock>,
+) -> BTreeMap<Local, Change> {
+    let mut changed = ChangedLocals {
+        tcx,
+        local_decls: &body.local_decls,
+        changes: BTreeMap::new(),
+    };
+    for &bb in blocks {
+        let data = &body.basic_blocks[bb];
+        for (statement_index, statement) in data.statements.iter().enumerate() {
+            let location = mir::Location {
+                block: bb,
+                statement_index,
+            };
+            changed.visit_statement(statement, location);
+        }
+        if Some(bb) != unvisited {
+            let location = mir::Location {
+                block: bb,
+                statement_index: data.statements.len(),
+            };
+            changed.visit_terminator(data.terminator(), location);
+        }
+    }
+    changed.changes
 }
 
 /// The locals a piece of code may change: the base local of every place it writes, borrows

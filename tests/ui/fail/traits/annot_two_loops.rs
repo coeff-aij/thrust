@@ -32,7 +32,7 @@ fn target<'a, T: A>(x: &'a T, y: &'a T) -> (&'a T, &'a T) {
 
     let mut j = 0;
     while j < 3 { // The loop depends on Q
-        thrust_macros::invariant!(|v: &T, w: &T| T::q(*w));
+        thrust_macros::invariant!(|v: &T, w: &T| T::p(*v));
         w = w.g();
         j += 1;
     }
