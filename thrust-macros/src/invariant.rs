@@ -159,15 +159,17 @@ pub fn expand_with_context(input: TokenStream, marker: Marker) -> TokenStream {
     }
 }
 
-/// `input` with the `old!(x)` of a loop invariant renamed ([`mod@crate::entry_value`]); the
-/// statement forms take no `old!`.
+/// `input` with the `old!(x)` of a loop invariant or a `proof_assert!` renamed
+/// ([`mod@crate::entry_value`]); the other statement forms take no `old!`.
 fn rename_entry_values(
     input: proc_macro2::TokenStream,
     marker: Marker,
 ) -> syn::Result<proc_macro2::TokenStream> {
     match marker {
-        Marker::Full | Marker::Partial => crate::entry_value::rename_in_invariant(input),
-        Marker::Assert | Marker::Assume => {
+        Marker::Full | Marker::Partial | Marker::Assert => {
+            crate::entry_value::rename_in_invariant(input)
+        }
+        Marker::Assume => {
             crate::entry_value::reject(&input)?;
             Ok(input)
         }

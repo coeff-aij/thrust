@@ -3,8 +3,9 @@
 //!
 //! As in Verus's proof mode and Creusot's ghost code, a lemma calls only what is known to
 //! terminate without effects: other lemmas without a cycle, itself through the companion
-//! `#[thrust_macros::variant]` makes (whose precondition requires the variant to decrease),
-//! logic functions and predicates, and the model operations of the injected `thrust_models`.
+//! `#[thrust_macros::variant]` makes (the analysis proves at each such call that the variant is
+//! non-negative at the parameters' values on entry and smaller at the call's arguments), logic
+//! functions and predicates, and the model operations of the injected `thrust_models`.
 //! The operations MIR has as statements (arithmetic, comparisons, field and index access) need
 //! no call. A lemma has no loop and no unsafe code, and takes no `&mut`, so that what it
 //! assigns stays its own. A law is stated for every value of its parameters, so it takes no
@@ -61,6 +62,19 @@ pub fn is_proof(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
         markers: [None; 2],
     };
     checker.is_lemma(def_id) || checker.is_lemma_rec(def_id) || checker.is_law_proof(def_id)
+}
+
+/// Whether `callee` is the companion of the lemma `caller`, which a lemma's recursive call
+/// reaches.
+pub fn is_own_companion(tcx: TyCtxt<'_>, caller: LocalDefId, callee: DefId) -> bool {
+    let checker = Checker {
+        tcx,
+        proof_branch: None,
+        markers: [None; 2],
+    };
+    callee
+        .as_local()
+        .is_some_and(|local| checker.is_lemma_rec(callee) && checker.rec_target(local) == caller)
 }
 
 /// Checks the `proof!` branches of the functions whose bodies the analysis reads
@@ -342,12 +356,9 @@ impl<'tcx> Checker<'tcx> {
         for data in body.basic_blocks.iter() {
             let terminator = data.terminator();
             match &terminator.kind {
-                TerminatorKind::Call {
-                    func,
-                    args,
-                    fn_span,
-                    ..
-                } => self.add_call(&mut calls, lemma, body, func, args, *fn_span),
+                TerminatorKind::Call { func, fn_span, .. } => {
+                    self.add_call(&mut calls, lemma, func, *fn_span)
+                }
                 TerminatorKind::Drop { place, .. } => {
                     self.check_drop(place.ty(body, self.tcx).ty, terminator.source_info.span)
                 }
@@ -363,9 +374,7 @@ impl<'tcx> Checker<'tcx> {
         &self,
         calls: &mut ProofCalls<'tcx>,
         lemma: LocalDefId,
-        body: &mir::Body<'tcx>,
         func: &mir::Operand<'tcx>,
-        call_args: &[rustc_span::source_map::Spanned<mir::Operand<'tcx>>],
         span: rustc_span::Span,
     ) {
         let dcx = self.tcx.dcx();
@@ -411,10 +420,13 @@ impl<'tcx> Checker<'tcx> {
             });
             return;
         }
-        if !passes_own_entries(body, call_args) {
-            dcx.span_err(
+        // The variant's decrease is proved at every call of the companion in the lemma's body,
+        // whoever wrote it (`analyze::basic_block`); the plain call reads as the lemma's own.
+        if !callee_span(func).from_expansion() {
+            dcx.span_warn(
                 span,
-                "a lemma's recursive call passes the lemma's own parameters as the entry values",
+                "a lemma's recursive call names the companion of the lemma; write the plain \
+                 call of the lemma itself, which #[thrust_macros::variant(..)] redirects to it",
             );
         }
         // A recursive call at other arguments could use a law at a larger type at each step.
@@ -846,50 +858,11 @@ impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for UnsafeFinder {
     }
 }
 
-/// Whether the first arguments of a call `body` makes to its own `#[thrust::lemma_rec]`
-/// companion are references to `body`'s parameters, in order: the values on entry that the
-/// companion's precondition compares the variant with.
-fn passes_own_entries(
-    body: &mir::Body<'_>,
-    args: &[rustc_span::source_map::Spanned<mir::Operand<'_>>],
-) -> bool {
-    body.args_iter().zip(args).all(|(param, arg)| {
-        arg.node
-            .place()
-            .and_then(|place| place.as_local())
-            .and_then(|local| referent(body, local))
-            == Some(param)
-    })
-}
-
-/// The local that `local` holds a shared reference to, following copies, when each local on
-/// the way is assigned once.
-fn referent(body: &mir::Body<'_>, mut local: mir::Local) -> Option<mir::Local> {
-    loop {
-        let mut assignments = body.basic_blocks.iter().flat_map(|data| {
-            data.statements.iter().filter_map(|stmt| match &stmt.kind {
-                mir::StatementKind::Assign(assign) if assign.0.as_local() == Some(local) => {
-                    Some(&assign.1)
-                }
-                _ => None,
-            })
-        });
-        let (Some(rvalue), None) = (assignments.next(), assignments.next()) else {
-            return None;
-        };
-        let assigned_by_call = body.basic_blocks.iter().any(|data| {
-            matches!(&data.terminator().kind, TerminatorKind::Call { destination, .. } if destination.as_local() == Some(local))
-        });
-        if assigned_by_call {
-            return None;
-        }
-        match rvalue {
-            mir::Rvalue::Ref(_, mir::BorrowKind::Shared, place) => return place.as_local(),
-            mir::Rvalue::Use(mir::Operand::Copy(place) | mir::Operand::Move(place)) => {
-                local = place.as_local()?;
-            }
-            _ => return None,
-        }
+/// The span of the callee a call names.
+fn callee_span(func: &mir::Operand<'_>) -> rustc_span::Span {
+    match func {
+        mir::Operand::Constant(constant) => constant.span,
+        mir::Operand::Copy(_) | mir::Operand::Move(_) => rustc_span::DUMMY_SP,
     }
 }
 
