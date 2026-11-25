@@ -378,7 +378,7 @@ where
                     expected.display()
                 );
             };
-            if super::has_range_facts(&expected, defs, &mut Vec::new()) {
+            if super::has_payload_facts(&expected, defs) {
                 facts.push_conj(
                     super::type_fact_checks(&expected, defs)
                         .unwrap_or_else(|ty| {

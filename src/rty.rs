@@ -1658,7 +1658,8 @@ where
     Ok(facts)
 }
 
-/// Whether a value of `ty` holds a `char`, through tuples, pointers, sequences and enum payloads.
+/// Whether a value of `ty` holds a `char`, through tuples, pointers, sequences and the payloads of
+/// enums whose definitions are registered.
 fn holds_char(
     ty: &Type<Closed>,
     defs: &dyn EnumDefProvider,
@@ -1676,6 +1677,7 @@ fn holds_char(
             .args
             .iter()
             .any(|arg| holds_char(&arg.ty, defs, visited)),
+        Type::Enum(enum_ty) if !defs.has_enum_def(&enum_ty.symbol) => false,
         Type::Enum(enum_ty) => {
             visited.push(enum_ty.symbol.clone());
             let found = enum_ty.variants(defs).iter().any(|variant| {
@@ -1942,6 +1944,7 @@ where
             });
             conj(lower.flatten(), upper.flatten())
         }
+        Type::Char if !ranges => None,
         Type::Char => Some(char_code_point_term(value)),
         Type::Tuple(tuple) => tuple
             .elems
@@ -1972,6 +1975,8 @@ where
 /// The values a quantifier's binder of type `ty` ranges over, as a formula about `value`: the
 /// range of an integer type in use, and the length of an array, also through tuples and pointers,
 /// so that the binder's domain is the type's, as a binding's is. `None` when the type has none.
+/// The code points of a binder's `char`s are stated by [`char_domain_formula`], which also follows
+/// enums and sequences.
 pub fn binder_domain<V>(ty: &Type<Closed>, value: chc::Term<V>) -> Option<chc::Formula<V>>
 where
     V: Clone,
@@ -2108,7 +2113,7 @@ fn enum_value<V: Clone>(
 /// its type say, and nothing of the other variants.
 ///
 /// When the mode is off, an enum whose definition is not registered, or whose payloads hold no
-/// `char`, gets no facts ([`has_range_facts`]), the same of a value and of a quantified variable.
+/// `char`, gets no facts ([`has_payload_facts`]), the same of a value and of a quantified variable.
 ///
 /// An enum type inside its own payload (the same type, as a recursive definition makes it) gets no
 /// facts, since a finite formula cannot follow it; nor does one nested past
@@ -2119,11 +2124,11 @@ fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Clo
         return Refinement::top();
     };
     let enum_ty = Type::Enum(ty.clone());
-    if int_range_mode() == IntRange::Off && !has_range_facts(&enum_ty, defs, &mut Vec::new()) {
+    if int_range_mode() == IntRange::Off && !has_payload_facts(&enum_ty, defs) {
         return Refinement::top();
     }
     if cx.enclosing.contains(ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
-        if cx.use_ == FactsUse::Checked && has_range_facts(&enum_ty, defs, &mut Vec::new()) {
+        if cx.use_ == FactsUse::Checked && has_payload_facts(&enum_ty, defs) {
             cx.unsupported.get_or_insert(enum_ty);
         }
         return Refinement::top();
@@ -2216,6 +2221,15 @@ fn enum_payload_var(depth: usize, field: usize) -> chc::UserQuantifiedVarId {
         "enum payload check too deep or too wide"
     );
     chc::UserQuantifiedVarId::from_usize(0xFFFE_0000 + (depth << 8) + field)
+}
+
+/// Whether the payloads of the enum type `ty` have facts to state: those of [`has_range_facts`]
+/// when [`int_range_mode`] is on, and only those of a `char` when it is off.
+pub(super) fn has_payload_facts(ty: &Type<Closed>, defs: &dyn EnumDefProvider) -> bool {
+    if int_range_mode() == IntRange::Off {
+        return holds_char(ty, defs, &mut Vec::new());
+    }
+    has_range_facts(ty, defs, &mut Vec::new())
 }
 
 /// Whether a value of `ty` has facts: an integer with facts under [`int_range_mode`], a `char`, or an
@@ -3361,10 +3375,9 @@ impl<FV> RefinedType<FV> {
                 );
             }
             Type::Seq { elem, fixed_len } => {
-                if let Some(len) = fixed_len {
-                    formula.push_conj(
-                        seq_len_atom(*len, chc::Term::var(RefinedTypeVar::Value)).into(),
-                    );
+                if let Some(len) = fixed_len.filter(|_| !cx.chars_only) {
+                    formula
+                        .push_conj(seq_len_atom(len, chc::Term::var(RefinedTypeVar::Value)).into());
                 }
                 // Integer elements have facts only where the integers' do; a `char`'s are stated
                 // everywhere.
