@@ -196,13 +196,10 @@ fn desugar_with_inferred_invariant(for_loop: &syn::ExprForLoop) -> syn::Expr {
     } = for_loop;
     let expr = head_expr(expr);
     let stmts = &body.stmts;
-    if quote::quote!(#pat #body)
-        .to_string()
-        .contains(RESERVED_GHOST_PREFIX)
-    {
+    if names_a_ghost(quote::quote!(#pat #body)) {
         return syn::parse_quote!({
             compile_error!(
-                "a `for` loop cannot name an identifier that starts with `__thrust_for_`"
+                "a `for` loop cannot name `__thrust_for_iter`, `__thrust_for_iter_old`, `__thrust_for_produced` or `__thrust_for_item`"
             );
         });
     }
@@ -269,7 +266,20 @@ pub fn labelled_ghosts(for_loop: &syn::ExprForLoop) -> LabelledGhosts {
 /// The ghosts of an inferred loop are read by formulas through their names, which hygiene would
 /// change, so they are plain identifiers; a loop that names one of them is rejected instead, as
 /// it would change the loop's state or read a ghost that need not exist.
-const RESERVED_GHOST_PREFIX: &str = "__thrust_for_";
+const GHOST_NAMES: [&str; 4] = [
+    "__thrust_for_iter",
+    "__thrust_for_iter_old",
+    "__thrust_for_produced",
+    "__thrust_for_item",
+];
+
+fn names_a_ghost(tokens: TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        TokenTree::Ident(ident) => GHOST_NAMES.iter().any(|name| ident == name),
+        TokenTree::Group(group) => names_a_ghost(group.stream()),
+        _ => false,
+    })
+}
 
 fn ghost_ident(name: &str) -> Ident {
     Ident::new(name, proc_macro2::Span::call_site())
