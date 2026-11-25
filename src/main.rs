@@ -70,6 +70,20 @@ impl Callbacks for CompilerCalls {
             .mir_enable_passes
             .push(("RemoveZsts".to_owned(), false));
 
+        // `InstSimplify` turns a reborrow `&mut *p` into `copy p`, which loses the borrow's kind.
+        // Without it the reborrows stay explicit with rustc's two-phase kind, by which
+        // `two_phase_borrow` decides where to create each borrow.
+        for pass in [
+            "InstSimplify-before-inline",
+            "InstSimplify-after-simplifycfg",
+        ] {
+            config
+                .opts
+                .unstable_opts
+                .mir_enable_passes
+                .push((pass.to_owned(), false));
+        }
+
         // With UB checks on, these passes insert null and alignment checks before every
         // dereference of a raw pointer, which includes each `Box` dereference once
         // `ElaborateBoxDerefs` has run. A `Box` pointer is always non-null and aligned, and

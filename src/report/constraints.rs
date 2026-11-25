@@ -158,6 +158,9 @@ fn kind(
     let (Some(body), Some(bb)) = (body, provenance.bb) else {
         return plain(span_name.to_owned());
     };
+    if span_name == "index_check_of_two_phase_borrow" {
+        return plain("index check of a two-phase borrow".to_owned());
+    }
     if let Some(stmt) = provenance.stmt {
         let written = provenance
             .def
