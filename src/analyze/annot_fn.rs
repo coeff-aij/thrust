@@ -2017,12 +2017,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             return FormulaOrTerm::Formula(self.precondition_at(&fn_ty, &args));
         }
         let receiver_ty = self.expr_ty(receiver);
-        if let Some(closure_ty) = self.receiver_closure_ty(receiver_ty) {
-            self.record_pre_receiver(closure_ty);
-        }
         if let Some((fn_item_ty, def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
             // The function item itself, behind the references `G` is instantiated with, is what
-            // the `pre!` names: a hand-over states its precondition as it does a path's.
+            // the `pre!` names.
             self.record_pre_receiver(fn_item_ty);
             let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, true);
             let args = self.spec_args("pre!", args, &self.fn_def_sig(def_id, generic_args));
