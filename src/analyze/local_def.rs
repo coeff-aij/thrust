@@ -1955,35 +1955,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The argument local the identifier `name` names
     /// ([`analyze::basic_block::names_binding`]).
     fn function_param_local_of_name(&self, name: rustc_span::symbol::Ident) -> Option<Local> {
-        let idents = analyze::basic_block::binding_idents(self.tcx, &self.body);
-        let mut found: Option<Local> = None;
-        for vdi in &self.body.var_debug_info {
-            tracing::debug!("comparing {name:?} with {vdi:?}...");
-            if !analyze::basic_block::names_binding(&idents, name, vdi) {
-                tracing::debug!("another name or another hygiene, skip.");
-                continue;
-            }
-            let mir::VarDebugInfoContents::Place(place) = vdi.value else {
-                tracing::debug!("place, skip.");
-                continue;
-            };
-            if !place.projection.is_empty() {
-                tracing::debug!("empty projection, skip.");
-                continue;
-            }
-            let local = place.local;
-            if local.index() == 0 || local.index() > self.body.arg_count {
-                tracing::debug!("not param of local, skip.");
-                continue;
-            }
-            tracing::debug!("found.");
-            match found {
-                None => found = Some(local),
-                Some(prev) if prev == local => {}
-                Some(_) => panic!("multiple function arguments share the name `{name}`"),
-            }
-        }
-        found
+        analyze::basic_block::function_param_local_of_name(self.tcx, &self.body, name)
     }
 
     fn expand_model_projection(&self, ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
