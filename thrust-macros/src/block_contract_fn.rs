@@ -159,7 +159,10 @@ impl BlockContractFn {
 /// The names of the functions this crate's expansions extract, unique in the compilation.
 fn fresh_name() -> syn::Ident {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
-    format_ident!("__block_contract_{}", NEXT.fetch_add(1, Ordering::Relaxed))
+    format_ident!(
+        "{EXTRACTED_NAME_PREFIX}{}",
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 impl BlockContractFn {
@@ -253,7 +256,12 @@ impl BlockContractFn {
     /// The block in place, for `callee`, the function it is extracted into.
     fn in_place(&self, callee: TokenStream) -> TokenStream {
         let arguments = self.params.iter().map(|param| &param.pat.ident);
-        let BlockContractFn { body, .. } = self;
+        let BlockContractFn { body, output, .. } = self;
+        // the body is typed as the written result type, as the extracted function types it
+        let result_ty = match output {
+            syn::ReturnType::Default => quote!(()),
+            syn::ReturnType::Type(_, ty) => quote!(#ty),
+        };
         quote! {{
             // the arguments have the outer variables' types, as the call of `callee` would pass
             if false {
@@ -262,7 +270,7 @@ impl BlockContractFn {
             }
             crate::thrust_models::__block_region_open_marker(#callee);
             #[allow(unused_variables)]
-            let __block_contract_result = #body;
+            let __block_contract_result: #result_ty = #body;
             crate::thrust_models::__block_region_close_marker(#callee);
             __block_contract_result
         }}
@@ -308,13 +316,21 @@ impl BlockContractFn {
     }
 }
 
-/// A new name for a hoisted function, unique in the compilation.
-pub fn fresh_hoisted_name() -> syn::Ident {
-    fresh_name()
+/// The prefix of the names of the functions blocks are extracted into.
+const EXTRACTED_NAME_PREFIX: &str = "__block_contract_";
+
+/// A new name for a function hoisted next to `host`, unique in the compilation. The name ends in
+/// the host's: `__block_contract_<n>_of_<host>`, which Thrust reads to verify the function
+/// whenever its host is selected by `THRUST_VERIFY_ONLY` (`selection.rs` reads the same form).
+pub fn fresh_hoisted_name(host: &syn::Ident) -> syn::Ident {
+    let unique = fresh_name();
+    format_ident!("{unique}_of_{host}")
 }
 
 /// The enclosing function a block is hoisted from.
 pub struct HoistHost<'a> {
+    /// The name of the enclosing function.
+    pub name: &'a syn::Ident,
     pub generics: &'a syn::Generics,
     /// The enclosing `impl` header, which the hoisted method is stamped with as its host was.
     pub outer_context: Option<&'a crate::FnOuterItem>,

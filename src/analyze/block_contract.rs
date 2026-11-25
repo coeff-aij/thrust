@@ -131,6 +131,8 @@ pub struct RegionMarkers<'a> {
     pub open: &'a str,
     /// The closing marker, as a message names it.
     pub close: &'a str,
+    /// What to write instead, appended to the message of a path that leaves the function.
+    pub leave_hint: &'a str,
     pub is_open: &'a dyn Fn(BasicBlock) -> bool,
     pub is_close: &'a dyn Fn(BasicBlock) -> bool,
 }
@@ -190,7 +192,8 @@ pub fn region_under<'tcx>(
             TerminatorKind::Return | TerminatorKind::Yield { .. } | TerminatorKind::CoroutineDrop
         ) {
             fatal(&format!(
-                "a path from {open} leaves the function before a {close}"
+                "a path from {open} leaves the function before a {close}{}",
+                markers.leave_hint
             ));
         }
         stack.extend(
@@ -251,6 +254,7 @@ fn contract_opened_at<'tcx>(
         &RegionMarkers {
             open: "`block_requires!`",
             close: "`block_ensures!`",
+            leave_hint: "",
             is_open: &|bb| marker_of(ctx, body, bb) == Some(FormulaMarker::BlockRequires),
             is_close: &|bb| marker_of(ctx, body, bb) == Some(FormulaMarker::BlockEnsures),
         },

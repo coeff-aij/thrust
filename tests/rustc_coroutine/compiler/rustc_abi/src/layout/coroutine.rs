@@ -14,6 +14,7 @@ use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated};
 use crate::case_study::USize;
 use crate::case_study::{counts, lemmas};
 use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all};
+use SavedLocalEligibility::*;
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
 
@@ -207,8 +208,6 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     DenseBitSet<LocalIdx>,
     IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
 ) {
-    use SavedLocalEligibility::*;
-
     let mut assignments: IndexVec<LocalIdx, _> = IndexVec::from_elem_n(Unassigned, nb_locals);
 
     let mut ineligible_locals = DenseBitSet::new_empty(nb_locals);

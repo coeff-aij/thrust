@@ -26,6 +26,11 @@ use crate::analyze::block_contract::{region_under, Region, RegionMarkers};
 /// before the closing marker.
 const RESULT_NAME: &str = "__block_contract_result";
 
+/// What to write instead of an exit that leaves the block.
+const LEAVE_HINT: &str = ". To exit the function, return a `Result` as the block's value and apply \
+     `?` after the block (for `return` and `?`); to exit a loop, return a `ControlFlow` and `match` \
+     on it, or use `let ... else`, after the block (for `break` and `continue`)";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RegionMarker {
     Open,
@@ -70,6 +75,7 @@ pub fn replace_regions_by_calls<'tcx>(ctx: &analyze::Analyzer<'tcx>, body: &mut 
             &RegionMarkers {
                 open: "`block_contract_inline!`",
                 close: "`block_contract_inline!` end marker",
+                leave_hint: LEAVE_HINT,
                 is_open: &|bb| is(body, bb, RegionMarker::Open),
                 is_close: &|bb| is(body, bb, RegionMarker::Close),
             },
@@ -141,6 +147,75 @@ fn outer_place<'tcx>(
     }
 }
 
+/// `ty` as a comparison of the types of a variable and of a parameter sees it: regions erased and
+/// associated types normalized.
+fn comparable_type<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> mir_ty::Ty<'tcx> {
+    tcx.try_normalize_erasing_regions(typing_env, ty)
+        .unwrap_or_else(|_| tcx.erase_regions(ty))
+}
+
+/// Whether a value of `ty`, passed as a parameter, holds a `&mut` the call does not reborrow: one
+/// inside the value, or inside what a `&mut` parameter points to. Only a parameter that is a
+/// `&mut` itself is reborrowed, so that the callee gets a fresh current value and the caller keeps
+/// the final one; a `&mut` deeper in the type is copied, and a write through the copy would leave
+/// the caller's value stale. A type parameter holds none here: a body cannot write through a value
+/// of a type it does not know, and an instance that does hold one is rejected where the analysis
+/// sees its type.
+fn holds_unreborrowed_mut_ref<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> bool {
+    let inspected = match (ty.ref_mutability(), ty.builtin_deref(false)) {
+        (Some(mir::Mutability::Mut), Some(pointee)) => pointee,
+        _ => ty,
+    };
+    analyze::may_hold_mut_ref(tcx, typing_env, inspected)
+}
+
+/// Rejects a block whose parameters or result do not have exactly the types of the variables the
+/// call passes, which the dead call in the macro's expansion lets through when a coercion
+/// (`&mut T` to `&T`, `&&T` to `&T`, an unsizing) or an inference choice makes them agree, and a
+/// non-`mut` parameter that holds a `&mut` below its top level.
+fn check_parameter_types<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    body: &Body<'tcx>,
+    sig: mir_ty::FnSig<'tcx>,
+    names: &[rustc_span::symbol::Ident],
+    params: &[(Place<'tcx>, bool)],
+    span: rustc_span::Span,
+) {
+    for ((name, (place, is_mut)), declared) in names.iter().zip(params).zip(sig.inputs()) {
+        let actual = place.ty(&body.local_decls, tcx).ty;
+        if comparable_type(tcx, typing_env, actual) != comparable_type(tcx, typing_env, *declared) {
+            tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "`block_contract_inline!` parameter `{name}` is declared `{declared}` but the \
+                     variable has type `{actual}`; a parameter has exactly the type of the \
+                     variable it names (no coercion)"
+                ),
+            );
+        }
+        if !is_mut && holds_unreborrowed_mut_ref(tcx, typing_env, actual) {
+            tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "`block_contract_inline!` parameter `{name}` of type `{actual}` is not `mut` \
+                     but holds a `&mut` inside the value; only a parameter that is itself a \
+                     `&mut` is passed as a reborrow, so a write through the inner `&mut` would \
+                     not reach the variable. Pass the inner `&mut` itself as a parameter"
+                ),
+            );
+        }
+    }
+}
+
 fn replace_region<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     body: &mut Body<'tcx>,
@@ -202,8 +277,16 @@ fn replace_region<'tcx>(
     } else {
         returned
     };
+    // MIR optimizations may give the value the local of an outer variable the body returns
+    // (`{ x }`): the value is then that variable, which the call must not assign, so a fresh
+    // local takes the call's result.
+    let is_outer_variable = |place: &Place<'tcx>| params.iter().any(|(outer, _)| outer == place);
     let result_place = match bound_places(tcx, body, result_name, closing_info.scope) {
-        (places, _) if places.len() == 1 => places[0],
+        (places, _) if places.len() == 1 && !is_outer_variable(&places[0]) => places[0],
+        (places, _) if places.len() == 1 => body
+            .local_decls
+            .push(mir::LocalDecl::new(result_ty, closing_info.span).immutable())
+            .into(),
         (places, true) if places.is_empty() => body
             .local_decls
             .push(mir::LocalDecl::new(result_ty, closing_info.span).immutable())
@@ -213,6 +296,28 @@ fn replace_region<'tcx>(
             "the value of a `block_contract_inline!` block names no single variable",
         ),
     };
+    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, body.source.def_id());
+    check_parameter_types(
+        tcx,
+        typing_env,
+        body,
+        sig,
+        &names,
+        &params,
+        source_info.span,
+    );
+    let result_actual = result_place.ty(&body.local_decls, tcx).ty;
+    if comparable_type(tcx, typing_env, result_actual)
+        != comparable_type(tcx, typing_env, result_ty)
+    {
+        tcx.dcx().span_fatal(
+            closing_info.span,
+            format!(
+                "the value of a `block_contract_inline!` block has type `{result_actual}` but \
+                 the block declares `{result_ty}`"
+            ),
+        );
+    }
     let mut assignments = Vec::new();
     let mut destination = result_place;
     if in_out {

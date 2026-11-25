@@ -74,6 +74,15 @@ impl ItemPath {
                 path.module_len = path.segments.len();
             }
         }
+        if let Some(host) = path
+            .segments
+            .last()
+            .copied()
+            .and_then(host_of_extracted_block)
+        {
+            // a function a block is extracted into is verified whenever its host is selected
+            *path.segments.last_mut().expect("a path has a segment") = host;
+        }
         path
     }
 
@@ -84,6 +93,16 @@ impl ItemPath {
         path.segments.push(tcx.item_name(law_def_id));
         path
     }
+}
+
+/// The enclosing function of `name`, the name of a function that `block_contract_fn!` or
+/// `block_contract_inline!` hoists next to its host: `__block_contract_<n>_of_<host>` (the macros'
+/// `fresh_hoisted_name`).
+fn host_of_extracted_block(name: Symbol) -> Option<Symbol> {
+    let rest = name.as_str().strip_prefix("__block_contract_")?;
+    let after_number = rest.trim_start_matches(|c: char| c.is_ascii_digit());
+    let host = after_number.strip_prefix("_of_")?;
+    (after_number.len() < rest.len() && !host.is_empty()).then(|| Symbol::intern(host))
 }
 
 fn impl_self_name(tcx: TyCtxt<'_>, impl_def_id: DefId) -> Symbol {

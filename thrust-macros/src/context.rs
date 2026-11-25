@@ -316,16 +316,34 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
         outer: outer.as_ref(),
         injected: false,
         hoist: can_hoist.then_some(HoistHost {
+            name: &host_sig.ident,
             generics: &host_sig.generics,
             outer_context: outer.as_ref(),
             is_method: outer.is_some(),
         }),
         hoisted: Vec::new(),
     };
+    let local_item = func.block_mut().and_then(|body| first_item_statement(body));
+    // the function as written, kept beside an error so that its callers still resolve
+    let as_written = local_item.map(|_| func.clone());
     if let Some(body) = func.block_mut() {
         injector.visit_block_mut(body);
     }
     let hoisted = std::mem::take(&mut injector.hoisted);
+    if let Some(item_span) = local_item {
+        if hoisted.iter().any(|(_, contract)| contract.runs_in_place()) {
+            let error = syn::Error::new(
+                item_span,
+                "a function with a `block_contract_inline!` block has an item statement (a nested \
+                 `fn`, `const`, `static`, `use`, `struct`, `enum`, `trait`, `impl`, `mod` or \
+                 `macro_rules!`): the block is verified as a function next to its host, which \
+                 does not see local items, so a name could mean another item there. Move the item \
+                 out of the function",
+            )
+            .to_compile_error();
+            return quote!(#error #as_written).into();
+        }
+    }
     if !injector.injected {
         return quote!(#func).into();
     }
@@ -355,6 +373,7 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
 
     // The hoisted functions have the host's where clause as extended above.
     let host = HoistHost {
+        name: &host_sig.ident,
         generics: &func.sig().generics,
         outer_context: outer.as_ref(),
         is_method: outer.is_some(),
@@ -363,6 +382,22 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
         .iter()
         .map(|(name, contract)| contract.hoisted_function(name, &host));
     quote!(#func #(#hoisted)*).into()
+}
+
+/// The span of the first item statement in `block`, at any depth: the items a function declares
+/// locally, which shadow the module's items for the code written after them.
+fn first_item_statement(block: &syn::Block) -> Option<proc_macro2::Span> {
+    use syn::spanned::Spanned;
+    use syn::visit::Visit;
+    struct FirstItem(Option<proc_macro2::Span>);
+    impl<'ast> Visit<'ast> for FirstItem {
+        fn visit_item(&mut self, item: &'ast syn::Item) {
+            self.0.get_or_insert_with(|| item.span());
+        }
+    }
+    let mut finder = FirstItem(None);
+    finder.visit_block(block);
+    finder.0
 }
 
 /// Whether blocks of a method of `outer` are hoisted into it as associated functions: an
@@ -422,7 +457,7 @@ impl ContextInjector<'_> {
         let mode = crate::block_contract_fn::mode_of(&mac.path)?;
         let contract =
             crate::block_contract_fn::BlockContractFn::parse_for(mac.tokens.clone(), mode).ok()?;
-        let name = crate::block_contract_fn::fresh_hoisted_name();
+        let name = crate::block_contract_fn::fresh_hoisted_name(host.name);
         let call = contract.hoisted_call(&name, host);
         self.hoisted.push((name, contract));
         // the host's where clause gets the `Model` predicates the hoisted function needs
