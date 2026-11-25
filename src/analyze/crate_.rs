@@ -129,6 +129,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         *local_def_id,
                         target_def_id,
                         analyzer.owner_fn_id_args,
+                        analyzer.targets_ghost_consts(),
                     );
                     local_spec_targets.push((local_target_def_id, narrower));
                     // The spec is the target's contract; a trusted target's body is not
