@@ -18,6 +18,16 @@ when it protects behavior that could plausibly regress without an obviously inco
 code change. Similar implementations do not each need separate tests when one
 representative case sufficiently exercises the behavior.
 
+## Before adding or extending a feature
+
+List what already exists before writing new code, so that a near copy is merged into one
+implementation first. Build the rustdoc JSON once
+(`cargo rustdoc --lib -- -Z unstable-options --output-format json --document-private-items`),
+then run `scripts/similar_functions.py <terms describing the feature>` (or `--like <existing
+function>`), and read the top candidates and the module tree it prints; `--groups` lists the
+clusters of similar functions across the crate. The pull request description names the existing
+functions checked and says what was reused or merged.
+
 ## Specifications in `std.rs`
 
 `std.rs` is injected into every crate Thrust verifies, so a specification there must be
