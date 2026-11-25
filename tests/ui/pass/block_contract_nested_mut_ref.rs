@@ -9,7 +9,7 @@ fn main() {
         let t = (&mut a, 0i64);
         let r = t.0;
         thrust_macros::block_contract!(
-            |r: &mut i64| -> ()
+            |mut r: &mut i64| -> ()
             requires(true),
             ensures(!r == 5),
             {
