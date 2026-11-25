@@ -409,7 +409,7 @@ pub struct AnnotFnTranslator<'a, 'tcx> {
     /// The generic parameter indices of the const parameters taken as ghost arguments by the
     /// function this formula is the `requires` or `ensures` of: the formula's parameters are
     /// followed by them, in this order.
-    ghost_consts: Vec<u32>,
+    ghost_consts: Vec<Option<u32>>,
 }
 
 impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
@@ -465,7 +465,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .tcx
             .generics_of(self.local_def_id)
             .param_def_id_to_index(self.tcx, param_did)?;
-        let position = self.ghost_consts.iter().position(|&i| i == index)?;
+        let position = self.ghost_consts.iter().position(|&i| i == Some(index))?;
         Some(chc::Term::var(rty::FunctionParamIdx::from(
             self.body.params.len() + position,
         )))

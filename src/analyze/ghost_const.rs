@@ -6,9 +6,12 @@
 //! occurrence of `N` (so `N == N` holds), a contract may mention it, and a call passes the
 //! const argument it is made with: a value, or the caller's own parameter of that name.
 //!
-//! Only a plain function or an inherent method has them. A trait method, an impl of a trait's
-//! method, a closure and an extern spec keep every occurrence of `N` as any value of its type,
-//! since their types are tied to the trait's or to the function they describe.
+//! Only a plain function or an inherent method has them, and the extern spec of one, which has
+//! the ghost arguments of its target, in the target's order. A parameter of the spec stands for
+//! the ghost argument its call of the target passes it as (`go::<A, B>()` in a spec generic over
+//! `<B, A>`), whatever its own position. A trait method, an impl of a trait's method and a
+//! closure keep every occurrence of `N` as any value of its type, since their types are tied to
+//! the trait's or to the function they describe.
 
 use rustc_hir::def::DefKind;
 use rustc_index::IndexVec;
@@ -22,13 +25,16 @@ use crate::analyze;
 /// A const parameter taken as a ghost argument.
 #[derive(Debug, Clone, Copy)]
 pub struct GhostConst<'tcx> {
-    /// Its index among the generic parameters of the function, its parents' included.
-    pub param_index: u32,
+    /// The index among the generic parameters of the function of the const parameter this
+    /// argument stands for, its parents' included; `None` for the argument of an extern spec's
+    /// target that the spec's call fixes to a value, which no parameter of the spec names.
+    pub param_index: Option<u32>,
     pub ty: mir_ty::Ty<'tcx>,
 }
 
 /// The ghost arguments of the function `def_id`, in the order of its generic parameters; empty
-/// when it takes none. The extern spec of a local function takes those of its target.
+/// when it takes none. The extern spec of a local function takes those of its target, in its
+/// order.
 pub fn ghost_consts<'tcx>(ctx: &analyze::Analyzer<'tcx>, def_id: DefId) -> Vec<GhostConst<'tcx>> {
     let tcx = ctx.tcx();
     let Some(local_def_id) = def_id.as_local() else {
@@ -36,9 +42,17 @@ pub fn ghost_consts<'tcx>(ctx: &analyze::Analyzer<'tcx>, def_id: DefId) -> Vec<G
     };
     if analyze::annot::has_thrust_attr(tcx, def_id, &analyze::annot::extern_spec_fn_path()) {
         let spec_body = tcx.optimized_mir(def_id);
-        let (target, _) =
+        let (target, target_args) =
             analyze::local_def::extern_spec_fn_target_def_id_impl(&tcx, &local_def_id, spec_body);
-        return ghost_consts(ctx, target);
+        return ghost_consts(ctx, target)
+            .into_iter()
+            .map(|ghost| GhostConst {
+                param_index: ghost.param_index.and_then(|index| {
+                    const_param_index(target_args[index as usize].expect_const())
+                }),
+                ty: ghost.ty,
+            })
+            .collect();
     }
     if tcx.is_closure_like(def_id)
         || !matches!(tcx.def_kind(def_id), DefKind::Fn | DefKind::AssocFn)
@@ -65,7 +79,7 @@ fn const_params<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Vec<GhostConst<'tcx>>
                 return None;
             }
             Some(GhostConst {
-                param_index: idx as u32,
+                param_index: Some(idx as u32),
                 ty: tcx.type_of(param.def_id).instantiate_identity(),
             })
         })
@@ -104,7 +118,9 @@ pub fn ghost_local<'tcx>(
     param_index: u32,
 ) -> Option<Local> {
     let ghosts = ghost_consts(ctx, def_id);
-    let position = ghosts.iter().position(|g| g.param_index == param_index)?;
+    let position = ghosts
+        .iter()
+        .position(|g| g.param_index == Some(param_index))?;
     Some(ghost_local_at(ctx.tcx(), def_id, position))
 }
 
@@ -120,20 +136,17 @@ pub fn add_ghost_args<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>, ghosts: &[
     let first = body.arg_count + 1;
     let count = ghosts.len();
     let span = body.span;
-    let mut decls = IndexVec::new();
-    for (local, decl) in body.local_decls.iter_enumerated() {
-        if local.as_usize() == first {
-            for ghost in ghosts {
-                decls.push(mir::LocalDecl::new(ghost.ty, span));
-            }
-        }
-        decls.push(decl.clone());
-    }
-    if decls.len() == body.local_decls.len() {
-        for ghost in ghosts {
-            decls.push(mir::LocalDecl::new(ghost.ty, span));
-        }
-    }
+    let (args, temps) = body.local_decls.raw.split_at(first);
+    let ghost_decls = ghosts
+        .iter()
+        .map(|ghost| mir::LocalDecl::new(ghost.ty, span));
+    let decls: Vec<_> = args
+        .iter()
+        .cloned()
+        .chain(ghost_decls)
+        .chain(temps.iter().cloned())
+        .collect();
+    let decls = IndexVec::from_raw(decls);
     body.local_decls = decls;
     body.arg_count += count;
     if let Some(spread) = body.spread_arg {
@@ -167,8 +180,11 @@ impl<'tcx> MutVisitor<'tcx> for Rewrite<'_, 'tcx> {
     }
 
     fn visit_operand(&mut self, operand: &mut Operand<'tcx>, location: Location) {
-        let ghost = operand_const_param(operand)
-            .and_then(|index| self.ghosts.iter().position(|g| g.param_index == index));
+        let ghost = operand_const_param(operand).and_then(|index| {
+            self.ghosts
+                .iter()
+                .position(|g| g.param_index == Some(index))
+        });
         if let Some(position) = ghost {
             *operand = Operand::Copy(mir::Place::from(Local::from_usize(self.first + position)));
             return;

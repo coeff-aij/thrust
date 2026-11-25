@@ -1355,7 +1355,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// otherwise any value of its type, as the body is checked for every instance.
     fn const_param_ty(&self, ty: mir_ty::Ty<'tcx>, ct: mir_ty::Const<'tcx>) -> PlaceType {
         let mir_ty::ConstKind::Param(param) = ct.kind() else {
-            return self.unknown_value_ty(ty);
+            unreachable!("a const parameter");
         };
         let ghost = analyze::ghost_const::ghost_local(
             self.ctx(),
@@ -1749,6 +1749,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ) => {
                 let func_ty = match operand.const_fn_def() {
                     Some((def_id, args)) => {
+                        self.reject_ghost_fn_item(def_id, args);
                         self.record_called_fn(def_id, args);
                         self.callable_ty(def_id, args)
                     }
@@ -2735,6 +2736,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         I: IntoIterator<Item = Operand<'tcx>>,
     {
         // TODO: handle const_fn_def on Env side
+        if let Some((_, generic_args)) = func.const_fn_def() {
+            // Before any translation of such a function item's type, which has one more
+            // parameter than its use expects.
+            self.reject_ghost_fn_items_in(generic_args);
+        }
         let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
             self.record_called_fn(def_id, args);
             let ty = self.callable_ty(def_id, args);
@@ -2752,7 +2758,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .collect();
         if let Some((def_id, generic_args)) = func.const_fn_def() {
             self.hand_over_closures(def_id, generic_args, &operands, &expected_args);
-            self.reject_ghost_fn_items_in(generic_args);
             self.push_ghost_const_args(def_id, generic_args, &mut expected_args);
         }
         let rty::Type::Function(func_ty) = func_ty else {
@@ -2771,7 +2776,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         expected_args: &mut IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
     ) {
         for ghost in analyze::ghost_const::ghost_consts(self.ctx(), def_id) {
-            let ct = generic_args[ghost.param_index as usize].expect_const();
+            let index = ghost
+                .param_index
+                .expect("a callee's ghost argument is a parameter");
+            let ct = generic_args[index as usize].expect_const();
             let operand = Operand::Constant(Box::new(mir::ConstOperand {
                 span: rustc_span::DUMMY_SP,
                 user_ty: None,

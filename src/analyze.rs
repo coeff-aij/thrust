@@ -411,6 +411,9 @@ struct GenericDefTy<'tcx> {
 struct InstantiationKey<'tcx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     caller_def_id: DefId,
+    /// For a formula function translated as a contract, the function whose ghost const arguments
+    /// it binds ([`ghost_const`]); `None` otherwise.
+    contract_of: Option<DefId>,
 }
 
 /// Identifies one instance of a predicate with a Rust body: the predicate, its generic
@@ -1886,6 +1889,7 @@ impl<'tcx> Analyzer<'tcx> {
         let key = InstantiationKey {
             generic_args,
             caller_def_id,
+            contract_of: None,
         };
         let mut def_ty = match self.defs.get(&def_id)? {
             DefTy::Concrete(rty, _) => rty.clone(),
@@ -1895,6 +1899,7 @@ impl<'tcx> Analyzer<'tcx> {
                 let key = InstantiationKey {
                     generic_args: spec_args,
                     caller_def_id,
+                    contract_of: None,
                 };
                 spec.cache.borrow().get(&key).cloned()
             })?,
@@ -2349,6 +2354,7 @@ impl<'tcx> Analyzer<'tcx> {
         let key = InstantiationKey {
             generic_args,
             caller_def_id: owner_fn_id,
+            contract_of,
         };
         let deferred_formula_fn_cache = Rc::clone(&deferred_formula_fn.cache);
         if let Some(formula_fn) = deferred_formula_fn_cache.borrow().get(&key) {
@@ -2479,6 +2485,7 @@ impl<'tcx> Analyzer<'tcx> {
         let key = InstantiationKey {
             generic_args,
             caller_def_id,
+            contract_of: None,
         };
         let body_unanalyzed = !deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
             || (is_generic && !self.per_instance_too.contains(&def_id));
