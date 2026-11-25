@@ -193,6 +193,7 @@ impl BlockContract {
             #(#[::thrust_macros::requires(#requires)])*
             #(#[::thrust_macros::ensures(#ensures)])*
             #attrs
+            #[thrust::extracted_block]
             // a `mut` `&mut` parameter is written through only, which rustc takes for an unused `mut`
             #[allow(unused_mut)]
             fn #name #generics (#(#params_tokens),*) #output #where_clause #body
