@@ -208,7 +208,56 @@ mod std_transcriptions {
         fn iterator_find(it: &mut I, predicate: P) -> Option<I::Item>;
     }
 
+    pub trait IteratorFoldMethods<I, B, F>
+    where
+        I: crate::IteratorSpec,
+        I::Item: thrust_models::Model,
+        B: thrust_models::Model,
+        F: FnMut(B, I::Item) -> B,
+    {
+        fn iterator_fold(it: I, init: B, f: F) -> B;
+    }
+
     pub struct StdBodies;
+
+    #[thrust_macros::context]
+    impl<I, B, F> IteratorFoldMethods<I, B, F> for StdBodies
+    where
+        I: crate::IteratorSpec,
+        I::Item: thrust_models::Model,
+        B: thrust_models::Model,
+        F: FnMut(B, I::Item) -> B,
+    {
+        // std: library/core/src/iter/traits/iterator.rs, `pub trait Iterator`, `fn fold<B, F>(mut self, init: B, mut f: F) -> B where Self: Sized, F: FnMut(B, Self::Item) -> B,`
+        // The ghosts `gs`, `gaccs` and `gfs` are the items taken, the accumulators and the closure's states before each call.
+        fn iterator_fold(mut it: I, init: B, mut f: F) -> B {
+            let mut accum = init;
+            let mut gs = thrust_macros::ghost!(|| -> Vec<I::Item> { Seq::empty() });
+            let mut gaccs = thrust_macros::ghost!(|accum: B| -> Seq<<B as thrust_models::Model>::Ty> { Seq::singleton(accum) });
+            let mut gfs = thrust_macros::ghost!(|f: F| -> Seq<Closure<F>> { Seq::singleton(f) });
+            while let Some(x) = it.next() {
+                thrust_macros::invariant!(
+                    |it: I, accum: B, f: F, gs: Ghost<Vec<I::Item>>, gaccs: Ghost<Seq<<B as thrust_models::Model>::Ty>>, gfs: Ghost<Seq<Closure<F>>>, old!(it): I, old!(init): B, old!(f): F|
+                    I::inv(it)
+                        && crate::_iter_spec_fold_chain::<I, B, F>(old!(it), old!(init), old!(f), gs, it, gaccs, gfs)
+                        && gaccs[gs.len()] == accum
+                        && gfs[gs.len()] == f
+                        && forall(|s: Seq<<I::Item as thrust_models::Model>::Ty>, it1: <I as thrust_models::Model>::Ty,
+                                   accs: Seq<<B as thrust_models::Model>::Ty>, fs: Seq<Closure<F>>,
+                                   x: <I::Item as thrust_models::Model>::Ty, it2: <I as thrust_models::Model>::Ty|
+                            (crate::_iter_spec_fold_chain::<I, B, F>(old!(it), old!(init), old!(f), s, it1, accs, fs)
+                                && I::produces(it1, Seq::singleton(x), it2))
+                                ==> thrust_macros::pre!(fs[s.len()](accs[s.len()], x)))
+                );
+                let gx = thrust_macros::ghost!(|x: I::Item| -> I::Item { x });
+                accum = f(accum, x);
+                gs = thrust_macros::ghost!(|gs: Ghost<Vec<I::Item>>, gx: Ghost<I::Item>| -> Vec<I::Item> { gs.push(gx) });
+                gaccs = thrust_macros::ghost!(|gaccs: Ghost<Seq<<B as thrust_models::Model>::Ty>>, accum: B| -> Seq<<B as thrust_models::Model>::Ty> { gaccs.push(accum) });
+                gfs = thrust_macros::ghost!(|gfs: Ghost<Seq<Closure<F>>>, f: F| -> Seq<Closure<F>> { gfs.push(f) });
+            }
+            accum
+        }
+    }
 
     #[thrust_macros::context]
     impl<I, P> IteratorFindMethods<I, P> for StdBodies

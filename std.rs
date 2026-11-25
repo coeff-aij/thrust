@@ -4648,6 +4648,31 @@ where
                 && thrust_macros::post!(thrust_models::model::Mut::new(fs[k], fs[k + 1])(accs[k], s[k]), accs[k + 1])))
 }
 
+// Where `fold` ends: `fold_completed`. `Iterator`'s default `fold`, which the conformance check
+// transcribes, runs only for an iterator that does not override `fold`, and that iterator's
+// `fold_completed` is its default, `completed`; `fold_completed` of a generic `I` is not linked to
+// `completed` by any law, so under `cfg(thrust_std_conformance)` the check states `completed`.
+// That the two agree for such iterators is an argued step, not a checked one.
+#[cfg(not(thrust_std_conformance))]
+#[thrust_macros::predicate]
+fn _iter_spec_fold_end<I>(it: &mut I) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+{
+    I::fold_completed(it)
+}
+
+#[cfg(thrust_std_conformance)]
+#[thrust_macros::predicate]
+fn _iter_spec_fold_end<I>(it: &mut I) -> bool
+where
+    I: IteratorSpec,
+    I::Item: thrust_models::Model,
+{
+    I::completed(it)
+}
+
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(
     I::inv(it)
@@ -4669,7 +4694,7 @@ where
                            it2: <I as thrust_models::Model>::Ty|
         _iter_spec_fold_chain::<I, B, F>(it, init, f, s, it1, accs, fs)
             && accs[s.len()] == result
-            && I::fold_completed(thrust_models::model::Mut::new(it1, it2)))
+            && _iter_spec_fold_end::<I>(thrust_models::model::Mut::new(it1, it2)))
 )]
 fn _extern_spec_iterator_fold<I, B, F>(it: I, init: B, f: F) -> B
     where I: IteratorSpec,
@@ -4677,7 +4702,10 @@ fn _extern_spec_iterator_fold<I, B, F>(it: I, init: B, f: F) -> B
           B: thrust_models::Model,
           F: FnMut(B, I::Item) -> B
 {
-    <I as std::iter::Iterator>::fold(it, init, f)
+    thrust_std_target!(
+        <I as std::iter::Iterator>::fold(it, init, f),
+        <crate::std_transcriptions::StdBodies as crate::std_transcriptions::IteratorFoldMethods<I, B, F>>::iterator_fold(it, init, f)
+    )
 }
 
 // `into_iter` is specified once, through `into_iter_is`; a type gets an `into_iter` by
