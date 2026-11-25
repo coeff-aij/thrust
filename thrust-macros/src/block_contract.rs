@@ -334,8 +334,11 @@ impl BlockContract {
         let outer_attr = host
             .outer_context
             .map(|outer| quote!(#[thrust::_outer_context(#outer)]));
+        // the block splits its goals when its host does
+        let split_goals = host.split_goals.then(|| quote!(#[thrust::split_goals]));
         let attrs = quote! {
             #outer_attr
+            #split_goals
             #[::thrust_macros::context]
         };
         self.function(name, attrs, host.generics)
@@ -362,6 +365,8 @@ pub struct HoistHost<'a> {
     pub outer_context: Option<&'a crate::FnOuterItem>,
     /// Whether the host is an associated function, so that the hoisted function is one too.
     pub is_method: bool,
+    /// Whether the host is marked `#[thrust::split_goals]`.
+    pub split_goals: bool,
 }
 
 impl HoistHost<'_> {
