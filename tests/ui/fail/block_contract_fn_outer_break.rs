@@ -1,5 +1,5 @@
 //@compile-flags: -C debug-assertions=off
-// A `break` that leaves the block is rejected.
+// The block is a function: a `break` in its body does not reach the loop around the block.
 
 fn main() {
     let mut x = 0i64;
@@ -10,7 +10,7 @@ fn main() {
             {
                 *x += 1;
                 if *x > 3 {
-                    break; //~ ERROR: `break` would leave the block
+                    break; //~ ERROR: `break` outside of a loop or labeled block
                 }
             }
         );

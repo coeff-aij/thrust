@@ -16,8 +16,10 @@
 //! is itself a reference, deref coercion turns `&&T` into `&T` and `&mut &mut T` into `&mut T`,
 //! the latter only when the outer binding is declared `mut`. The body can name only its
 //! parameters (rustc reports E0434 for anything else), which is what makes the contract complete.
-//! A `return`, `?`, or a `break` or `continue` that leaves the block is rejected, since in the
-//! function it would leave the function instead.
+//! The block is the same as an extracted function: a `return` or `?` in the body leaves the
+//! block with the written result type, and a `break` or `continue` aimed at a loop outside is a
+//! rustc error. To exit an outer loop or function, write the result type as `Result` or
+//! `ControlFlow` and handle it at the call (`block_contract_fn!(..)?`, or a `match`).
 //!
 //! Without `#[thrust_macros::context]` the function is nested at the block, which cannot use the
 //! enclosing function's generics. Under it the function is hoisted next to the enclosing
@@ -26,10 +28,9 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::parse::{Parse, ParseStream};
-use syn::visit::Visit;
 
 mod kw {
     syn::custom_keyword!(requires);
@@ -136,16 +137,6 @@ fn fresh_name() -> syn::Ident {
 }
 
 impl BlockContractFn {
-    /// Rejects a block whose body leaves it, which the extracted function could not do.
-    pub fn check_stays_in_block(&self) -> syn::Result<()> {
-        let mut finder = LeavingFinder::default();
-        finder.visit_block(&self.body);
-        match finder.found {
-            Some(error) => Err(error),
-            None => Ok(()),
-        }
-    }
-
     /// The call of the extracted function `callee`, passing the outer variables.
     fn call(&self, callee: TokenStream) -> TokenStream {
         let arguments = self.params.iter().map(Param::argument);
@@ -263,106 +254,5 @@ pub fn expand(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
         Ok(parsed) => parsed,
         Err(e) => return e.to_compile_error().into(),
     };
-    if let Err(e) = parsed.check_stays_in_block() {
-        return e.to_compile_error().into();
-    }
     parsed.expand_nested().into()
-}
-
-/// Finds the first `return`, `?`, or `break`/`continue` aimed outside the block. An inner loop's
-/// own `break` and `continue`, and a closure's `return` and `?`, stay in the block.
-#[derive(Default)]
-struct LeavingFinder {
-    loop_depth: usize,
-    labels: Vec<String>,
-    found: Option<syn::Error>,
-}
-
-impl LeavingFinder {
-    fn reject(&mut self, span: Span, what: &str) {
-        if self.found.is_some() {
-            return;
-        }
-        self.found = Some(syn::Error::new(
-            span,
-            format!(
-                "`{what}` would leave the block, which `block_contract_fn!` extracts into a \
-                 function; a block that leaves is not supported"
-            ),
-        ));
-    }
-
-    fn label_in_block(&self, label: &syn::Lifetime) -> bool {
-        self.labels.contains(&label.ident.to_string())
-    }
-
-    fn within_labelled<F: FnOnce(&mut Self)>(&mut self, label: &Option<syn::Label>, visit: F) {
-        let Some(label) = label else {
-            return visit(self);
-        };
-        self.labels.push(label.name.ident.to_string());
-        visit(self);
-        self.labels.pop();
-    }
-}
-
-impl<'ast> Visit<'ast> for LeavingFinder {
-    fn visit_expr_return(&mut self, node: &'ast syn::ExprReturn) {
-        self.reject(syn::spanned::Spanned::span(node), "return");
-    }
-
-    fn visit_expr_try(&mut self, node: &'ast syn::ExprTry) {
-        self.reject(syn::spanned::Spanned::span(node), "?");
-    }
-
-    fn visit_expr_break(&mut self, node: &'ast syn::ExprBreak) {
-        let stays = match &node.label {
-            Some(label) => self.label_in_block(label),
-            None => self.loop_depth > 0,
-        };
-        if !stays {
-            self.reject(syn::spanned::Spanned::span(node), "break");
-        }
-        syn::visit::visit_expr_break(self, node);
-    }
-
-    fn visit_expr_continue(&mut self, node: &'ast syn::ExprContinue) {
-        let stays = match &node.label {
-            Some(label) => self.label_in_block(label),
-            None => self.loop_depth > 0,
-        };
-        if !stays {
-            self.reject(syn::spanned::Spanned::span(node), "continue");
-        }
-    }
-
-    fn visit_expr_loop(&mut self, node: &'ast syn::ExprLoop) {
-        self.loop_depth += 1;
-        self.within_labelled(&node.label, |this| syn::visit::visit_expr_loop(this, node));
-        self.loop_depth -= 1;
-    }
-
-    fn visit_expr_while(&mut self, node: &'ast syn::ExprWhile) {
-        self.loop_depth += 1;
-        self.within_labelled(&node.label, |this| syn::visit::visit_expr_while(this, node));
-        self.loop_depth -= 1;
-    }
-
-    fn visit_expr_for_loop(&mut self, node: &'ast syn::ExprForLoop) {
-        self.loop_depth += 1;
-        self.within_labelled(&node.label, |this| {
-            syn::visit::visit_expr_for_loop(this, node)
-        });
-        self.loop_depth -= 1;
-    }
-
-    fn visit_expr_block(&mut self, node: &'ast syn::ExprBlock) {
-        self.within_labelled(&node.label, |this| syn::visit::visit_expr_block(this, node));
-    }
-
-    fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
-
-    fn visit_expr_async(&mut self, _: &'ast syn::ExprAsync) {}
-
-    fn visit_item(&mut self, _: &'ast syn::Item) {}
 }

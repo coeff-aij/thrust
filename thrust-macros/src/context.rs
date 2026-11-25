@@ -407,7 +407,7 @@ impl ContextInjector<'_> {
 impl ContextInjector<'_> {
     /// The call that replaces `mac`, a `block_contract_fn!` hoisted out of the body; `None` for
     /// any other macro, or when the block stays nested (and standalone expansion reports a form
-    /// that does not parse or leaves its block).
+    /// that does not parse).
     fn hoist_block_contract_fn(&mut self, mac: &syn::Macro) -> Option<TokenStream2> {
         let host = self.hoist?;
         if !crate::block_contract_fn::is_block_contract_fn(&mac.path) {
@@ -415,7 +415,6 @@ impl ContextInjector<'_> {
         }
         let contract =
             syn::parse2::<crate::block_contract_fn::BlockContractFn>(mac.tokens.clone()).ok()?;
-        contract.check_stays_in_block().ok()?;
         let hoisted = contract.hoist(host);
         self.hoisted.push(hoisted.function);
         Some(hoisted.call)

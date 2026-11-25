@@ -218,8 +218,9 @@ pub fn block_contract(input: TokenStream) -> TokenStream {
 ///
 /// It expands into a function with that signature and contract, and a call of it at the block
 /// passing the same-named outer variables (`&mut v` for a `&mut` parameter, `&x` for a `&`
-/// parameter). The body can name only its parameters. A body that `return`s, uses `?`, or
-/// `break`s or `continue`s out of the block is rejected. See [`mod@block_contract_fn`].
+/// parameter). The body can name only its parameters, and `return` and `?` leave the block, as in
+/// any function; an outer loop or function is exited through a `Result` or `ControlFlow` result
+/// handled at the call. See [`mod@block_contract_fn`].
 #[proc_macro]
 pub fn block_contract_fn(input: TokenStream) -> TokenStream {
     block_contract_fn::expand(input)
