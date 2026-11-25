@@ -4,7 +4,8 @@
 // The key's precondition reads what the closure captures, so it holds in the states the closure
 // reaches from the one passed, not in every state. The `F: FnMut` bound makes the closure `FnMut`,
 // which holds `dl` behind a `&mut`.
-use thrust_models::Model; struct D {
+use thrust_models::Model;
+struct D {
     a: i64,
     b: i64,
 }

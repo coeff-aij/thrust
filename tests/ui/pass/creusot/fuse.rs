@@ -1,7 +1,8 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-use thrust_models::Model; use thrust_models::model::Mut;
+use thrust_models::Model;
+use thrust_models::model::Mut;
 use thrust_models::{exists, forall};
 
 // The step form of the iterator specification, Thrust's own: `step(self, item, dist)` relates

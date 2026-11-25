@@ -2,7 +2,8 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
 // `find.rs` with `try_fold`'s loop invariant removed: it is left to inference.
-use thrust_models::Ghost; use thrust_models::{exists, forall};
+use thrust_models::Ghost;
+use thrust_models::{exists, forall};
 use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;

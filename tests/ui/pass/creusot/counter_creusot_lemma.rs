@@ -3,7 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
 // slow: RQ1 input, 68 s; the counter by default: pass/creusot/counter.rs, fail/creusot/counter.rs
 // counter_creusot with the `produces_trans` witnesses written as source-level lemmas, as Creusot's Why3 session gives them by hand.
-use thrust_models::{FnParam, model::{UInt, UIntN}}; use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::{FnParam, model::{UInt, UIntN}};
+use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
 /// The model of `u32`, which carries its width while `THRUST_INT_RANGE` is set.

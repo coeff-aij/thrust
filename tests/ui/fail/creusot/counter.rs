@@ -1,7 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::{FnParam, model::{UInt, UIntN}}; use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::{FnParam, model::{UInt, UIntN}};
+use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
 /// The model of `u32`, which carries its width while `THRUST_INT_RANGE` is set.

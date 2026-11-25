@@ -3,7 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60 THRUST_PER_INSTANCE_GENERICS=1
 // Analyzed at its instance, `g`'s clause sees `T` as `&mut i64`, while the closure holds `t` at
 // `&mut T`: the parameter stands for the `&mut` the restatement then shows.
-use thrust_models::{exists, model::Mut}; #[thrust_macros::requires(thrust_macros::pre!(f(&x)))]
+use thrust_models::{exists, model::Mut};
+#[thrust_macros::requires(thrust_macros::pre!(f(&x)))]
 #[thrust_macros::ensures(exists(|h| thrust_macros::post!(Mut::new(f, h)(&x), result)))]
 fn call<F: FnMut(&i64) -> i64>(x: i64, mut f: F) -> i64 {
     f(&x)

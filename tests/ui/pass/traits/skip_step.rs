@@ -2,7 +2,8 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
-use thrust_models::FnParam; use thrust_models::model::{Array, Int, Mut, Seq};
+use thrust_models::FnParam;
+use thrust_models::model::{Array, Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
 // The step form of the iterator spec (`skip.rs` is the Creusot form) on the same `Skip` adapter.

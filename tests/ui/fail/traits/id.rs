@@ -1,7 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-use thrust_models::{Model, model::Mut}; use thrust_models::forall;
+use thrust_models::{Model, model::Mut};
+use thrust_models::forall;
 
 #[thrust_macros::context]
 trait Iterator {

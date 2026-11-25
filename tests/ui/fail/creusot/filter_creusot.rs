@@ -15,7 +15,8 @@
 // `Mapping` built by a closure. The `resolve` of Creusot's `completed` has no counterpart: Thrust
 // has no `resolve` predicate (fork issue #156). The client calls `next` at `Range` where Creusot's
 // `less_than` collects a `Vec` from std's `filter`.
-use thrust_models::FnParam; use thrust_models::model::{Array, Closure, Int, Mut, Seq};
+use thrust_models::FnParam;
+use thrust_models::model::{Array, Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
 #[path = "../../pass/creusot/auxiliary/common.rs"]

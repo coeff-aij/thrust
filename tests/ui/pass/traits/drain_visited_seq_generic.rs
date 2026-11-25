@@ -1,7 +1,8 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
-use thrust_models::{FnParam, model::Mut}; use thrust_models::forall;
+use thrust_models::{FnParam, model::Mut};
+use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::{Ghost, Model};
 

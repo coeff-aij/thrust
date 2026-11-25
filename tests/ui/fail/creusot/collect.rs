@@ -1,7 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
-use thrust_models::FnParam; use thrust_models::{exists, forall};
+use thrust_models::FnParam;
+use thrust_models::{exists, forall};
 use thrust_models::model::Mut;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;

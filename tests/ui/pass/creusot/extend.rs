@@ -1,7 +1,8 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::FnParam; use thrust_models::model::{Int, Mut, Seq};
+use thrust_models::FnParam;
+use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
 // Creusot's `examples/extend`: `v1.extend(v2.into_iter())` appends `v2` to `v1`. The iterator is

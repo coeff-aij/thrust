@@ -3,7 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 // A capture whose type names `Self`, in a default method of a trait under `context`: the clause,
 // lifted out of the trait, names `Self` under another name.
-use thrust_models::{exists, Model, model::Mut}; #[thrust_macros::requires(thrust_macros::pre!(f(&x)))]
+use thrust_models::{exists, Model, model::Mut};
+#[thrust_macros::requires(thrust_macros::pre!(f(&x)))]
 #[thrust_macros::ensures(exists(|g| thrust_macros::post!(Mut::new(f, g)(&x), result)))]
 fn call<F: FnMut(&i64) -> i64>(x: i64, mut f: F) -> i64 {
     f(&x)
