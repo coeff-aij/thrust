@@ -3,14 +3,14 @@
 // `TrustedRandomAccessNoCoerceSpec` stands for std's `TrustedRandomAccessNoCoerce`, which std's
 // `Zip` and `Take` specialize on, and only Thrust's std.rs implements it: an impl for a type std
 // does not specialize on would make `Zip`'s spec claim std's index path for it.
-
+use thrust_models::{forall, Model, model::{Int, Seq}};
 #[derive(PartialEq)]
 struct Counter {
     cur: i64,
     end: i64,
 }
 
-impl thrust_models::Model for Counter {
+impl Model for Counter {
     type Ty = Self;
 }
 
@@ -41,7 +41,7 @@ impl IteratorSpec for Counter {
             && self.cur <= o.cur
             && o.cur <= o.end
             && visited.len() == o.cur - self.cur
-            && thrust_models::forall(|i: thrust_models::model::Int|
+            && forall(|i: Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.cur + i)
     }
 
@@ -54,9 +54,9 @@ impl IteratorSpec for Counter {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -65,7 +65,7 @@ impl IteratorSpec for Counter {
 #[thrust_macros::context]
 impl TrustedRandomAccessNoCoerceSpec for Counter { //~ ERROR: implemented only in Thrust's std.rs
     #[thrust_macros::logic]
-    fn size(self) -> thrust_models::model::Int {
+    fn size(self) -> Int {
         0
     }
 
@@ -73,7 +73,7 @@ impl TrustedRandomAccessNoCoerceSpec for Counter { //~ ERROR: implemented only i
 
     fn size_produces(
         a: &Self,
-        s: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        s: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
     ) {
     }

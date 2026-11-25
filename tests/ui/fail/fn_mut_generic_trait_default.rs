@@ -7,7 +7,7 @@
 // `T`, and the trusted `caller` runs `gen3` at `S`, an instance analyzed nowhere but through the
 // default's analysis over `F`, which is therefore emitted: there the assertion fails, as an
 // arbitrary closure may return 0 at 1.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Ap {
     #[thrust_macros::requires(thrust_macros::pre!(f(1)))]
@@ -22,7 +22,7 @@ trait Ap {
 #[derive(PartialEq)]
 struct S;
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = S;
 }
 

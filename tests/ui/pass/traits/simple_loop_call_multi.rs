@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::{FnParam, Model};
 #[thrust_macros::context]
 trait A {
     #[thrust_macros::requires(Self::p(*self))]
@@ -23,7 +23,7 @@ fn repeat<T: A>(x: &mut T, n: u64) {
     let mut i = 0;
     while i < n {
         thrust_macros::invariant!(
-            |b: &mut T, x: thrust_models::FnParam<&mut T>| T::p(*b) && !b == !x.at_entry()
+            |b: &mut T, x: FnParam<&mut T>| T::p(*b) && !b == !x.at_entry()
         );
         b.f();
         i += 1;
@@ -33,7 +33,7 @@ fn repeat<T: A>(x: &mut T, n: u64) {
 #[derive(PartialEq)]
 struct X(i64);
 
-impl thrust_models::Model for X {
+impl Model for X {
     type Ty = X;
 }
 
@@ -56,7 +56,7 @@ impl A for X {
 #[derive(PartialEq)]
 struct Y(i64);
 
-impl thrust_models::Model for Y {
+impl Model for Y {
     type Ty = Y;
 }
 

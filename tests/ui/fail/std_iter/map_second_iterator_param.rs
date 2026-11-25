@@ -4,12 +4,12 @@
 // holds, and takes `b` at a parameter without the bound. `main` passes two `Map`s of the same
 // closure type, so the closure `b` holds is covered by its type but no `inv` states its
 // obligation, and the call stops.
-
+use thrust_models::Model;
 #[thrust::trusted]
 #[thrust::callable]
 fn h<I: IteratorSpec<Item = i64>, J: Iterator<Item = i64>>(a: I, b: J)
 where
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     let _ = a.count();
     let _ = b.count();

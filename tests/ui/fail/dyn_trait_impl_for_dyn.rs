@@ -4,7 +4,7 @@
 
 // The impl for `dyn Shape` is checked against `Describe`'s contract at `Self = dyn Shape`: one
 // less than `sides`, which is at least 3, need not be at least 3.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape {
     #[thrust_macros::ensures(result >= 3)]
@@ -25,7 +25,7 @@ impl Describe for dyn Shape {
 
 struct Tri;
 
-impl thrust_models::Model for Tri {
+impl Model for Tri {
     type Ty = ();
 }
 

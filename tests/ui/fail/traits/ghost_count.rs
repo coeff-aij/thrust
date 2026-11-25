@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::FnParam;
 use thrust_models::forall;
 use thrust_models::model::Seq;
 use thrust_models::{Ghost, Model};
@@ -51,7 +51,7 @@ where
     let mut acc = 0;
     while let Some(x) = rr.iter.next() {
         thrust_macros::invariant!(
-            |rr: &mut Run<I>, r: thrust_models::FnParam<&mut Run<I>>, acc: i64|
+            |rr: &mut Run<I>, r: FnParam<&mut Run<I>>, acc: i64|
             I::invariant((*rr).0) && !rr == !r.at_entry() && acc == (*rr).1.len()
         );
         rr.items = thrust_macros::ghost!(

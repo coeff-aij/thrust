@@ -4,15 +4,15 @@
 // A specified method whose signature names an associated type of the impl
 // (`-> &Self::Output`): the wrapper the specification moves to spells the projection out,
 // since `Self::Output` means nothing in the inherent impl the wrapper lands in.
-
+use thrust_models::{Model, model::Int};
 struct Pair {
     left: i64,
     right: i64,
 }
 
 // Pair is represented as Tuple<Int, Int>, so `(*self).0` is `self.left`.
-impl thrust_models::Model for Pair {
-    type Ty = (thrust_models::model::Int, thrust_models::model::Int);
+impl Model for Pair {
+    type Ty = (Int, Int);
 }
 
 #[thrust_macros::context]

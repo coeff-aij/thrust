@@ -4,13 +4,13 @@
 
 // `pre!` of `Deref::deref` at a type parameter is `true`, so `claim` holds without calling it, and
 // the impl an instance reaches has to accept any argument, as for a call.
-
+use thrust_models::Model;
 use std::ops::Deref;
 
 #[derive(Clone, Copy)]
 struct Wrapper(u64);
 
-impl thrust_models::Model for Wrapper {
+impl Model for Wrapper {
     type Ty = (u64,);
 }
 

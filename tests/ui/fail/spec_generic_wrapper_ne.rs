@@ -1,10 +1,10 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
-
+use thrust_models::Model;
 // A generic wrapper whose model is itself holds a `&str` at `W<&str>`: the contract's `!=`,
 // checked at the instance it is used at, would be false of every pair there.
 #[derive(Clone, Copy)]
 struct W<T>(T);
-impl<T> thrust_models::Model for W<T> {
+impl<T> Model for W<T> {
     type Ty = W<T>;
 }
 

@@ -4,7 +4,7 @@
 
 // The method does not meet the contract the trait writes, which code Thrust does not analyze is
 // trusted to keep.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Call {
     #[thrust_macros::requires(*x < 10)]
@@ -14,7 +14,7 @@ trait Call {
 
 struct S;
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = ();
 }
 

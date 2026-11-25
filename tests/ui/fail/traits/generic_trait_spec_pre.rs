@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The pass twin calling `via` at 0, which the trait's precondition rules out.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Get {
     #[thrust_macros::requires(x > 0)]
@@ -13,7 +13,7 @@ trait Get {
 
 struct One;
 
-impl thrust_models::Model for One {
+impl Model for One {
     type Ty = ();
 }
 

@@ -1,13 +1,13 @@
 //@compile-flags: -C debug-assertions=off
 // `pre!` passes each argument at the closure's argument type. `B` has `A`'s field types in the
 // other order, so passing a `B` where `g` takes an `A` would read `b.y` as `a.x`.
-
+use thrust_models::Model;
 struct A {
     x: i64,
     y: i64,
 }
 
-impl thrust_models::Model for A {
+impl Model for A {
     type Ty = A;
 }
 
@@ -16,7 +16,7 @@ struct B {
     x: i64,
 }
 
-impl thrust_models::Model for B {
+impl Model for B {
     type Ty = B;
 }
 

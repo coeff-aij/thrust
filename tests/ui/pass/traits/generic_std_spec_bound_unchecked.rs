@@ -5,11 +5,11 @@
 // The spec bound is reached through `enumerate`, which steps nothing: `Vec::from_iter(j)` requires
 // `inv` of the iterator `j`'s `into_iter` makes, as Creusot requires the type invariant of the
 // iterator `extend` and `collect` step, and a contract over `J: IntoIterator` cannot state it.
-
+use thrust_models::{Model, model::Seq};
 #[derive(PartialEq)]
 struct Good;
 
-impl thrust_models::Model for Good {
+impl Model for Good {
     type Ty = Self;
 }
 
@@ -42,9 +42,9 @@ impl IteratorSpec for Good {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }

@@ -1,14 +1,14 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::{Model, model::Int};
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
 #[thrust::trusted]
 fn rand() -> i64 { unimplemented!() }
 
 struct Counter(i64);
-impl thrust_models::Model for Counter {
-    type Ty = (thrust_models::model::Int,);
+impl Model for Counter {
+    type Ty = (Int,);
 }
 
 #[thrust_macros::context]

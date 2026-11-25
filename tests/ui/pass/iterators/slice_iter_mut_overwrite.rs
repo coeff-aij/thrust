@@ -12,7 +12,7 @@
 // iterator advances, a statement about every element it will ever hold is writable directly:
 // the invariant quantifies over the positions already passed and the postcondition over all of
 // them.
-
+use thrust_models::{FnParam, Model};
 use thrust_models::forall;
 use thrust_models::model::Int;
 
@@ -23,12 +23,12 @@ use thrust_models::model::Int;
         && forall(|j: Int| (0 <= j && j < (!s).len()) ==> ((!s)[j] == v))
 )]
 fn overwrite<T>(s: &mut [T], v: T)
-    where T: thrust_models::Model + Copy, T::Ty: PartialEq
+    where T: Model + Copy, T::Ty: PartialEq
 {
     let mut it = s.iter_mut();
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: core::slice::IterMut<'_, T>, v: T, s: thrust_models::FnParam<&mut [T]>|
+            |it: core::slice::IterMut<'_, T>, v: T, s: FnParam<&mut [T]>|
                 it.0 == *s.at_entry()
                     && it.1 == !s.at_entry()
                     && it.1.len() == it.0.len()
