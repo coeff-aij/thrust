@@ -3080,21 +3080,35 @@ fn with_uses_through_copies<'tcx>(
 
 /// Removes the ghost state of each `for` loop whose iterator type does not implement
 /// `IteratorSpec` (`iter_old`, `produced` and the history marker of
-/// `thrust-macros/src/for_loop.rs`), so that the loop is analyzed as without it: the marker calls
-/// become gotos, and the statements that define the ghost locals and the temporaries that carry
-/// their arguments are removed. A loop whose iterator implements `IteratorSpec` keeps them.
+/// `thrust-macros/src/for_loop.rs`), so that the loop is analyzed as without it. A loop whose
+/// iterator implements `IteratorSpec` keeps them.
 fn erase_for_loop_ghosts_without_iterator_spec<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     body: &mut Body<'tcx>,
     local_def_id: LocalDefId,
 ) {
+    let ghost_locals = rewrite_ghost_markers_without_iterator_spec(ctx, body, local_def_id);
+    remove_statements_defining(body, &ghost_locals);
+}
+
+/// Turns each `for` loop ghost marker call at an iterator type with no `IteratorSpec` into a goto
+/// to its target, and returns the locals the call wrote or read: the ghost locals and the
+/// temporaries that carried the arguments. The call's unwind edge goes with it, so the control
+/// flow graph is changed.
+fn rewrite_ghost_markers_without_iterator_spec<'tcx>(
+    ctx: &analyze::Analyzer<'tcx>,
+    body: &mut Body<'tcx>,
+    local_def_id: LocalDefId,
+) -> std::collections::HashSet<mir::Local> {
     use rustc_infer::infer::TyCtxtInferExt as _;
     use rustc_trait_selection::infer::InferCtxtExt as _;
 
     let tcx = ctx.tcx;
     let def_ids = ctx.def_ids();
+    let mut ghost_locals = std::collections::HashSet::new();
+    // Without std.rs (THRUST_NO_INJECT_STD) there are no markers.
     let Some(iterator_spec) = def_ids.iterator_spec() else {
-        return;
+        return ghost_locals;
     };
     let markers = [
         def_ids.for_loop_iter_old_marker(),
@@ -3104,8 +3118,7 @@ fn erase_for_loop_ghosts_without_iterator_spec<'tcx>(
     ];
     let typing_env = mir_ty::TypingEnv::post_analysis(tcx, local_def_id.to_def_id());
     let (infcx, param_env) = tcx.infer_ctxt().build_with_typing_env(typing_env);
-    let mut ghost_locals = std::collections::HashSet::new();
-    for data in body.basic_blocks.as_mut_preserves_cfg().iter_mut() {
+    for data in body.basic_blocks_mut().iter_mut() {
         let Some(term) = &mut data.terminator else {
             continue;
         };
@@ -3125,10 +3138,10 @@ fn erase_for_loop_ghosts_without_iterator_spec<'tcx>(
         if !markers.contains(&Some(def_id)) {
             continue;
         }
-        let holds = infcx
+        let has_iterator_spec = infcx
             .type_implements_trait(iterator_spec, [marker_args.type_at(0)], param_env)
             .must_apply_modulo_regions();
-        if holds {
+        if has_iterator_spec {
             continue;
         }
         ghost_locals.insert(destination.local);
@@ -3140,15 +3153,17 @@ fn erase_for_loop_ghosts_without_iterator_spec<'tcx>(
         let target = target.expect("a `for` loop ghost marker returns");
         term.kind = mir::TerminatorKind::Goto { target };
     }
-    if ghost_locals.is_empty() {
-        return;
-    }
+    ghost_locals
+}
+
+/// Removes the assignments to `locals` and their storage markers.
+fn remove_statements_defining(body: &mut Body<'_>, locals: &std::collections::HashSet<mir::Local>) {
     for data in body.basic_blocks.as_mut_preserves_cfg().iter_mut() {
         for stmt in &mut data.statements {
             let defines_ghost = match &stmt.kind {
-                mir::StatementKind::Assign(assign) => ghost_locals.contains(&assign.0.local),
+                mir::StatementKind::Assign(assign) => locals.contains(&assign.0.local),
                 mir::StatementKind::StorageLive(local) | mir::StatementKind::StorageDead(local) => {
-                    ghost_locals.contains(local)
+                    locals.contains(local)
                 }
                 _ => false,
             };
