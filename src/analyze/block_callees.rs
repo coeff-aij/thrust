@@ -27,6 +27,16 @@ enum Callee<'tcx> {
     Unresolved(DefId, GenericArgsRef<'tcx>),
 }
 
+/// Where a call is written: the source span of its outermost macro call, which the body's
+/// copies in the host and in the extracted function share. A span of a macro's expansion is not
+/// equal across two expansions of the same call.
+type CallPlace = (rustc_span::BytePos, rustc_span::BytePos);
+
+fn call_place(span: Span) -> CallPlace {
+    let written = span.source_callsite();
+    (written.lo(), written.hi())
+}
+
 struct Call<'tcx> {
     span: Span,
     callee: Callee<'tcx>,
@@ -180,12 +190,15 @@ pub fn check_callees_agree<'tcx>(
 
     // a call of the extracted function that the host has no call for is an operator or a
     // conversion the host's concrete types make built in, which runs the same impl
-    let mut bc_by_span: HashMap<Span, Vec<Callee<'tcx>>> = HashMap::new();
+    let mut bc_by_place: HashMap<CallPlace, Vec<Callee<'tcx>>> = HashMap::new();
     for call in bc_calls {
-        bc_by_span.entry(call.span).or_default().push(call.callee);
+        bc_by_place
+            .entry(call_place(call.span))
+            .or_default()
+            .push(call.callee);
     }
     for call in host_calls {
-        let candidates = bc_by_span.entry(call.span).or_default();
+        let candidates = bc_by_place.entry(call_place(call.span)).or_default();
         if let Some(position) = candidates.iter().position(|c| *c == call.callee) {
             candidates.swap_remove(position);
             continue;
