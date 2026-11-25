@@ -22,7 +22,7 @@ use crate::rty::{self, Subtyping as _};
 impl<'tcx> Analyzer<'tcx, '_> {
     /// Records the functions whose `pre!` the contract of the call of `def_id` at `args` states,
     /// and requires each function pointer handed over at a parameter bounded by `Fn`, `FnMut` or
-    /// `FnOnce` whose `pre!` it does not state to accept every argument, when the function that
+    /// `FnOnce` to accept every argument, when the function that
     /// runs is not analyzed; `operands` are the call's arguments and `operand_tys` their types.
     pub(super) fn cover_unanalyzed_call(
         &mut self,
@@ -75,17 +75,6 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 .instantiate(self.tcx, contract_args);
             let ty = self.tcx.erase_regions(ty);
             if !matches!(peel_refs(ty).kind(), mir_ty::TyKind::FnPtr(..)) {
-                continue;
-            }
-            // `stated` records types, not values, so a `pre!` stated of a value of `ty` counts
-            // only when the arguments hold exactly one: itself, behind references and boxes, or
-            // in a field of a struct or tuple, not a second value of `ty`, nor one inside a
-            // collection.
-            let held = operands
-                .iter()
-                .map(|operand| count_held(self.tcx, self.operand_ty(operand), ty))
-                .sum::<Option<usize>>();
-            if stated.names(ty) && held == Some(1) {
                 continue;
             }
             for (idx, held, derefs) in self.holders(ty, operands) {
@@ -179,8 +168,7 @@ impl<'tcx> Analyzer<'tcx, '_> {
     /// stops, as the value is held some way Thrust cannot follow, and so does a pointer behind a
     /// reference or a box, which has no contract Thrust can require of it. The value is handed to
     /// the function `contract_def_id` gives the contract of, and `requires_of` is the function
-    /// whose contract the call is checked against, in whose `requires` a stop asks to state its
-    /// `pre!`.
+    /// whose contract the call is checked against, which a stop names.
     fn require_fn_ptr_accepts_every_argument(
         &mut self,
         ty: mir_ty::Ty<'tcx>,
@@ -198,8 +186,8 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 span,
                 format!(
                     "a value of `{ty}` is handed to `{}`, which Thrust does not analyze, inside \
-                     `{held}`, where Thrust cannot follow it: state the `pre!` it needs in the \
-                     `requires` of `{}`",
+                     `{held}`, where Thrust cannot follow it: pass a function item or a closure \
+                     instead, or give `{}` a contract that does not call it",
                     self.tcx.def_path_str(contract_def_id),
                     self.tcx.def_path_str(requires_of),
                 ),
@@ -210,8 +198,8 @@ impl<'tcx> Analyzer<'tcx, '_> {
                 span,
                 format!(
                     "`{}` is handed to `{}`, which Thrust does not analyze, and has no contract \
-                     Thrust can require of it: state the `pre!` it needs in the `requires` of \
-                     `{}`",
+                     Thrust can require of it: pass a function item or a closure instead, or give \
+                     `{}` a contract that does not call it",
                     peel_refs(ty),
                     self.tcx.def_path_str(contract_def_id),
                     self.tcx.def_path_str(requires_of),
@@ -245,67 +233,4 @@ fn derefs_to<'tcx>(mut held: mir_ty::Ty<'tcx>, ty: mir_ty::Ty<'tcx>) -> Option<u
         derefs += 1;
     }
     Some(derefs)
-}
-
-/// The number of values of type `ty` a value of `held` holds, itself, behind references and
-/// boxes, or in the fields of structs and tuples; `None` when it may hold one some other way: in
-/// a collection, an enum, a closure's captures, a raw pointer or a `PhantomData`, through an
-/// alias, or through a type that holds itself.
-fn count_held<'tcx>(
-    tcx: mir_ty::TyCtxt<'tcx>,
-    held: mir_ty::Ty<'tcx>,
-    ty: mir_ty::Ty<'tcx>,
-) -> Option<usize> {
-    count_held_within(tcx, held, ty, &mut Vec::new())
-}
-
-/// [`count_held`] inside the types `visiting`.
-fn count_held_within<'tcx>(
-    tcx: mir_ty::TyCtxt<'tcx>,
-    held: mir_ty::Ty<'tcx>,
-    ty: mir_ty::Ty<'tcx>,
-    visiting: &mut Vec<mir_ty::Ty<'tcx>>,
-) -> Option<usize> {
-    if held == ty {
-        return Some(1);
-    }
-    if !held.walk().any(|arg| arg.as_type() == Some(ty)) {
-        return Some(0);
-    }
-    if visiting.contains(&held) {
-        return None;
-    }
-    visiting.push(held);
-    let count = count_held_inside(tcx, held, ty, visiting);
-    visiting.pop();
-    count
-}
-
-/// [`count_held`] of `held`, which mentions `ty`, through its pointee or its fields.
-fn count_held_inside<'tcx>(
-    tcx: mir_ty::TyCtxt<'tcx>,
-    held: mir_ty::Ty<'tcx>,
-    ty: mir_ty::Ty<'tcx>,
-    visiting: &mut Vec<mir_ty::Ty<'tcx>>,
-) -> Option<usize> {
-    if let Some(inner) = pointee(held) {
-        return count_held_within(tcx, inner, ty, visiting);
-    }
-    match *held.kind() {
-        mir_ty::TyKind::Tuple(elems) => elems
-            .iter()
-            .map(|elem| count_held_within(tcx, elem, ty, visiting))
-            .sum(),
-        // A `PhantomData` names a type without holding it, as a collection marks the elements it
-        // holds behind a raw allocation (`Vec<T>` holds a `PhantomData<T>`).
-        mir_ty::TyKind::Adt(adt, _) if adt.is_phantom_data() => None,
-        mir_ty::TyKind::Adt(adt, args) if adt.is_struct() => adt
-            .all_fields()
-            .map(|field| {
-                let field_ty = tcx.erase_regions(field.ty(tcx, args));
-                count_held_within(tcx, field_ty, ty, visiting)
-            })
-            .sum(),
-        _ => None,
-    }
 }

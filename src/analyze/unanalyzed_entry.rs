@@ -62,11 +62,6 @@ pub struct StatedPres<'tcx> {
 }
 
 impl<'tcx> StatedPres<'tcx> {
-    /// Whether the `requires` reads the precondition of the callable type `ty`.
-    pub fn names(&self, ty: mir_ty::Ty<'tcx>) -> bool {
-        self.receivers.contains(&ty)
-    }
-
     /// The functions whose precondition the `requires` reads, with their generic arguments.
     pub fn functions(&self) -> Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
         self.receivers
@@ -99,6 +94,8 @@ pub struct Entries<'tcx> {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct Node<'tcx> {
     instance: mir_ty::Instance<'tcx>,
+    /// The instance a stop names: `instance`, or for a call shim the instance that runs it.
+    named: mir_ty::Instance<'tcx>,
     analyzed: bool,
     covered: Covered<'tcx>,
 }
@@ -307,6 +304,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             let analyzed = item_analyzed(root);
             walk.push(Node {
                 instance: root,
+                named: root,
                 analyzed,
                 covered: Covered::default(),
             });
@@ -349,8 +347,15 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             (true, false) => self.covered_at(instance, callee),
             (false, false) => self.carried_into(&node.covered, callee),
         };
+        let named = match callee.def {
+            mir_ty::InstanceKind::ClosureOnceShim { .. } | mir_ty::InstanceKind::FnPtrShim(..) => {
+                node.named
+            }
+            _ => callee,
+        };
         walk.push(Node {
             instance: callee,
+            named,
             analyzed,
             covered,
         });
@@ -364,7 +369,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         walk.entries.escaping_fn_ptrs.extend(
             self.escaping_fn_ptrs(callee)
                 .into_iter()
-                .map(|ty| (callee, instance, ty)),
+                .map(|ty| (callee, node.named, ty)),
         );
         let is_closure = self.tcx.is_closure_like(callee_def_id);
         if !is_closure && !node.covered.functions.iter().any(|f| same_fn(*f, callee)) {
@@ -404,6 +409,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
                 };
                 let virtual_call = Node {
                     instance: entry.virtual_call,
+                    named: entry.virtual_call,
                     analyzed: false,
                     covered,
                 };
@@ -417,6 +423,7 @@ impl<'tcx> analyze::Analyzer<'tcx> {
             }
             walk.push(Node {
                 instance: reified,
+                named: reified,
                 analyzed: false,
                 covered: Covered::default(),
             });
