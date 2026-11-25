@@ -1051,6 +1051,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         rty::Type::int_of_width(size.bits() as u32),
                         chc::Term::int(size.sign_extend(bits)),
                     )
+                } else if ty.is_char() {
+                    // A `char` literal is a scalar value, as every `char` is.
+                    PlaceType::with_ty_and_term(rty::Type::char(), chc::Term::int(bits))
                 } else {
                     // An unsigned literal is non-negative as written, so it needs no check where
                     // it becomes a value of an unsigned type.
@@ -1629,24 +1632,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         let (ty, term) = self.checked_int_op(lhs_term.mul(rhs_term), lhs_mir_ty);
                         builder.build(ty, term)
                     }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Ge) => {
-                        builder.build(rty::Type::Bool, lhs_term.ge(rhs_term))
-                    }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Gt) => {
-                        builder.build(rty::Type::Bool, lhs_term.gt(rhs_term))
-                    }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Le) => {
-                        builder.build(rty::Type::Bool, lhs_term.le(rhs_term))
-                    }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Lt) => {
-                        builder.build(rty::Type::Bool, lhs_term.lt(rhs_term))
-                    }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Eq) => {
-                        builder.build(rty::Type::Bool, lhs_term.eq(rhs_term))
-                    }
-                    (rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Bool, mir::BinOp::Ne) => {
-                        builder.build(rty::Type::Bool, lhs_term.ne(rhs_term))
-                    }
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Ge,
+                    ) => builder.build(rty::Type::Bool, lhs_term.ge(rhs_term)),
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Gt,
+                    ) => builder.build(rty::Type::Bool, lhs_term.gt(rhs_term)),
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Le,
+                    ) => builder.build(rty::Type::Bool, lhs_term.le(rhs_term)),
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Lt,
+                    ) => builder.build(rty::Type::Bool, lhs_term.lt(rhs_term)),
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Eq,
+                    ) => builder.build(rty::Type::Bool, lhs_term.eq(rhs_term)),
+                    (
+                        rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char | rty::Type::Bool,
+                        mir::BinOp::Ne,
+                    ) => builder.build(rty::Type::Bool, lhs_term.ne(rhs_term)),
                     _ => unimplemented!("ty={}, op={:?}", lhs_ty.display(), op),
                 }
             }
@@ -1753,7 +1762,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                             .into_iter()
                             .map(|operand| self.operand_type(operand).boxed())
                             .collect();
-                        PlaceType::tuple(field_tys)
+                        let ty = PlaceType::tuple(field_tys);
+                        if let mir::AggregateKind::Closure(def_id, args) = *kind {
+                            self.check_closure_captures(def_id, args, &ty);
+                        }
+                        ty
                     }
                     _ => unimplemented!("aggregate kind: {:?}", kind),
                 }
@@ -1822,10 +1835,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 if !is_int(op_ty) || !is_int(ty) {
                     unimplemented!("int cast: {:?} -> {:?}", op_ty, ty);
                 }
+                // A `char` is its code point. The only cast to it is from `u8`, whose values are
+                // scalar values; the result keeps the operand's term, of which that is assumed, as
+                // of every `char` (`rty::Type::Char`): without `THRUST_INT_RANGE` the operand's
+                // own upper bound is not.
+                if ty.is_char() {
+                    let mut builder = PlaceTypeBuilder::default();
+                    let (_, op_term) = builder.subsume(self.operand_type(operand));
+                    builder.push_formula(rty::char_code_point_formula(op_term.clone()));
+                    return builder.build(target_ty, op_term);
+                }
                 // The result has the target's type, so that the operations on it are typed and
                 // checked at the target's width: a widening keeps the operand's term, which is in
-                // the target's range, and a narrowing wraps it into that range. A `char` is the
-                // `u32` of its code point.
+                // the target's range, and a narrowing wraps it into that range.
                 let mut op_pty = self.operand_type(operand);
                 if int_ty_includes(self.tcx, ty, op_ty) {
                     op_pty.ty = target_ty;
@@ -2206,7 +2228,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let target_term = match (bits, &discr_ty.ty) {
                 (0, rty::Type::Bool) => chc::Term::bool(false),
                 (1, rty::Type::Bool) => chc::Term::bool(true),
-                (_, rty::Type::Int(_) | rty::Type::UInt(_)) => {
+                (_, rty::Type::Int(_) | rty::Type::UInt(_) | rty::Type::Char) => {
                     let size = discr_mir_ty.primitive_size(self.tcx);
                     if discr_mir_ty.is_signed() {
                         chc::Term::int(size.sign_extend(bits))
@@ -2484,9 +2506,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     }
 
     /// Stops at a call of a local function at arguments no definition of it covers: its only
-    /// definition is an extern spec that fixes a type argument or bounds an associated type, and
-    /// the call is at other arguments, or at a type parameter of the caller, where the spec's
-    /// instances cannot be told apart from the others.
+    /// definition is an extern spec that fixes a type or const argument or bounds an associated
+    /// type, and the call is at other arguments, or at a type or const parameter of the caller,
+    /// where the spec's instances cannot be told apart from the others.
     fn fatal_uncovered_instance(
         &self,
         def_id: DefId,
@@ -2495,8 +2517,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     ) -> ! {
         self.tcx.dcx().fatal(format!(
             "`{}`, called in `{}`, has no specification at these arguments: an extern spec that \
-             fixes a type argument or bounds an associated type covers only those instances, and \
-             a call at a type parameter is not one of them",
+             fixes a type or const argument or bounds an associated type covers only those \
+             instances, and a call at a type or const parameter is not one of them",
             self.tcx.def_path_str_with_args(def_id, args),
             self.tcx.def_path_str(caller_def_id),
         ))
@@ -2794,6 +2816,46 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             panic!("unexpected def type: {:?}", func_ty);
         };
         (func_ty, expected_args)
+    }
+
+    /// Checks the function pointers among the captures `captures` of a closure value built here
+    /// against the types its body is analyzed with, as a direct call of the closure checks its
+    /// receiver. A `pre!` or `post!` of the closure states the body's contract as a formula of the
+    /// closure value, which says nothing of a function pointer the closure holds: such a value has
+    /// no term, so without this check the body's assumption of what the pointer returns holds of
+    /// no closure the program builds. The refinements of the captures are left to the calls: they
+    /// are part of the closure's precondition, which a direct call and a `pre!` require, and one
+    /// that no built value meets says that the closure is never called.
+    /// Outside its body the closure's pointers are then opaque (`Unrefined::closure` in
+    /// `refine::template`).
+    fn check_closure_captures(
+        &mut self,
+        def_id: DefId,
+        args: mir_ty::GenericArgsRef<'tcx>,
+        captures: &PlaceType,
+    ) {
+        let parent_count = self.tcx.generics_of(def_id).parent_count;
+        let parent_args = self.tcx.mk_args(&args[..parent_count]);
+        let caller_def_id = self.type_builder.owner_fn_id();
+        let Some(def_ty) = self
+            .ctx
+            .def_ty_with_args(def_id, parent_args, caller_def_id)
+        else {
+            // A closure without a type is one in a body Thrust skips: no body is analyzed under
+            // its capture types, and it has no contract a `pre!`, `post!` or call could read.
+            return;
+        };
+        let expected = def_ty
+            .ty
+            .as_function()
+            .expect("closure def type is a function")
+            .closure_captures()
+            .strip_refinement();
+        let expected = rty::RefinedType::unrefined(expected);
+        let clauses = self
+            .env
+            .relate_sub_refined_type(&captures.clone().into(), &expected);
+        self.ctx.extend_clauses(clauses);
     }
 
     /// Appends to `expected_args` the const arguments of a call of `def_id` at `generic_args` for

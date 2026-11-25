@@ -208,6 +208,12 @@ trait TyMode<'tcx> {
     type Var: chc::Var;
     /// The type of a function pointer with the signature `sig`.
     fn fn_ptr(&mut self, b: &TypeBuilder<'tcx>, sig: mir_ty::FnSig<'tcx>) -> rty::Type<Self::Var>;
+    /// The type of the closure type `ty`, when it is not built from its captures in this mode.
+    fn closure(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> Option<rty::Type<Self::Var>>;
     /// The type of a type argument `ty` of an enum.
     fn enum_arg(
         &mut self,
@@ -240,12 +246,66 @@ impl<'tcx> TyMode<'tcx> for Unrefined {
         rty::FunctionType::new(params, ret.vacuous()).into()
     }
 
+    /// An `Fn` or `FnOnce` closure has its captures with the function pointers among them opaque
+    /// ([`OpaqueFnPtrs`]). Such a type is where the closure's value is seen from outside its
+    /// body, as through a type argument: the body's `pre!` and `post!` say what the value does,
+    /// and what the captured pointers do was checked where the value was built, against the
+    /// types the body takes them at, which no call of the closure changes. An unrefined pointer
+    /// type there would instead state the contract `true` of the pointer the closure holds. An
+    /// `FnMut` body may store into its captures what it does not check against those types, so
+    /// an `FnMut` closure keeps its captures unrefined.
+    fn closure(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> Option<rty::Type<rty::Closed>> {
+        let mir_ty::TyKind::Closure(_, args) = ty.kind() else {
+            return None;
+        };
+        if args.as_closure().kind() == mir_ty::ClosureKind::FnMut {
+            return None;
+        }
+        Some(b.build_ty_in(&mut OpaqueFnPtrs, ty))
+    }
+
     fn enum_arg(
         &mut self,
         b: &TypeBuilder<'tcx>,
         ty: mir_ty::Ty<'tcx>,
     ) -> rty::RefinedType<rty::Closed> {
         b.build(ty)
+    }
+}
+
+/// An unrefined type whose function pointers are opaque: they relate to no function type, so
+/// they neither state nor require a contract.
+struct OpaqueFnPtrs;
+
+impl<'tcx> TyMode<'tcx> for OpaqueFnPtrs {
+    type Var = rty::Closed;
+
+    fn fn_ptr(
+        &mut self,
+        _b: &TypeBuilder<'tcx>,
+        _sig: mir_ty::FnSig<'tcx>,
+    ) -> rty::Type<rty::Closed> {
+        rty::Type::opaque()
+    }
+
+    fn closure(
+        &mut self,
+        _b: &TypeBuilder<'tcx>,
+        _ty: mir_ty::Ty<'tcx>,
+    ) -> Option<rty::Type<rty::Closed>> {
+        None
+    }
+
+    fn enum_arg(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> rty::RefinedType<rty::Closed> {
+        rty::RefinedType::unrefined(b.build_ty_in(self, ty))
     }
 }
 
@@ -923,8 +983,11 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// Builds `ty`, taking from `m` the parts where an unrefined type and a template differ.
     fn build_ty_in<M: TyMode<'tcx>>(&self, m: &mut M, ty: mir_ty::Ty<'tcx>) -> rty::Type<M::Var> {
         // An integer keeps its width, which its model `Int` or `UInt` does not have. A `char` is
-        // the `u32` of its code point.
-        if ty.is_integral() || ty.is_char() {
+        // its code point.
+        if ty.is_char() {
+            return rty::Type::char();
+        }
+        if ty.is_integral() {
             let width = ty.primitive_size(self.tcx).bits() as u32;
             return if ty.is_signed() {
                 rty::Type::int_of_width(width)
@@ -935,6 +998,14 @@ impl<'tcx> TypeBuilder<'tcx> {
         // A trait object is opaque whatever `Model` impl it has: its value is never read.
         if ty.is_trait() {
             return rty::Type::opaque();
+        }
+        // A closure type at the top of `ty`, or the element of an array (its arm below recurses
+        // on the element first), reaches here: `resolve_model_ty` below folds every other closure
+        // inside a type into `Closure<upvars>` before the arms recurse.
+        if let mir_ty::TyKind::Closure(..) = ty.kind() {
+            if let Some(ty) = m.closure(self, ty) {
+                return ty;
+            }
         }
         // An array keeps its length, which its model `Seq` does not have.
         if let mir_ty::TyKind::Array(elem_ty, len) = ty.kind() {
@@ -1057,6 +1128,8 @@ impl<'tcx> TypeBuilder<'tcx> {
 
                 self.translate_alias_type(ty).vacuous()
             }
+            // The model of a `char` is itself (`impl Model for char`).
+            mir_ty::TyKind::Char => rty::Type::char(),
             kind => unimplemented!("unsupported type: {:?}", kind),
         }
     }
@@ -1464,6 +1537,14 @@ where
     fn fn_ptr(&mut self, b: &TypeBuilder<'tcx>, sig: mir_ty::FnSig<'tcx>) -> rty::Type<S::Var> {
         let ty = b.for_function_template(self.registry, sig).build();
         rty::Type::function(ty)
+    }
+
+    fn closure(
+        &mut self,
+        _b: &TypeBuilder<'tcx>,
+        _ty: mir_ty::Ty<'tcx>,
+    ) -> Option<rty::Type<S::Var>> {
+        None
     }
 
     fn enum_arg(

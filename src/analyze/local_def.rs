@@ -282,6 +282,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         is_annotated_as_extern_spec_fn_impl(&self.tcx, &self.local_def_id)
     }
 
+    /// Whether this is the extern spec of a function of this crate that takes ghost const
+    /// arguments ([`analyze::ghost_const`]).
+    pub fn targets_ghost_consts(&self) -> bool {
+        self.is_annotated_as_extern_spec_fn()
+            && self.owner_fn_id.is_local()
+            && !analyze::ghost_const::ghost_consts(self.ctx, self.owner_fn_id).is_empty()
+    }
+
     pub fn is_annotated_as_predicate(&self) -> bool {
         analyze::annot::has_thrust_attr(
             self.tcx,
@@ -1070,6 +1078,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             receiver.clone().mut_current(),
             receiver.mut_final(),
         );
+        if analyze::closure_hist_inv::checked_at_own_parameters(
+            self.tcx,
+            closure_ty,
+            self.owner_fn_id,
+        ) {
+            self.ctx
+                .record_by_value_hist_inv_checked(closure_ty, &upvars_sort);
+        }
         if formula.is_top() {
             return;
         }

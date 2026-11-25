@@ -251,6 +251,20 @@ impl FunctionType {
         self.params.get(last_index)
     }
 
+    /// The type of the captures of a closure of this type: its receiver, behind the reference an
+    /// `Fn` or `FnMut` closure takes it by. The receiver is the first parameter, so its type
+    /// names no other.
+    pub fn closure_captures(&self) -> RefinedType<Closed> {
+        let receiver = &self.params[FunctionParamIdx::from_usize(0)];
+        let captures = match receiver.ty.as_pointer() {
+            Some(pointer) => &pointer.elem,
+            None => receiver,
+        };
+        captures
+            .clone()
+            .map_var(|_| unreachable!("the receiver's type names no parameter"))
+    }
+
     /// Because function types are always closed in Thrust, we can convert this into
     /// [`Type<Closed>`].
     pub fn into_closed_ty(self) -> Type<Closed> {
@@ -473,8 +487,9 @@ impl PartVars<'_> {
 /// elements of an array are stated so too.
 ///
 /// A function type inside `ty` (a function pointer) is not stated: a value of a function type
-/// has no term to state its template's contract of, which only a direct call's subtyping relates
-/// to the function the value is.
+/// has no term to state its template's contract of. A direct call's subtyping relates it to the
+/// function the value is, and so does the check of a closure's captures where it is built
+/// (`check_closure_captures` in `analyze::basic_block`).
 fn inner_refinements_formula<W>(
     ty: &Type<FunctionParamIdx>,
     value: chc::Term<W>,
@@ -1015,11 +1030,18 @@ impl EnumDatatypeDef {
 /// [`type_fact_checks`]) are read from a provider.
 pub trait EnumDefProvider {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> EnumDatatypeDef;
+
+    /// Whether the definition of the enum `name` is registered, so that [`Self::enum_def`] has it.
+    fn has_enum_def(&self, name: &chc::DatatypeSymbol) -> bool;
 }
 
 impl<T: EnumDefProvider> EnumDefProvider for &T {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> EnumDatatypeDef {
         <T as EnumDefProvider>::enum_def(self, name)
+    }
+
+    fn has_enum_def(&self, name: &chc::DatatypeSymbol) -> bool {
+        <T as EnumDefProvider>::has_enum_def(self, name)
     }
 }
 
@@ -1423,6 +1445,264 @@ where
     Some(bounds.lower.into_iter().chain(bounds.upper).collect())
 }
 
+/// The code points of a `char`, the Unicode scalar values: `[0, CHAR_END)` without the
+/// surrogates `[CHAR_SURROGATES.0, CHAR_SURROGATES.1)`.
+const CHAR_END: u32 = char::MAX as u32 + 1;
+const CHAR_SURROGATES: (u32, u32) = (0xD800, 0xE000);
+
+/// That the code point `x` is a Unicode scalar value, as that of every `char` is:
+/// `0 <= x < 0x110000` and `x` is not a surrogate, built from `x >= n` and `x < n` by `ge` and `lt`.
+fn char_code_point<V, R>(
+    x: chc::Term<V>,
+    ge: impl Fn(chc::Term<V>, u32) -> R,
+    lt: impl Fn(chc::Term<V>, u32) -> R,
+    and: impl Fn(R, R) -> R,
+    or: impl Fn(R, R) -> R,
+) -> R
+where
+    V: Clone,
+{
+    let (surrogate_start, surrogate_end) = CHAR_SURROGATES;
+    let not_surrogate = or(lt(x.clone(), surrogate_start), ge(x.clone(), surrogate_end));
+    and(and(ge(x.clone(), 0), lt(x, CHAR_END)), not_surrogate)
+}
+
+/// [`char_code_point`] as a formula.
+pub fn char_code_point_formula<V>(x: chc::Term<V>) -> chc::Formula<V>
+where
+    V: Clone,
+{
+    let atom = |pred: chc::KnownPred| {
+        move |x: chc::Term<V>, bound: u32| {
+            chc::Formula::Atom(chc::Atom::new(pred.into(), vec![x, chc::Term::int(bound)]))
+        }
+    };
+    char_code_point(
+        x,
+        atom(chc::KnownPred::GREATER_THAN_OR_EQUAL),
+        atom(chc::KnownPred::LESS_THAN),
+        chc::Formula::and,
+        chc::Formula::or,
+    )
+}
+
+/// [`char_code_point`] as a Boolean term.
+fn char_code_point_term<V>(x: chc::Term<V>) -> chc::Term<V>
+where
+    V: Clone,
+{
+    char_code_point(
+        x,
+        |x, bound| x.ge(chc::Term::int(bound)),
+        |x, bound| x.lt(chc::Term::int(bound)),
+        chc::Term::and,
+        chc::Term::or,
+    )
+}
+
+/// The index variable of the formula over the elements of a sequence at nesting `depth`
+/// ([`char_domain_formula`]). The identifiers are reserved, as [`seq_elem_var`]'s is.
+fn char_seq_elem_var(depth: usize) -> chc::UserQuantifiedVarId {
+    assert!(depth < 0x1_0000, "sequence nested too deep");
+    chc::UserQuantifiedVarId::from_usize(0xFFFC_0000 + depth)
+}
+
+/// The code points of the `char`s a value of `ty` holds, as a quantifier-free formula about
+/// `value` but for the elements of a sequence: through tuples, pointers (the current and final
+/// values of a `&mut`), the payloads of enums, each variant's as `is_C(v) => facts(sel_C(v))`, and
+/// the elements of sequences, as `forall k. 0 <= k < len(v) => facts(v[k])`. `Ok(None)` when it
+/// holds none. A variable an annotation's `forall` or `exists` binds ranges over them in every
+/// mode, as every value of `ty` has them; the enums of `ty` are registered (`defs`).
+///
+/// An enum met again inside its own payload, or nested past [`ENUM_NESTING_LIMIT`], cannot be
+/// followed by a finite formula: when a `char` is in it, the error names it, as
+/// [`type_fact_checks`] names a recursive enum it cannot check.
+pub fn char_domain_formula<V>(
+    ty: &Type<Closed>,
+    value: chc::Term<V>,
+    defs: &dyn EnumDefProvider,
+) -> Result<Option<chc::Formula<V>>, Type<Closed>>
+where
+    V: Clone,
+{
+    char_domain_within(ty, value, defs, &mut Vec::new(), 0)
+}
+
+fn char_domain_within<V>(
+    ty: &Type<Closed>,
+    value: chc::Term<V>,
+    defs: &dyn EnumDefProvider,
+    enclosing: &mut Vec<EnumType<Closed>>,
+    seq_depth: usize,
+) -> Result<Option<chc::Formula<V>>, Type<Closed>>
+where
+    V: Clone,
+{
+    let conj = |a: Option<chc::Formula<V>>, b: Option<chc::Formula<V>>| match (a, b) {
+        (Some(a), Some(b)) => Some(a.and(b)),
+        (a, b) => a.or(b),
+    };
+    match ty {
+        Type::Char => Ok(Some(char_code_point_formula(value))),
+        Type::Tuple(tuple) => {
+            let mut facts = None;
+            for (index, elem) in tuple.elems.iter().enumerate() {
+                let part = value.clone().tuple_proj(index);
+                facts = conj(
+                    facts,
+                    char_domain_within(&elem.ty, part, defs, enclosing, seq_depth)?,
+                );
+            }
+            Ok(facts)
+        }
+        Type::Pointer(pointer) => {
+            let current = pointer.kind.deref_term(value.clone());
+            let current =
+                char_domain_within(&pointer.elem.ty, current, defs, enclosing, seq_depth)?;
+            if !pointer.is_mut() {
+                return Ok(current);
+            }
+            let final_ = value.mut_final();
+            let final_ = char_domain_within(&pointer.elem.ty, final_, defs, enclosing, seq_depth)?;
+            Ok(conj(current, final_))
+        }
+        Type::Seq { elem, .. } => {
+            let var = char_seq_elem_var(seq_depth);
+            let k = chc::Term::UserQuantifiedVar(chc::Sort::int(), var);
+            let nth = value.clone().seq_nth(k.clone());
+            let Some(elem) = char_domain_within(&elem.ty, nth, defs, enclosing, seq_depth + 1)?
+            else {
+                return Ok(None);
+            };
+            let in_bounds = chc::Formula::Atom(chc::Atom::new(
+                chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
+                vec![k.clone(), chc::Term::int(0)],
+            ))
+            .and(chc::Formula::Atom(chc::Atom::new(
+                chc::KnownPred::LESS_THAN.into(),
+                vec![k, value.seq_len()],
+            )));
+            Ok(Some(chc::Formula::forall(
+                vec![(var, chc::Sort::int())],
+                in_bounds.implies(elem),
+            )))
+        }
+        Type::Enum(enum_ty) => enum_char_domain(enum_ty, value, defs, enclosing, seq_depth),
+        Type::Int(_)
+        | Type::UInt(_)
+        | Type::BitVec(_)
+        | Type::Bool
+        | Type::String
+        | Type::Opaque
+        | Type::Never
+        | Type::Param(_)
+        | Type::Alias(_)
+        | Type::Function(_)
+        | Type::Array(_) => Ok(None),
+    }
+}
+
+/// [`char_domain_formula`] of a value of the enum type `enum_ty`: `is_C(v) => facts(sel_C(v))` of
+/// each variant whose fields hold `char`s.
+fn enum_char_domain<V>(
+    enum_ty: &EnumType<Closed>,
+    value: chc::Term<V>,
+    defs: &dyn EnumDefProvider,
+    enclosing: &mut Vec<EnumType<Closed>>,
+    seq_depth: usize,
+) -> Result<Option<chc::Formula<V>>, Type<Closed>>
+where
+    V: Clone,
+{
+    if enclosing.contains(enum_ty) || enclosing.len() >= ENUM_NESTING_LIMIT {
+        let ty = Type::Enum(enum_ty.clone());
+        return if holds_char(&ty, defs, &mut Vec::new()) {
+            Err(ty)
+        } else {
+            Ok(None)
+        };
+    }
+    enclosing.push(enum_ty.clone());
+    let sort = chc::DatatypeSort::new(enum_ty.symbol.clone(), enum_ty.arg_sorts());
+    let mut facts = None;
+    for variant in enum_ty.variants(defs) {
+        let mut fields = None;
+        for (index, field_ty) in variant.field_tys.iter().enumerate() {
+            let field = chc::Term::datatype_selector(
+                sort.clone(),
+                variant.ctor.clone(),
+                index,
+                field_ty.to_sort(),
+                value.clone(),
+            );
+            let field = char_domain_within(field_ty, field, defs, enclosing, seq_depth)?;
+            fields = match (fields, field) {
+                (Some(a), Some(b)) => Some(chc::Formula::and(a, b)),
+                (a, b) => a.or(b),
+            };
+        }
+        let Some(fields) = fields else {
+            continue;
+        };
+        let is_variant = chc::Formula::Atom(chc::Atom::new(
+            chc::Pred::Tester(variant.ctor.clone()),
+            vec![value.clone()],
+        ));
+        let variant_facts = is_variant.implies(fields);
+        facts = Some(match facts {
+            Some(facts) => chc::Formula::and(facts, variant_facts),
+            None => variant_facts,
+        });
+    }
+    enclosing.pop();
+    Ok(facts)
+}
+
+/// Whether a value of `ty` holds a `char`, through tuples, pointers, sequences and the payloads of
+/// enums whose definitions are registered.
+fn holds_char(
+    ty: &Type<Closed>,
+    defs: &dyn EnumDefProvider,
+    visited: &mut Vec<chc::DatatypeSymbol>,
+) -> bool {
+    match ty {
+        Type::Char => true,
+        Type::Tuple(tuple) => tuple
+            .elems
+            .iter()
+            .any(|elem| holds_char(&elem.ty, defs, visited)),
+        Type::Pointer(pointer) => holds_char(&pointer.elem.ty, defs, visited),
+        Type::Seq { elem, .. } => holds_char(&elem.ty, defs, visited),
+        Type::Enum(enum_ty) if visited.contains(&enum_ty.symbol) => enum_ty
+            .args
+            .iter()
+            .any(|arg| holds_char(&arg.ty, defs, visited)),
+        Type::Enum(enum_ty) if !defs.has_enum_def(&enum_ty.symbol) => false,
+        Type::Enum(enum_ty) => {
+            visited.push(enum_ty.symbol.clone());
+            let found = enum_ty.variants(defs).iter().any(|variant| {
+                variant
+                    .field_tys
+                    .iter()
+                    .any(|field_ty| holds_char(field_ty, defs, visited))
+            });
+            visited.pop();
+            found
+        }
+        Type::Int(_)
+        | Type::UInt(_)
+        | Type::BitVec(_)
+        | Type::Bool
+        | Type::String
+        | Type::Opaque
+        | Type::Never
+        | Type::Param(_)
+        | Type::Alias(_)
+        | Type::Function(_)
+        | Type::Array(_) => false,
+    }
+}
+
 /// The range of a value `x` of the integer type `ty` as a formula, when [`int_range`] is in use for
 /// `ty`; `None` otherwise.
 pub fn int_range_formula<T, V>(ty: &Type<T>, x: chc::Term<V>) -> Option<chc::Formula<V>>
@@ -1441,25 +1721,31 @@ where
         .reduce(chc::Formula::and)
 }
 
-/// The facts [`RefinedType::formula_with`] states of every value of `ty`, the ranges of the integers
-/// it holds through tuples, pointers, sequences and enum payloads, when [`int_range_mode`] is on;
-/// `None` when it is off.
+/// The facts of a value of `ty` in an enum's payload: those [`RefinedType::formula_with`] states of
+/// every value of `ty` when [`int_range_mode`] is on, and only those of the `char`s it holds when it
+/// is off, as [`enum_payload_facts`] states them; `None` when there are none.
 pub fn int_range_type_facts<FV>(ty: &Type<FV>, defs: &dyn EnumDefProvider) -> Option<Refinement<FV>>
 where
     FV: chc::Var,
 {
-    if int_range_mode() == IntRange::Off {
-        return None;
+    if int_range_mode() != IntRange::Off {
+        return Some(RefinedType::unrefined(ty.clone()).formula_with(Some(defs)));
     }
-    Some(RefinedType::unrefined(ty.clone()).formula_with(Some(defs)))
+    // The refinements inside `ty` are the place's own, not facts of its type.
+    let mut cx = FactsCx::new(FactsUse::Assumed, Some(defs));
+    cx.chars_only = true;
+    let facts = RefinedType::unrefined(ty.clone().strip_refinement()).facts(&mut cx);
+    (!facts.is_top()).then(|| facts.map_free_var(|v| match v {}))
 }
 
 /// Variables a quantifier binds, with their sorts.
 pub type QuantifiedVars = Vec<(chc::UserQuantifiedVarId, chc::Sort)>;
 
 /// The facts [`RefinedType::formula_with`] states of every value of `ty`, as a formula about
-/// `value`: [`int_range_type_facts`] when [`int_range_mode`] is on, and `0 <=` of the unsigned
-/// integers `ty` holds through tuples and pointers when it is off. `None` when there are none.
+/// `value`: the ranges of its integers through tuples, pointers, sequences and enum payloads when
+/// [`int_range_mode`] is on, and `0 <=` of the unsigned integers `ty` holds through tuples and
+/// pointers when it is off; and in every mode the code points of its `char`s. `None` when there are
+/// none.
 ///
 /// A binding is assumed to have these facts, so a variable that stands for a binding of a proof,
 /// such as a law's, ranges over them: the law's quantifier gets them as a premise. Their
@@ -1496,7 +1782,7 @@ where
 }
 
 /// The variable of the element facts of a sequence. They are stated only of a sequence of integers
-/// of a type with a width, so they never nest and one reserved identifier serves.
+/// of a type with a width or of `char`s, so they never nest and one reserved identifier serves.
 fn seq_elem_var() -> chc::UserQuantifiedVarId {
     chc::UserQuantifiedVarId::from_u32(0xFFFF_0000)
 }
@@ -1507,17 +1793,12 @@ pub fn seq_len_atom<V>(len: u64, seq: chc::Term<V>) -> chc::Atom<V> {
 }
 
 /// `forall i. 0 <= i < len(seq) => range(seq[i])` of a sequence whose element type `elem` is an
-/// integer type with a width whose range is in use ([`int_range`]); `None` otherwise.
+/// integer type with a width whose range is in use ([`int_range`]), or `char` in every mode
+/// ([`char_code_point_formula`]); `None` otherwise.
 pub fn seq_elem_range<T, V>(elem: &Type<T>, seq: chc::Term<V>) -> Option<chc::Formula<V>>
 where
     V: Clone,
 {
-    let (signed, width) = match elem {
-        Type::Int(width) => (true, *width),
-        Type::UInt(width) => (false, *width),
-        _ => return None,
-    };
-    int_range(signed, width)?;
     let i = chc::Term::UserQuantifiedVar(chc::Sort::int(), seq_elem_var());
     let in_bounds = chc::Formula::Atom(chc::Atom::new(
         chc::KnownPred::GREATER_THAN_OR_EQUAL.into(),
@@ -1527,10 +1808,23 @@ where
         chc::KnownPred::LESS_THAN.into(),
         vec![i.clone(), seq.clone().seq_len()],
     )));
-    let range = int_range_atoms(elem, seq.seq_nth(i))?
-        .into_iter()
-        .map(chc::Formula::Atom)
-        .reduce(chc::Formula::and)?;
+    let range = match elem {
+        Type::Char => char_code_point_formula(seq.seq_nth(i)),
+        Type::Int(_) | Type::UInt(_) => int_range_formula(elem, seq.seq_nth(i))?,
+        Type::BitVec(_)
+        | Type::Bool
+        | Type::String
+        | Type::Opaque
+        | Type::Never
+        | Type::Param(_)
+        | Type::Alias(_)
+        | Type::Pointer(_)
+        | Type::Function(_)
+        | Type::Tuple(_)
+        | Type::Array(_)
+        | Type::Seq { .. }
+        | Type::Enum(_) => return None,
+    };
     Some(chc::Formula::forall(
         vec![(seq_elem_var(), chc::Sort::int())],
         in_bounds.implies(range),
@@ -1556,6 +1850,8 @@ struct FactsCx<'a> {
     use_: FactsUse,
     defs: Option<&'a dyn EnumDefProvider>,
     enclosing: Vec<EnumType<Closed>>,
+    /// Whether only the facts of `char`s are stated, of no integer.
+    chars_only: bool,
     /// A checked enum type whose facts no finite formula states, met on the way.
     unsupported: Option<Type<Closed>>,
 }
@@ -1566,8 +1862,16 @@ impl<'a> FactsCx<'a> {
             use_,
             defs,
             enclosing: Vec::new(),
+            chars_only: false,
             unsupported: None,
         }
+    }
+
+    /// Whether the facts of the integers at the position are stated: everywhere when
+    /// [`int_range_mode`] is on, and outside enum payloads when it is off, unless only those of
+    /// `char`s are. Those of a `char` are stated everywhere.
+    fn states_int_facts(&self) -> bool {
+        !self.chars_only && (int_range_mode() != IntRange::Off || self.enclosing.is_empty())
     }
 }
 
@@ -1640,6 +1944,8 @@ where
             });
             conj(lower.flatten(), upper.flatten())
         }
+        Type::Char if !ranges => None,
+        Type::Char => Some(char_code_point_term(value)),
         Type::Tuple(tuple) => tuple
             .elems
             .iter()
@@ -1669,6 +1975,8 @@ where
 /// The values a quantifier's binder of type `ty` ranges over, as a formula about `value`: the
 /// range of an integer type in use, and the length of an array, also through tuples and pointers,
 /// so that the binder's domain is the type's, as a binding's is. `None` when the type has none.
+/// The code points of a binder's `char`s are stated by [`char_domain_formula`], which also follows
+/// enums and sequences.
 pub fn binder_domain<V>(ty: &Type<Closed>, value: chc::Term<V>) -> Option<chc::Formula<V>>
 where
     V: Clone,
@@ -1796,24 +2104,31 @@ fn enum_value<V: Clone>(
     value
 }
 
-/// The facts of the payloads of a value of the enum type `ty` when [`int_range_mode`] is on and
-/// `cx` has the definitions, for each variant whose fields have facts. Assumed:
+/// The facts of the payloads of a value of the enum type `ty` when `cx` has the definitions, for each
+/// variant whose fields have facts: all of them when [`int_range_mode`] is on, and those of the
+/// `char`s when it is off ([`FactsCx::states_int_facts`]). Assumed:
 /// `exists f. discr(v) = d => v = C(f) && facts(f)`, quantifier-free in a clause body; where the
 /// variant is the value's, `f` is its payload, and elsewhere the implication holds for any `f`.
 /// Checked: `forall f. v = C(f) => facts(f)`. Both say of the value's payload what the facts of
 /// its type say, and nothing of the other variants.
+///
+/// When the mode is off, an enum whose definition is not registered, or whose payloads hold no
+/// `char`, gets no facts ([`has_payload_facts`]), the same of a value and of a quantified variable.
 ///
 /// An enum type inside its own payload (the same type, as a recursive definition makes it) gets no
 /// facts, since a finite formula cannot follow it; nor does one nested past
 /// [`ENUM_NESTING_LIMIT`]. Its check is an error ([`type_fact_checks`]) when it holds integers with
 /// facts, so no fact is assumed that is not checked.
 fn enum_payload_facts(ty: &EnumType<Closed>, cx: &mut FactsCx) -> Refinement<Closed> {
-    let Some(defs) = cx.defs.filter(|_| int_range_mode() != IntRange::Off) else {
+    let Some(defs) = cx.defs else {
         return Refinement::top();
     };
+    let enum_ty = Type::Enum(ty.clone());
+    if int_range_mode() == IntRange::Off && !has_payload_facts(&enum_ty, defs) {
+        return Refinement::top();
+    }
     if cx.enclosing.contains(ty) || cx.enclosing.len() >= ENUM_NESTING_LIMIT {
-        let enum_ty = Type::Enum(ty.clone());
-        if cx.use_ == FactsUse::Checked && has_range_facts(&enum_ty, defs, &mut Vec::new()) {
+        if cx.use_ == FactsUse::Checked && has_payload_facts(&enum_ty, defs) {
             cx.unsupported.get_or_insert(enum_ty);
         }
         return Refinement::top();
@@ -1908,8 +2223,20 @@ fn enum_payload_var(depth: usize, field: usize) -> chc::UserQuantifiedVarId {
     chc::UserQuantifiedVarId::from_usize(0xFFFE_0000 + (depth << 8) + field)
 }
 
-/// Whether a value of `ty` has facts: an integer with a range under [`int_range_mode`] or an array
-/// of a fixed length, through tuples, pointers, sequences and enum payloads. An enum met again on the way (`visited`) is searched no
+/// Whether the payloads of the enum type `ty` have facts to state: those of [`has_range_facts`]
+/// when [`int_range_mode`] is on, and only those of a `char` when it is off.
+pub(super) fn has_payload_facts(ty: &Type<Closed>, defs: &dyn EnumDefProvider) -> bool {
+    if int_range_mode() == IntRange::Off {
+        return holds_char(ty, defs, &mut Vec::new());
+    }
+    has_range_facts(ty, defs, &mut Vec::new())
+}
+
+/// Whether a value of `ty` has facts: an integer with facts under [`int_range_mode`], a `char`, or an
+/// array of a fixed length, through tuples, pointers, sequences and enum payloads; an integer in an
+/// enum's payload has none when the mode is off ([`FactsCx::states_int_facts`]), nor does an enum
+/// whose definition is not registered ([`EnumDefProvider::has_enum_def`]). An enum met again on the
+/// way (`visited`) is searched no
 /// further, except in its arguments: what its recursive fields add over the first visit comes from
 /// them.
 pub(super) fn has_range_facts(
@@ -1919,9 +2246,16 @@ pub(super) fn has_range_facts(
 ) -> bool {
     let value = chc::Term::<RefinedTypeVar<Closed>>::var(RefinedTypeVar::Value);
     match ty {
+        // `visited` holds the enums whose payloads enclose the position.
+        Type::Int(_) | Type::UInt(_)
+            if int_range_mode() == IntRange::Off && !visited.is_empty() =>
+        {
+            false
+        }
         Type::Int(_) | Type::UInt(_) => {
             int_range_atoms(ty, value).is_some_and(|atoms| !atoms.is_empty())
         }
+        Type::Char => true,
         Type::Seq { elem, fixed_len } => {
             fixed_len.is_some() || seq_elem_range(&elem.ty, value).is_some()
         }
@@ -1934,6 +2268,9 @@ pub(super) fn has_range_facts(
             .args
             .iter()
             .any(|arg| has_range_facts(&arg.ty, defs, visited)),
+        Type::Enum(ty) if int_range_mode() == IntRange::Off && !defs.has_enum_def(&ty.symbol) => {
+            false
+        }
         Type::Enum(ty) => {
             visited.push(ty.symbol.clone());
             let found = ty.variants(defs).iter().any(|variant| {
@@ -1962,6 +2299,12 @@ pub enum Type<T> {
     /// (subtraction without overflow checks, an integer that becomes an unsigned value, and in
     /// [`IntRange::All`] the arithmetic operations).
     UInt(Option<u32>),
+    /// A `char`, modelled as its code point. Every value of it is a Unicode scalar value
+    /// ([`char_code_point_formula`]), in every [`int_range_mode`], as every value of a
+    /// [`Type::UInt`] is non-negative: no arithmetic makes a `char`, and the only cast to it is
+    /// from `u8`. The fact is assumed wherever such a value is in the environment and checked of a
+    /// value made from a logical term ([`type_fact_checks`]).
+    Char,
     BitVec(BitVecType),
     Bool,
     String,
@@ -2041,6 +2384,7 @@ where
             Type::Int(Some(width)) => allocator.text(format!("i{width}")),
             Type::UInt(None) => allocator.text("uint"),
             Type::UInt(Some(width)) => allocator.text(format!("u{width}")),
+            Type::Char => allocator.text("char"),
             Type::BitVec(ty) => ty.pretty(allocator),
             Type::Bool => allocator.text("bool"),
             Type::String => allocator.text("string"),
@@ -2166,6 +2510,11 @@ impl<T> Type<T> {
     /// The type of a Rust unsigned integer of `width` bits.
     pub fn uint_of_width(width: u32) -> Self {
         Type::UInt(Some(width))
+    }
+
+    /// The type of a Rust `char`.
+    pub fn char() -> Self {
+        Type::Char
     }
 
     pub fn bool() -> Self {
@@ -2327,7 +2676,7 @@ impl<T> Type<T> {
 
     pub fn to_sort(&self) -> chc::Sort {
         match self {
-            Type::Int(_) | Type::UInt(_) => chc::Sort::int(),
+            Type::Int(_) | Type::UInt(_) | Type::Char => chc::Sort::int(),
             Type::BitVec(ty) => chc::Sort::bit_vec(ty.width),
             Type::Bool => chc::Sort::bool(),
             // TODO: enable string reasoning
@@ -2372,6 +2721,7 @@ impl<T> Type<T> {
         match self {
             Type::Int(width) => Type::Int(width),
             Type::UInt(width) => Type::UInt(width),
+            Type::Char => Type::Char,
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
@@ -2398,6 +2748,7 @@ impl<T> Type<T> {
         match self {
             Type::Int(width) => Type::Int(width),
             Type::UInt(width) => Type::UInt(width),
+            Type::Char => Type::Char,
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
@@ -2426,6 +2777,7 @@ impl<T> Type<T> {
         match self {
             Type::Int(_)
             | Type::UInt(_)
+            | Type::Char
             | Type::BitVec(_)
             | Type::Bool
             | Type::String
@@ -2448,6 +2800,7 @@ impl<T> Type<T> {
         match self {
             Type::Int(width) => Type::Int(width),
             Type::UInt(width) => Type::UInt(width),
+            Type::Char => Type::Char,
             Type::BitVec(ty) => Type::BitVec(ty),
             Type::Bool => Type::Bool,
             Type::String => Type::String,
@@ -3008,6 +3361,7 @@ impl<FV> RefinedType<FV> {
     {
         let mut formula = self.refinement.clone();
         match &self.ty {
+            Type::UInt(_) | Type::Int(_) if !cx.states_int_facts() => {}
             Type::UInt(_) | Type::Int(_) => {
                 let atoms = int_range_atoms(&self.ty, chc::Term::var(RefinedTypeVar::Value))
                     .expect("an integer type");
@@ -3015,15 +3369,24 @@ impl<FV> RefinedType<FV> {
                     formula.push_conj(atom.into());
                 }
             }
+            Type::Char => {
+                formula.push_conj(
+                    char_code_point_formula(chc::Term::var(RefinedTypeVar::Value)).into(),
+                );
+            }
             Type::Seq { elem, fixed_len } => {
-                if let Some(len) = fixed_len {
-                    formula.push_conj(
-                        seq_len_atom(*len, chc::Term::var(RefinedTypeVar::Value)).into(),
-                    );
+                if let Some(len) = fixed_len.filter(|_| !cx.chars_only) {
+                    formula
+                        .push_conj(seq_len_atom(len, chc::Term::var(RefinedTypeVar::Value)).into());
                 }
-                if let Some(range) = seq_elem_range(&elem.ty, chc::Term::var(RefinedTypeVar::Value))
-                {
-                    formula.push_conj(range.into());
+                // Integer elements have facts only where the integers' do; a `char`'s are stated
+                // everywhere.
+                if cx.states_int_facts() || matches!(elem.ty, Type::Char) {
+                    if let Some(range) =
+                        seq_elem_range(&elem.ty, chc::Term::var(RefinedTypeVar::Value))
+                    {
+                        formula.push_conj(range.into());
+                    }
                 }
             }
             Type::Tuple(ty) => {
@@ -3201,6 +3564,7 @@ impl<FV> RefinedType<FV> {
         match &mut self.ty {
             Type::Int(_)
             | Type::UInt(_)
+            | Type::Char
             | Type::BitVec(_)
             | Type::Bool
             | Type::String
@@ -3270,6 +3634,7 @@ impl<FV> RefinedType<FV> {
             || match &self.ty {
                 Type::Int(_)
                 | Type::UInt(_)
+                | Type::Char
                 | Type::BitVec(_)
                 | Type::Bool
                 | Type::String

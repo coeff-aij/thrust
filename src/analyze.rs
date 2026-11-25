@@ -69,13 +69,13 @@ fn scalar_const_term<T>(
             rty::Type::int_of_width(v.size().bits() as u32),
             chc::Term::int(v.to_int(v.size())),
         )),
-        (
-            mir_ty::TyKind::Uint(_) | mir_ty::TyKind::Char,
-            mir::ConstValue::Scalar(Scalar::Int(v)),
-        ) => Some((
+        (mir_ty::TyKind::Uint(_), mir::ConstValue::Scalar(Scalar::Int(v))) => Some((
             rty::Type::uint_of_width(v.size().bits() as u32),
             chc::Term::int(v.to_uint(v.size())),
         )),
+        (mir_ty::TyKind::Char, mir::ConstValue::Scalar(Scalar::Int(v))) => {
+            Some((rty::Type::char(), chc::Term::int(v.to_uint(v.size()))))
+        }
         (mir_ty::TyKind::Bool, mir::ConstValue::Scalar(Scalar::Int(v))) => {
             Some((rty::Type::bool(), chc::Term::bool(v.try_to_bool().unwrap())))
         }
@@ -580,7 +580,8 @@ struct BasicBlockDef {
 /// The definitions of the enums the crate's types name: those whose datatypes the query declares
 /// ([`Analyzer::get_or_register_enum_def`]) and, under `THRUST_INT_RANGE`, every enum a type built
 /// so far names, whose definition the facts of its payloads read
-/// ([`refine::TypeBuilder::register_enum_def`]).
+/// ([`refine::TypeBuilder::register_enum_def`]). Without the option the facts of a payload, those of
+/// its `char`s, are read only of the enums registered ([`rty::EnumDefProvider::has_enum_def`]).
 #[derive(Debug, Clone, Default)]
 pub struct EnumDefs {
     defs: HashMap<DefId, rty::EnumDatatypeDef>,
@@ -619,6 +620,10 @@ impl EnumDefs {
 impl refine::EnumDefProvider for Rc<RefCell<EnumDefs>> {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> rty::EnumDatatypeDef {
         self.borrow().find_by_name(name).unwrap().clone()
+    }
+
+    fn has_enum_def(&self, name: &chc::DatatypeSymbol) -> bool {
+        self.borrow().find_by_name(name).is_some()
     }
 }
 
