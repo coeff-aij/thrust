@@ -505,7 +505,9 @@ where
             }
             acc
         }
-        Type::Seq(elem) => seq_refinements_formula(elem, value, param_terms, parts, enclosing),
+        Type::Seq { elem, .. } => {
+            seq_refinements_formula(elem, value, param_terms, parts, enclosing)
+        }
         Type::Array(array) => {
             let index = every_value_formula(&array.index, param_terms, parts, enclosing);
             let elem = every_value_formula(&array.elem, param_terms, parts, enclosing);
@@ -1549,7 +1551,7 @@ where
             let final_ = char_domain_within(&pointer.elem.ty, final_, defs, enclosing, seq_depth)?;
             Ok(conj(current, final_))
         }
-        Type::Seq(elem) => {
+        Type::Seq { elem, .. } => {
             let var = char_seq_elem_var(seq_depth);
             let k = chc::Term::UserQuantifiedVar(chc::Sort::int(), var);
             let nth = value.clone().seq_nth(k.clone());
@@ -1654,7 +1656,7 @@ fn holds_char(
             .iter()
             .any(|elem| holds_char(&elem.ty, defs, visited)),
         Type::Pointer(pointer) => holds_char(&pointer.elem.ty, defs, visited),
-        Type::Seq(elem) => holds_char(&elem.ty, defs, visited),
+        Type::Seq { elem, .. } => holds_char(&elem.ty, defs, visited),
         Type::Enum(enum_ty) if visited.contains(&enum_ty.symbol) => enum_ty
             .args
             .iter()
@@ -1768,6 +1770,11 @@ fn seq_elem_var() -> chc::UserQuantifiedVarId {
     chc::UserQuantifiedVarId::from_u32(0xFFFF_0000)
 }
 
+/// `len(seq) == len`, the length an array type fixes.
+pub fn seq_len_atom<V>(len: u64, seq: chc::Term<V>) -> chc::Atom<V> {
+    seq.seq_len().equal_to(chc::Term::int(len))
+}
+
 /// `forall i. 0 <= i < len(seq) => range(seq[i])` of a sequence whose element type `elem` is an
 /// integer type with a width whose range is in use ([`int_range`]), or `char` in every mode
 /// ([`char_code_point_formula`]); `None` otherwise.
@@ -1798,7 +1805,7 @@ where
         | Type::Function(_)
         | Type::Tuple(_)
         | Type::Array(_)
-        | Type::Seq(_)
+        | Type::Seq { .. }
         | Type::Enum(_) => return None,
     };
     Some(chc::Formula::forall(
@@ -1885,10 +1892,19 @@ where
 }
 
 /// The quantifier-free part of the facts of a value of `ty`, the ranges of the integers it holds
-/// through tuples and pointers ([`int_range_bounds`]), as a Boolean term about `value`; `None`
-/// when there are none. A logic function's definition is restricted to arguments that have these
+/// through tuples and pointers ([`int_range_bounds`]) and the length of an array
+/// ([`Type::Seq::fixed_len`]), as a Boolean term about `value`; `None` when there are none. A logic
+/// function's definition is restricted to arguments that have these
 /// (`Analyzer::checked_logic_fn_body`).
 pub fn domain_guard<V>(ty: &Type<Closed>, value: chc::Term<V>) -> Option<chc::Term<V>>
+where
+    V: Clone,
+{
+    facts_guard(ty, value, true)
+}
+
+/// [`domain_guard`] with the ranges of the integers only when `ranges` is set.
+fn facts_guard<V>(ty: &Type<Closed>, value: chc::Term<V>, ranges: bool) -> Option<chc::Term<V>>
 where
     V: Clone,
 {
@@ -1897,6 +1913,7 @@ where
         (a, b) => a.or(b),
     };
     match ty {
+        Type::Int(_) | Type::UInt(_) if !ranges => None,
         Type::Int(_) | Type::UInt(_) => {
             let bounds = int_range_bounds(ty, value)?;
             // `lower` is `x >= min` and `upper` is `x < end`.
@@ -1915,18 +1932,40 @@ where
             .elems
             .iter()
             .enumerate()
-            .map(|(index, elem)| domain_guard(&elem.ty, value.clone().tuple_proj(index)))
+            .map(|(index, elem)| facts_guard(&elem.ty, value.clone().tuple_proj(index), ranges))
             .fold(None, conj),
         Type::Pointer(pointer) => {
-            let current = domain_guard(&pointer.elem.ty, pointer.kind.deref_term(value.clone()));
+            let current = facts_guard(
+                &pointer.elem.ty,
+                pointer.kind.deref_term(value.clone()),
+                ranges,
+            );
             let final_ = pointer
                 .is_mut()
-                .then(|| domain_guard(&pointer.elem.ty, value.mut_final()))
+                .then(|| facts_guard(&pointer.elem.ty, value.mut_final(), ranges))
                 .flatten();
             conj(current, final_)
         }
+        Type::Seq {
+            fixed_len: Some(len),
+            ..
+        } => Some(value.seq_len().eq(chc::Term::int(*len))),
         _ => None,
     }
+}
+
+/// The values a quantifier's binder of type `ty` ranges over, as a formula about `value`: the
+/// range of an integer type in use, and the length of an array, also through tuples and pointers,
+/// so that the binder's domain is the type's, as a binding's is. `None` when the type has none.
+pub fn binder_domain<V>(ty: &Type<Closed>, value: chc::Term<V>) -> Option<chc::Formula<V>>
+where
+    V: Clone,
+{
+    if let Some(range) = int_range_formula(ty, value.clone()) {
+        return Some(range);
+    }
+    let guard = facts_guard(ty, value, false)?;
+    Some(chc::Formula::Atom(guard.equal_to(chc::Term::bool(true))))
 }
 
 /// A value of `ty` that has the facts of its type (`type_fact_checks`), for the value of a logic
@@ -1980,6 +2019,16 @@ fn fact_witness_within<V: Clone>(
                 defs,
                 enclosing,
             )?))
+        }
+        Type::Seq {
+            elem,
+            fixed_len: Some(len),
+        } => {
+            let elem_value = fact_witness_within::<V>(&elem.ty, None, defs, enclosing)?;
+            let empty = chc::Term::seq_empty(elem.ty.to_sort());
+            Some((0..*len).fold(empty, |seq, _| {
+                seq.seq_concat(elem_value.clone().seq_unit())
+            }))
         }
         Type::Enum(enum_ty) => enum_value(enum_ty, defs, enclosing, |field_ty, enclosing| {
             fact_witness_within(field_ty, None, defs, enclosing)
@@ -2154,10 +2203,11 @@ fn enum_payload_var(depth: usize, field: usize) -> chc::UserQuantifiedVarId {
     chc::UserQuantifiedVarId::from_usize(0xFFFE_0000 + (depth << 8) + field)
 }
 
-/// Whether a value of `ty` holds an integer with facts under [`int_range_mode`] or a `char`, through
-/// tuples, pointers, sequences and enum payloads; an integer in an enum's payload has none when the
-/// mode is off ([`FactsCx::states_int_facts`]), nor does an enum whose definition is not
-/// registered ([`EnumDefProvider::has_enum_def`]). An enum met again on the way (`visited`) is searched no
+/// Whether a value of `ty` has facts: an integer with facts under [`int_range_mode`], a `char`, or an
+/// array of a fixed length, through tuples, pointers, sequences and enum payloads; an integer in an
+/// enum's payload has none when the mode is off ([`FactsCx::states_int_facts`]), nor does an enum
+/// whose definition is not registered ([`EnumDefProvider::has_enum_def`]). An enum met again on the
+/// way (`visited`) is searched no
 /// further, except in its arguments: what its recursive fields add over the first visit comes from
 /// them.
 pub(super) fn has_range_facts(
@@ -2177,7 +2227,9 @@ pub(super) fn has_range_facts(
             int_range_atoms(ty, value).is_some_and(|atoms| !atoms.is_empty())
         }
         Type::Char => true,
-        Type::Seq(elem) => seq_elem_range(&elem.ty, value).is_some(),
+        Type::Seq { elem, fixed_len } => {
+            fixed_len.is_some() || seq_elem_range(&elem.ty, value).is_some()
+        }
         Type::Tuple(ty) => ty
             .elems
             .iter()
@@ -2240,7 +2292,12 @@ pub enum Type<T> {
     Function(FunctionType),
     Tuple(TupleType<T>),
     Array(ArrayType<T>),
-    Seq(Box<RefinedType<T>>),
+    Seq {
+        elem: Box<RefinedType<T>>,
+        /// The length every value of the type has: `N` of an array `[T; N]`, `None` of a slice, a
+        /// `Vec` or a model sequence.
+        fixed_len: Option<u64>,
+    },
     Enum(EnumType<T>),
 }
 
@@ -2310,7 +2367,7 @@ where
             Type::Function(ty) => ty.pretty(allocator),
             Type::Tuple(ty) => ty.pretty(allocator),
             Type::Array(ty) => ty.pretty(allocator),
-            Type::Seq(elem) => allocator
+            Type::Seq { elem, .. } => allocator
                 .text("Seq")
                 .append(elem.pretty(allocator).angles()),
             Type::Enum(ty) => ty.pretty(allocator),
@@ -2341,7 +2398,7 @@ impl<T> Type<T> {
                     target.ty.inherit_pointer_types(source.ty, subst);
                 }
             }
-            (Type::Seq(target), Type::Seq(source)) => {
+            (Type::Seq { elem: target, .. }, Type::Seq { elem: source, .. }) => {
                 target.ty.inherit_pointer_types(source.ty, subst);
             }
             (Type::Array(target), Type::Array(source)) => {
@@ -2377,7 +2434,7 @@ impl<T> Type<T> {
                     target.ty.inherit_function_types(&source.ty);
                 }
             }
-            (Type::Seq(target), Type::Seq(source)) => {
+            (Type::Seq { elem: target, .. }, Type::Seq { elem: source, .. }) => {
                 target.ty.inherit_function_types(&source.ty);
             }
             (Type::Array(target), Type::Array(source)) => {
@@ -2615,7 +2672,7 @@ impl<T> Type<T> {
                 let elem_sorts = ty.elems.iter().map(|ty| ty.ty.to_sort()).collect();
                 chc::Sort::tuple(elem_sorts)
             }
-            Type::Seq(elem) => chc::Sort::seq(elem.ty.to_sort()),
+            Type::Seq { elem, .. } => chc::Sort::seq(elem.ty.to_sort()),
             Type::Array(ty) => {
                 let index_sort = ty.index.ty.to_sort();
                 let elem_sort = ty.elem.ty.to_sort();
@@ -2647,7 +2704,10 @@ impl<T> Type<T> {
             Type::Function(ty) => Type::Function(ty),
             Type::Tuple(ty) => Type::Tuple(ty.subst_var(f)),
             Type::Array(ty) => Type::Array(ty.subst_var(f)),
-            Type::Seq(elem) => Type::Seq(Box::new(elem.subst_var(f))),
+            Type::Seq { elem, fixed_len } => Type::Seq {
+                elem: Box::new(elem.subst_var(f)),
+                fixed_len,
+            },
             Type::Enum(ty) => Type::Enum(ty.subst_var(f)),
         }
     }
@@ -2671,7 +2731,10 @@ impl<T> Type<T> {
             Type::Function(ty) => Type::Function(ty),
             Type::Tuple(ty) => Type::Tuple(ty.map_var(f)),
             Type::Array(ty) => Type::Array(ty.map_var(f)),
-            Type::Seq(elem) => Type::Seq(Box::new(elem.map_var(f))),
+            Type::Seq { elem, fixed_len } => Type::Seq {
+                elem: Box::new(elem.map_var(f)),
+                fixed_len,
+            },
             Type::Enum(ty) => Type::Enum(ty.map_var(f)),
         }
     }
@@ -2699,7 +2762,7 @@ impl<T> Type<T> {
             }
             Type::Tuple(ty) => ty.elems.iter().any(RefinedType::has_pred_var),
             Type::Array(ty) => ty.index.has_pred_var() || ty.elem.has_pred_var(),
-            Type::Seq(elem) => elem.has_pred_var(),
+            Type::Seq { elem, .. } => elem.has_pred_var(),
             Type::Enum(ty) => ty.args.iter().any(RefinedType::has_pred_var),
         }
     }
@@ -2720,7 +2783,10 @@ impl<T> Type<T> {
             Type::Function(ty) => Type::Function(ty),
             Type::Tuple(ty) => Type::Tuple(ty.strip_refinement()),
             Type::Array(ty) => Type::Array(ty.strip_refinement()),
-            Type::Seq(elem) => Type::Seq(Box::new(RefinedType::unrefined(elem.strip_refinement()))),
+            Type::Seq { elem, fixed_len } => Type::Seq {
+                elem: Box::new(RefinedType::unrefined(elem.strip_refinement())),
+                fixed_len,
+            },
             Type::Enum(ty) => Type::Enum(ty.strip_refinement()),
         }
     }
@@ -3279,11 +3345,20 @@ impl<FV> RefinedType<FV> {
                     char_code_point_formula(chc::Term::var(RefinedTypeVar::Value)).into(),
                 );
             }
-            Type::Seq(elem) if !cx.states_int_facts() && !matches!(elem.ty, Type::Char) => {}
-            Type::Seq(elem) => {
-                if let Some(range) = seq_elem_range(&elem.ty, chc::Term::var(RefinedTypeVar::Value))
-                {
-                    formula.push_conj(range.into());
+            Type::Seq { elem, fixed_len } => {
+                if let Some(len) = fixed_len {
+                    formula.push_conj(
+                        seq_len_atom(*len, chc::Term::var(RefinedTypeVar::Value)).into(),
+                    );
+                }
+                // Integer elements have facts only where the integers' do; a `char`'s are stated
+                // everywhere.
+                if cx.states_int_facts() || matches!(elem.ty, Type::Char) {
+                    if let Some(range) =
+                        seq_elem_range(&elem.ty, chc::Term::var(RefinedTypeVar::Value))
+                    {
+                        formula.push_conj(range.into());
+                    }
                 }
             }
             Type::Tuple(ty) => {
@@ -3497,7 +3572,7 @@ impl<FV> RefinedType<FV> {
             }
             Type::Tuple(ty) => ty.subst_ty_params(subst),
             Type::Array(ty) => ty.subst_ty_params(subst),
-            Type::Seq(elem) => elem.subst_ty_params(subst),
+            Type::Seq { elem, .. } => elem.subst_ty_params(subst),
             Type::Enum(ty) => ty.subst_ty_params(subst),
         }
     }
@@ -3518,7 +3593,7 @@ impl<FV> RefinedType<FV> {
                 Type::Pointer(ty) => ty.elem.has_refinement(),
                 Type::Tuple(ty) => ty.elems.iter().any(RefinedType::has_refinement),
                 Type::Array(ty) => ty.index.has_refinement() || ty.elem.has_refinement(),
-                Type::Seq(elem) => elem.has_refinement(),
+                Type::Seq { elem, .. } => elem.has_refinement(),
                 Type::Enum(ty) => ty.args.iter().any(RefinedType::has_refinement),
                 _ => false,
             }
@@ -3545,7 +3620,7 @@ impl<FV> RefinedType<FV> {
                 }
                 Type::Tuple(ty) => ty.elems.iter().any(|elem| elem.any_pred(f)),
                 Type::Array(ty) => ty.index.any_pred(f) || ty.elem.any_pred(f),
-                Type::Seq(elem) => elem.any_pred(f),
+                Type::Seq { elem, .. } => elem.any_pred(f),
                 Type::Enum(ty) => ty.args.iter().any(|arg| arg.any_pred(f)),
             }
     }

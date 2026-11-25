@@ -4,7 +4,7 @@
 
 // A type parameter instantiated with a trait object is rejected: the callee's contract and the
 // laws of its bounds would be assumed of `dyn Shape`.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape {
     #[thrust_macros::ensures(result >= 3)]
@@ -13,7 +13,7 @@ trait Shape {
 
 struct Tri;
 
-impl thrust_models::Model for Tri {
+impl Model for Tri {
     type Ty = ();
 }
 

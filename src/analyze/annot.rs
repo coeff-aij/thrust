@@ -42,9 +42,14 @@ thrust_paths! {
     logic_path = "logic";
     lemma_path = "lemma";
     lemma_rec_path = "lemma_rec";
+    lemma_variant_wrapper_path = "lemma_variant_wrapper";
+    lemma_variant_obligation_path = "lemma_variant_obligation";
+    lemma_variant_companion_path = "lemma_variant_companion";
     derived_path = "derived";
     law_path = "law";
     ignored_path = "ignored";
+    /// `#[thrust::extracted_block]` on the function a `block_contract!` block is extracted into.
+    extracted_block_path = "extracted_block";
     formula_fn_path = "formula_fn";
     variant_path_path = "variant_path";
     requires_path_path = "requires_path";
@@ -115,8 +120,8 @@ thrust_paths! {
     for_loop_produced_push_path = "for_loop_produced_push";
     assert_marker_path = "assert_marker";
     assume_marker_path = "assume_marker";
-    block_requires_marker_path = "block_requires_marker";
-    block_ensures_marker_path = "block_ensures_marker";
+    block_region_open_marker_path = "block_region_open_marker";
+    block_region_close_marker_path = "block_region_close_marker";
     choose_marker_path = "choose_marker";
     witness_path = "witness";
     ghost_marker_path = "ghost_marker";

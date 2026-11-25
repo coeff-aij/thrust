@@ -7,7 +7,7 @@
 // `it.0` and `it.1` -- the entry and final sequences `slice::IterMut` was made from -- are
 // `v`'s own entry and final values, and what the loop writes through the iterator is what `!v`
 // ends up holding.
-
+use thrust_models::{FnParam, Model};
 use std::marker::PhantomData;
 
 use thrust_models::forall;
@@ -20,11 +20,11 @@ struct IndexVec<I, T> {
     _marker: PhantomData<fn(&I)>,
 }
 
-impl<I, T> thrust_models::Model for IndexVec<I, T>
+impl<I, T> Model for IndexVec<I, T>
 where
-    T: thrust_models::Model,
+    T: Model,
 {
-    type Ty = <[T] as thrust_models::Model>::Ty;
+    type Ty = <[T] as Model>::Ty;
 }
 
 #[thrust_macros::context]
@@ -37,7 +37,7 @@ fn clear(v: &mut IndexVec<Idx, i64>) {
     let mut it = v.raw.iter_mut();
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: core::slice::IterMut<'_, i64>, v: thrust_models::FnParam<&mut IndexVec<Idx, i64>>|
+            |it: core::slice::IterMut<'_, i64>, v: FnParam<&mut IndexVec<Idx, i64>>|
                 it.0 == *v.at_entry()
                     && it.1 == !v.at_entry()
                     && it.1.len() == it.0.len()

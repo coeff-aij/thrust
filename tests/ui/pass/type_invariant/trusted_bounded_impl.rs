@@ -1,11 +1,11 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off -Aunused
-
+use thrust_models::Model;
 // A trusted method of a bounded impl returns `Even`: its contract promises `Even`'s invariant at
 // every instance, as it does outside the impl, whether or not the signature mentions the impl's
 // type parameter elsewhere.
 struct Even(i64);
-impl thrust_models::Model for Even {
+impl Model for Even {
     type Ty = Self;
 }
 #[thrust_macros::context]

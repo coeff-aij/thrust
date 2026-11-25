@@ -5,7 +5,7 @@
 // An ADT-typed field of a `&mut` parameter's entry state survives `at_entry()`: it can
 // be compared whole against the current local, and projected into for the concrete
 // values the loop body needs.
-
+use thrust_models::{FnParam, Model};
 use thrust_models::model::{Int, Seq};
 use thrust_models::Ghost;
 
@@ -15,7 +15,7 @@ struct Bounds {
     hi: i64,
 }
 
-impl thrust_models::Model for Bounds {
+impl Model for Bounds {
     type Ty = Bounds;
 }
 
@@ -24,7 +24,7 @@ struct Walk {
     seen: Ghost<Seq<Int>>,
 }
 
-impl thrust_models::Model for Walk {
+impl Model for Walk {
     type Ty = (Bounds, Seq<Int>);
 }
 
@@ -35,7 +35,7 @@ fn walk_upto(w: &mut Walk, n: i64) {
     let mut i = 0;
     while i < n {
         thrust_macros::invariant!(
-            |ww: &mut Walk, w: thrust_models::FnParam<&mut Walk>, i: i64, n: i64|
+            |ww: &mut Walk, w: FnParam<&mut Walk>, i: i64, n: i64|
             0 <= i
                 && i <= n
                 && (*ww).1.len() == i

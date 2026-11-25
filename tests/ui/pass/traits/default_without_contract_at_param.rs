@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // `sides` has no contract, so a call at `T` takes no type from the default body, which `Sq`
 // overrides: it accepts any argument and says nothing of the result.
 trait Shape {
@@ -12,7 +12,7 @@ trait Shape {
 
 struct Sq;
 
-impl thrust_models::Model for Sq {
+impl Model for Sq {
     type Ty = ();
 }
 

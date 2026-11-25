@@ -4,7 +4,7 @@
 
 // `pre!` names the contract of a function at the instance an extern spec covers: at fixed type
 // arguments (`cmp::max::<u64>`) and at some fixed and some free (`Option::<i32>::zip::<u8>`).
-
+use thrust_models::Model;
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(v1 != 5)]
 #[thrust_macros::ensures(result == v1 || result == v2)]
@@ -15,7 +15,7 @@ fn _extern_spec_max_word(v1: u64, v2: u64) -> u64 {
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(a != None)]
 #[thrust_macros::ensures(true)]
-fn _extern_spec_zip_byte<T: thrust_models::Model>(
+fn _extern_spec_zip_byte<T: Model>(
     a: Option<T>,
     b: Option<u8>,
 ) -> Option<(T, u8)> {

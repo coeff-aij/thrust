@@ -4,7 +4,7 @@
 
 // A call inside `next` concludes `produces` of an item `next` never yields: the inferred relation
 // includes it. Accepted, as `client_requires`.
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait Iter {
     type Item;
@@ -12,7 +12,7 @@ trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: Self::Item) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
 }
 
@@ -22,7 +22,7 @@ struct Range {
     end: isize,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 

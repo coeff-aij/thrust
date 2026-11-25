@@ -4,7 +4,7 @@
 
 // A contract about the receiver is rejected at a call through `dyn`: the trait object's model is
 // single-valued, so `*self != !self` would be false there and the code after the call vacuous.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Tick {
     #[thrust_macros::ensures(result >= 1 && *self != !self)]
@@ -16,7 +16,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

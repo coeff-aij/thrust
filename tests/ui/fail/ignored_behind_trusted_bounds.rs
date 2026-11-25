@@ -4,10 +4,10 @@
 // `refl`'s trusted contract holds only where `T`'s `eq` meets the trait's spec. At `S`, whose `eq`
 // is ignored and returns `false`, `main`'s assertion fails, so the bounds of a trusted instance
 // that verified code runs must not select an ignored impl method.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -21,7 +21,7 @@ impl PartialEq for S {
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == true)]
-fn refl<T: PartialEq + thrust_models::Model>(a: &T) -> bool {
+fn refl<T: PartialEq + Model>(a: &T) -> bool {
     a == a
 }
 

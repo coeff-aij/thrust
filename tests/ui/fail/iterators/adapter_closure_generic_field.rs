@@ -4,7 +4,7 @@
 // in a field, but `main` runs `g` at `Q = Wr<P>`, whose closure `inv` states no `pre!` of. The
 // closure's precondition is inferred, so `g` is analyzed at that instance, where the field of
 // type `Q` holds a second value of the closure type, and the call stops.
-
+use thrust_models::{forall, Model, model::{Closure, Seq}};
 use thrust_models::model::Int;
 
 pub struct Keep2<P, Q> {
@@ -14,14 +14,14 @@ pub struct Keep2<P, Q> {
     other: Q,
 }
 
-impl<P, Q: thrust_models::Model> thrust_models::Model for Keep2<P, Q> {
-    type Ty = (i64, i64, thrust_models::model::Closure<P>, <Q as thrust_models::Model>::Ty);
+impl<P, Q: Model> Model for Keep2<P, Q> {
+    type Ty = (i64, i64, Closure<P>, <Q as Model>::Ty);
 }
 
 pub struct Wr<F>(F);
 
-impl<F> thrust_models::Model for Wr<F> {
-    type Ty = thrust_models::model::Closure<F>;
+impl<F> Model for Wr<F> {
+    type Ty = Closure<F>;
 }
 
 pub trait Call {
@@ -36,7 +36,7 @@ impl<F: Fn(&i64) -> bool> Call for Wr<F> {
     }
 }
 
-impl<P: Fn(&i64) -> bool, Q: Call + thrust_models::Model> Iterator for Keep2<P, Q> {
+impl<P: Fn(&i64) -> bool, Q: Call + Model> Iterator for Keep2<P, Q> {
     type Item = i64;
 
     fn next(&mut self) -> Option<i64> {
@@ -47,11 +47,11 @@ impl<P: Fn(&i64) -> bool, Q: Call + thrust_models::Model> Iterator for Keep2<P, 
 }
 
 #[thrust_macros::context]
-impl<P: Fn(&i64) -> bool, Q: Call + thrust_models::Model> IteratorSpec for Keep2<P, Q> {
+impl<P: Fn(&i64) -> bool, Q: Call + Model> IteratorSpec for Keep2<P, Q> {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         self.0 <= self.1
-            && thrust_models::forall(|x: Int| !(self.0 <= x && x < self.1) || thrust_macros::pre!(self.2(&x)))
+            && forall(|x: Int| !(self.0 <= x && x < self.1) || thrust_macros::pre!(self.2(&x)))
     }
 
     #[thrust_macros::predicate]
@@ -68,9 +68,9 @@ impl<P: Fn(&i64) -> bool, Q: Call + thrust_models::Model> IteratorSpec for Keep2
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -78,10 +78,10 @@ impl<P: Fn(&i64) -> bool, Q: Call + thrust_models::Model> IteratorSpec for Keep2
 
 #[thrust_macros::requires(
     k.0 <= k.1
-        && thrust_models::forall(|x: Int| !(k.0 <= x && x < k.1) || thrust_macros::pre!(k.2(&x)))
+        && forall(|x: Int| !(k.0 <= x && x < k.1) || thrust_macros::pre!(k.2(&x)))
 )]
 #[thrust_macros::ensures(true)]
-fn g<P: Fn(&i64) -> bool, Q: Call + thrust_models::Model>(k: Keep2<P, Q>) {
+fn g<P: Fn(&i64) -> bool, Q: Call + Model>(k: Keep2<P, Q>) {
     let mut k = k;
     let _ = k.next(); //~ ERROR: where Thrust cannot follow it
 }

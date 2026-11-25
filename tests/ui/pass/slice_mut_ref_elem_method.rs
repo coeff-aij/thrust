@@ -5,7 +5,7 @@
 // A method called on a `&mut` held in a slice or an array: `s[i].set(v)` reborrows the referent
 // through `IndexMut::index_mut`, so the write reaches the element's referent, and `s[i].get()`
 // reads it.
-
+use thrust_models::Model;
 trait Cell {
     fn set(&mut self, v: i64);
     fn get(&self) -> i64;
@@ -25,7 +25,7 @@ struct Counter {
     n: i64,
 }
 
-impl thrust_models::Model for Counter {
+impl Model for Counter {
     type Ty = Self;
 }
 

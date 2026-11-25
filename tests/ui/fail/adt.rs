@@ -1,12 +1,12 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::Model;
 pub enum X {
     A(i64),
     B(bool),
 }
 
-impl thrust_models::Model for X {
+impl Model for X {
     type Ty = Self;
 }
 

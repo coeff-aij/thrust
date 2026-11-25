@@ -1,15 +1,15 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::model::Mut;
 #[allow(unused_variables)]
 #[thrust::formula_fn]
-fn _thrust_requires_incr(m: thrust_models::model::Mut<i64>, x: i64) -> bool {
+fn _thrust_requires_incr(m: Mut<i64>, x: i64) -> bool {
     true
 }
 
 #[allow(unused_variables)]
 #[thrust::formula_fn]
-fn _thrust_ensures_incr(result: (), m: thrust_models::model::Mut<i64>, x: i64) -> bool {
+fn _thrust_ensures_incr(result: (), m: Mut<i64>, x: i64) -> bool {
     !m == *m + x
 }
 

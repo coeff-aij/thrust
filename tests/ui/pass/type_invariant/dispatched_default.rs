@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // `g` calls `take` at `T`; at `S` that runs `Tr`'s default body at `U := C`, analyzed there, which calls
 // `C::bump` on the field of a `W<C>`. `W<C>`'s own invariant states the field's, so the contract
 // at `U := C` requires it (without it, `fail/type_invariant/dispatched_default.rs`).
@@ -13,7 +13,7 @@ trait Counter {
 struct C {
     n: u32,
 }
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 #[thrust_macros::context]
@@ -29,7 +29,7 @@ impl Counter for C {
     }
 }
 struct W<U>(U);
-impl<U: thrust_models::Model> thrust_models::Model for W<U> {
+impl<U: Model> Model for W<U> {
     type Ty = U::Ty;
 }
 #[thrust_macros::context]
@@ -41,7 +41,7 @@ impl Invariant for W<C> {
 }
 
 struct S;
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = ();
 }
 #[thrust_macros::context]
