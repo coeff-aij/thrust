@@ -60,6 +60,15 @@ fn resolve<'tcx>(
     }
 }
 
+/// Whether `def_id` is an item of Thrust's own (`#[thrust::def::..]`: a marker call or a function
+/// of the specification language), which Thrust reads in place and which resolves to no method.
+fn is_thrust_item(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
+    tcx.get_all_attrs(def_id).iter().any(|attr| {
+        let path = attr.path();
+        path.len() > 2 && path[0].as_str() == "thrust" && path[1].as_str() == "def"
+    })
+}
+
 /// The calls of the blocks `blocks` of `body`, whose function types `instantiate` brings into the
 /// host's generics, and the closures those blocks create.
 fn calls_of<'tcx>(
@@ -91,7 +100,7 @@ fn calls_of<'tcx>(
         let mir_ty::TyKind::FnDef(def_id, args) = fn_ty.kind() else {
             continue;
         };
-        if is_marker(*def_id) {
+        if is_marker(*def_id) || is_thrust_item(tcx, *def_id) {
             continue;
         }
         calls.push(Call {
