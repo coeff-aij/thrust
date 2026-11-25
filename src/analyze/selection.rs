@@ -95,9 +95,8 @@ impl ItemPath {
     }
 }
 
-/// The enclosing function of `name`, the name of a function that `block_contract_fn!` or
-/// `block_contract_inline!` hoists next to its host: `__block_contract_<n>_of_<host>` (the macros'
-/// `fresh_hoisted_name`).
+/// The enclosing function of `name`, the name of a function that `block_contract!` hoists next to
+/// its host: `__block_contract_<n>_of_<host>` (the macro's `fresh_hoisted_name`).
 fn host_of_extracted_block(name: Symbol) -> Option<Symbol> {
     let rest = name.as_str().strip_prefix("__block_contract_")?;
     let after_number = rest.trim_start_matches(|c: char| c.is_ascii_digit());

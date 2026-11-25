@@ -104,8 +104,6 @@ annotated_defs! {
     witness => witness_path;
     assert_marker => assert_marker_path;
     assume_marker => assume_marker_path;
-    block_requires_marker => block_requires_marker_path;
-    block_ensures_marker => block_ensures_marker_path;
     block_region_open_marker => block_region_open_marker_path;
     block_region_close_marker => block_region_close_marker_path;
     fn_param_wrapper => fn_param_wrapper_path;

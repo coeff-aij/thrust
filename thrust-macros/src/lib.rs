@@ -3,7 +3,6 @@ use proc_macro2::{TokenStream as TokenStream2, TokenTree as TokenTree2};
 
 mod apit;
 mod block_contract;
-mod block_contract_fn;
 mod closure;
 mod context;
 mod entry_value;
@@ -185,88 +184,26 @@ pub fn assume(input: TokenStream) -> TokenStream {
     invariant::expand(input, invariant::Marker::Assume)
 }
 
-/// A contract on a braced block, as ACSL's statement contracts and Why3's abstract blocks: the
-/// block is checked once from `requires` against `ensures`, and the code after it reads only the
-/// contract, as it reads a call to a function with a written contract:
+/// A contract on a block, written as the function the block would be extracted into. The body
+/// runs where it is written:
 ///
 /// ```ignore
 /// let n = thrust_macros::block_contract!(
-///     requires(|i: usize, v: &Vec<i64>| i < v.len()),
-///     ensures(|v: &Vec<i64>, result: i64| result == v[0]),
-///     { v[i] = 0; v[0] }
-/// );
-/// ```
-///
-/// Each clause takes a closure as for [`proof_assert`]; `ensures` names the block's value
-/// `result`. It runs nothing but the block.
-#[proc_macro]
-pub fn block_contract(input: TokenStream) -> TokenStream {
-    block_contract::expand(input, false)
-}
-
-/// A contract on a block written as the function the block would be extracted into (temporary
-/// name, until `block_contract!` is replaced by it):
-///
-/// ```ignore
-/// thrust_macros::block_contract_fn!(
 ///     |v: &mut Vec<i64>, i: usize| -> i64
 ///     requires(i < (*v).len()),
 ///     ensures(result == (*v)[i]),
 ///     { v[i] }
-/// )
+/// );
 /// ```
 ///
-/// It expands into a function with that signature and contract, and a call of it at the block
-/// passing the same-named outer variables (`&mut v` for a `&mut` parameter, `&x` for a `&`
-/// parameter). The body can name only its parameters, and `return` and `?` leave the block, as in
-/// any function; an outer loop or function is exited through a `Result` or `ControlFlow` result
-/// handled at the call. See [`mod@block_contract_fn`].
+/// The block is verified as if it were extracted into a function with the written signature and
+/// contract, and its parameters have exactly the types of the outer variables of their names. A
+/// parameter written `mut` may be changed by the body, and `ensures` names its final value as `x`
+/// and its entry value as `old!(x)`; any other parameter keeps its value. `return`, `?` and a
+/// `break` that leave the block are errors. See [`mod@block_contract`].
 #[proc_macro]
-pub fn block_contract_fn(input: TokenStream) -> TokenStream {
-    block_contract_fn::expand(input)
-}
-
-/// `block_contract_inline!` takes the notation of [`block_contract_fn!`] and runs the body in
-/// place. The block is verified as if it were extracted into the function of the written
-/// signature and contract, and its parameters have exactly the types of the outer variables. A
-/// parameter written `mut` may be changed by the body, and `ensures` names its final value as
-/// `x` and its entry value as `old!(x)`; any other parameter keeps its value. `return`, `?` and
-/// a `break` that leave the block are errors. See [`mod@block_contract_fn`].
-#[proc_macro]
-pub fn block_contract_inline(input: TokenStream) -> TokenStream {
-    block_contract_fn::expand_inline(input)
-}
-
-/// Context-carrying counterpart of `block_contract!` (see [`_invariant_with_context`]).
-#[proc_macro]
-pub fn _block_contract_with_context(input: TokenStream) -> TokenStream {
-    block_contract::expand(input, true)
-}
-
-/// The opening marker form `block_contract!` expands into; not written by hand.
-#[doc(hidden)]
-#[proc_macro]
-pub fn block_requires(input: TokenStream) -> TokenStream {
-    invariant::expand(input, invariant::Marker::BlockRequires)
-}
-
-/// The closing marker form `block_contract!` expands into; not written by hand.
-#[doc(hidden)]
-#[proc_macro]
-pub fn block_ensures(input: TokenStream) -> TokenStream {
-    invariant::expand(input, invariant::Marker::BlockEnsures)
-}
-
-/// Context-carrying counterpart of `block_requires!` (see [`_invariant_with_context`]).
-#[proc_macro]
-pub fn _block_requires_with_context(input: TokenStream) -> TokenStream {
-    invariant::expand_with_context(input, invariant::Marker::BlockRequires)
-}
-
-/// Context-carrying counterpart of `block_ensures!` (see [`_invariant_with_context`]).
-#[proc_macro]
-pub fn _block_ensures_with_context(input: TokenStream) -> TokenStream {
-    invariant::expand_with_context(input, invariant::Marker::BlockEnsures)
+pub fn block_contract(input: TokenStream) -> TokenStream {
+    block_contract::expand(input)
 }
 
 /// Context-carrying counterpart of `proof_assert!` (see [`_invariant_with_context`]).

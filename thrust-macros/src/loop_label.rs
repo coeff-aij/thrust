@@ -249,42 +249,9 @@ impl<F: FnMut(&mut syn::Macro)> VisitMut for LabelReach<'_, F> {
     fn visit_item_mut(&mut self, _: &mut syn::Item) {}
 
     fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
-        if crate::block_contract::is_block_contract(&mac.path) {
-            self.visit_block_contract(mac);
-            return;
-        }
         if is_formula_macro(&mac.path) {
             (self.on_macro)(mac);
         }
-    }
-}
-
-impl<F: FnMut(&mut syn::Macro)> LabelReach<'_, F> {
-    /// Visits a `block_contract!`'s two formulas, each as the marker form it expands into, and
-    /// the formula macros of its block, which a reference to the label reaches as it reaches
-    /// any code of the body. A formula that `on_macro` turns into an error replaces the form.
-    /// A form that does not parse is left to `block_contract!`, which reports the error.
-    fn visit_block_contract(&mut self, mac: &mut syn::Macro) {
-        let Ok(mut contract) =
-            syn::parse2::<crate::block_contract::BlockContract>(mac.tokens.clone())
-        else {
-            return;
-        };
-        let clauses = [
-            (&mut contract.requires, quote::quote!(block_requires)),
-            (&mut contract.ensures, quote::quote!(block_ensures)),
-        ];
-        for (clause, marker) in clauses {
-            let mut formula: syn::Macro = syn::parse_quote!(#marker!(#clause));
-            (self.on_macro)(&mut formula);
-            if !is_formula_macro(&formula.path) {
-                *mac = formula;
-                return;
-            }
-            *clause = formula.tokens;
-        }
-        self.visit_block_mut(&mut contract.body);
-        mac.tokens = contract.to_arguments();
     }
 }
 

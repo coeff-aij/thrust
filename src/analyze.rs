@@ -28,6 +28,7 @@ pub(crate) mod annot;
 mod annot_fn;
 mod basic_block;
 mod block_contract;
+mod block_region;
 mod closure_hist_inv;
 mod crate_;
 mod derive;
@@ -35,7 +36,6 @@ pub(crate) mod derived_pred;
 mod did_cache;
 mod extern_spec;
 mod fn_mut_reuse;
-mod inline_block_contract;
 mod invariant_args;
 mod lemma;
 mod local_def;
@@ -115,7 +115,7 @@ pub fn mir_borrowck_skip_formula_fn(
         return Ok(tcx.arena.alloc(dummy_result));
     }
 
-    analyze::inline_block_contract::check_regions_use_only_parameters(tcx, local_def_id);
+    analyze::block_contract::check_regions_use_only_parameters(tcx, local_def_id);
     (rustc_interface::DEFAULT_QUERY_PROVIDERS
         .queries
         .mir_borrowck)(tcx, local_def_id)

@@ -16,8 +16,8 @@
 //! in-scope type parameter (and for `Self` when used), since each injected marker call
 //! instantiates a `Model`-bounded formula function with the host's own generics.
 //!
-//! A `thrust_macros::block_contract_fn!(...)` in the body is hoisted into a sibling function with the
-//! host's generics, where clause and place in its impl (see [`mod@crate::block_contract_fn`]).
+//! A `thrust_macros::block_contract!(...)` in the body is hoisted into a sibling function with the
+//! host's generics, where clause and place in its impl (see [`mod@crate::block_contract`]).
 //!
 //! On an `impl`/`trait`, each method is stamped with the enclosing header — which is what
 //! method-level `requires`/`ensures` read to recover the outer generics — and with this
@@ -36,7 +36,7 @@ use syn::{
     Signature,
 };
 
-use crate::block_contract_fn::HoistHost;
+use crate::block_contract::HoistHost;
 use crate::{fn_outer_item::FnOuterItem, spec::FnItemWithSignature};
 
 pub fn expand(item: TokenStream) -> TokenStream {
@@ -331,10 +331,10 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
     }
     let hoisted = std::mem::take(&mut injector.hoisted);
     if let Some(item_span) = local_item {
-        if hoisted.iter().any(|(_, contract)| contract.runs_in_place()) {
+        if !hoisted.is_empty() {
             let error = syn::Error::new(
                 item_span,
-                "a function with a `block_contract_inline!` block has an item statement (a nested \
+                "a function with a `block_contract!` block has an item statement (a nested \
                  `fn`, `const`, `static`, `use`, `struct`, `enum`, `trait`, `impl`, `mod` or \
                  `macro_rules!`): the block is verified as a function next to its host, which \
                  does not see local items, so a name could mean another item there. Move the item \
@@ -425,12 +425,12 @@ struct ContextInjector<'a> {
     sig: &'a Signature,
     outer: Option<&'a FnOuterItem>,
     injected: bool,
-    /// Where the `block_contract_fn!`s of the body are hoisted to, or `None` where they stay
+    /// Where the `block_contract!`s of the body are hoisted to, or `None` where they stay
     /// nested at their block.
     hoist: Option<HoistHost<'a>>,
     /// The blocks hoisted out of the body, with the names of their functions, to emit beside
     /// the host.
-    hoisted: Vec<(syn::Ident, crate::block_contract_fn::BlockContractFn)>,
+    hoisted: Vec<(syn::Ident, crate::block_contract::BlockContract)>,
 }
 
 impl ContextInjector<'_> {
@@ -449,16 +449,18 @@ impl ContextInjector<'_> {
 }
 
 impl ContextInjector<'_> {
-    /// The call that replaces `mac`, a `block_contract_fn!` hoisted out of the body; `None` for
-    /// any other macro, or when the block stays nested (and standalone expansion reports a form
-    /// that does not parse).
-    fn hoist_block_contract_fn(&mut self, mac: &syn::Macro) -> Option<TokenStream2> {
+    /// The block that replaces `mac`, a `block_contract!` whose function is hoisted out of the
+    /// body; `None` for any other macro, or when the block stays nested (and standalone
+    /// expansion reports a form that does not parse).
+    fn hoist_block_contract(&mut self, mac: &syn::Macro) -> Option<TokenStream2> {
         let host = self.hoist.as_ref()?;
-        let mode = crate::block_contract_fn::mode_of(&mac.path)?;
+        if !crate::block_contract::is_block_contract(&mac.path) {
+            return None;
+        }
         let contract =
-            crate::block_contract_fn::BlockContractFn::parse_for(mac.tokens.clone(), mode).ok()?;
-        let name = crate::block_contract_fn::fresh_hoisted_name(host.name);
-        let call = contract.hoisted_call(&name, host);
+            crate::block_contract::BlockContract::parse_tokens(mac.tokens.clone()).ok()?;
+        let name = crate::block_contract::fresh_hoisted_name(host.name);
+        let call = contract.hoisted_block(&name, host);
         self.hoisted.push((name, contract));
         // the host's where clause gets the `Model` predicates the hoisted function needs
         self.injected = true;
@@ -466,25 +468,14 @@ impl ContextInjector<'_> {
     }
 }
 
-impl ContextInjector<'_> {
-    /// Whether the block hoisted last keeps its body where it is written, which then gets the
-    /// context as the rest of the host does.
-    fn last_hoisted_runs_in_place(&self) -> bool {
-        self.hoisted
-            .last()
-            .is_some_and(|(_, contract)| contract.runs_in_place())
-    }
-}
-
 impl VisitMut for ContextInjector<'_> {
     fn visit_stmt_mut(&mut self, stmt: &mut syn::Stmt) {
         if let syn::Stmt::Macro(stmt_macro) = stmt {
-            if let Some(call) = self.hoist_block_contract_fn(&stmt_macro.mac) {
-                let call: syn::Expr = syn::parse_quote!(#call);
-                *stmt = syn::Stmt::Expr(call, stmt_macro.semi_token);
-                if self.last_hoisted_runs_in_place() {
-                    syn::visit_mut::visit_stmt_mut(self, stmt);
-                }
+            if let Some(block) = self.hoist_block_contract(&stmt_macro.mac) {
+                let block: syn::Expr = syn::parse_quote!(#block);
+                *stmt = syn::Stmt::Expr(block, stmt_macro.semi_token);
+                // the body stays where it is written, which gets the context as the host does
+                syn::visit_mut::visit_stmt_mut(self, stmt);
                 return;
             }
         }
@@ -493,11 +484,9 @@ impl VisitMut for ContextInjector<'_> {
 
     fn visit_expr_mut(&mut self, expr: &mut syn::Expr) {
         if let syn::Expr::Macro(expr_macro) = expr {
-            if let Some(call) = self.hoist_block_contract_fn(&expr_macro.mac) {
-                *expr = syn::parse_quote!(#call);
-                if self.last_hoisted_runs_in_place() {
-                    syn::visit_mut::visit_expr_mut(self, expr);
-                }
+            if let Some(block) = self.hoist_block_contract(&expr_macro.mac) {
+                *expr = syn::parse_quote!(#block);
+                syn::visit_mut::visit_expr_mut(self, expr);
                 return;
             }
         }
@@ -511,10 +500,6 @@ impl VisitMut for ContextInjector<'_> {
     }
 
     fn visit_macro_mut(&mut self, mac: &mut syn::Macro) {
-        if crate::block_contract::is_block_contract(&mac.path) {
-            self.inject_into_block_contract(mac);
-            return;
-        }
         let Some(with_context) = context_carrying_form(&mac.path) else {
             return;
         };
@@ -526,34 +511,6 @@ impl VisitMut for ContextInjector<'_> {
         self.injected = true;
         mac.tokens = self.inject_context(&mac.tokens);
         mac.path = with_context;
-    }
-}
-
-impl ContextInjector<'_> {
-    /// Rewrites a `block_contract!` into `_block_contract_with_context!`: both formulas carry
-    /// the context, and the block is walked as any other code of the body. A form that does not
-    /// parse is left to `block_contract!`, which reports the error.
-    fn inject_into_block_contract(&mut self, mac: &mut syn::Macro) {
-        let Ok(mut contract) =
-            syn::parse2::<crate::block_contract::BlockContract>(mac.tokens.clone())
-        else {
-            return;
-        };
-        let clauses = [&contract.requires, &contract.ensures];
-        if let Some(reference) = clauses
-            .into_iter()
-            .find_map(|clause| crate::loop_label::references(clause).into_iter().next())
-        {
-            let message = crate::loop_label::unresolved_message(&reference);
-            crate::loop_label::replace_with_error(mac, reference.span, &message);
-            return;
-        }
-        contract.requires = self.inject_context(&contract.requires);
-        contract.ensures = self.inject_context(&contract.ensures);
-        self.visit_block_mut(&mut contract.body);
-        self.injected = true;
-        mac.tokens = contract.to_arguments();
-        mac.path = syn::parse_quote!(::thrust_macros::_block_contract_with_context);
     }
 }
 

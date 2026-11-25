@@ -1126,19 +1126,7 @@ mod thrust_models {
     #[inline(never)]
     pub fn __assume_marker<F>(_f: F) {}
 
-    #[doc(hidden)]
-    #[thrust::def::block_requires_marker]
-    #[thrust::ignored]
-    #[inline(never)]
-    pub fn __block_requires_marker<F>(_f: F) {}
-
-    #[doc(hidden)]
-    #[thrust::def::block_ensures_marker]
-    #[thrust::ignored]
-    #[inline(never)]
-    pub fn __block_ensures_marker<F>(_f: F) {}
-
-    /// Opens the block of `block_contract_inline!`, which `_f`, the function the block is
+    /// Opens the block of `block_contract!`, which `_f`, the function the block is
     /// extracted into, stands for.
     #[doc(hidden)]
     #[thrust::def::block_region_open_marker]
