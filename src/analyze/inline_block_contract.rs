@@ -383,25 +383,90 @@ fn replace_region<'tcx>(
 /// A function's check covers the closures written in it, whose borrowck rustc does with the
 /// function's.
 pub fn check_regions_use_only_parameters(tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId) {
-    check_body_regions(tcx, def_id);
+    let mut hoisted = check_body_regions(tcx, def_id);
     if tcx.typeck_root_def_id(def_id.to_def_id()) == def_id.to_def_id() {
         for nested in tcx.nested_bodies_within(def_id) {
-            check_body_regions(tcx, nested);
+            hoisted |= check_body_regions(tcx, nested);
+        }
+        if hoisted {
+            check_host_has_no_items(tcx, def_id);
         }
     }
 }
 
-fn check_body_regions(tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId) {
+/// Reports an item statement (a nested `fn`, `const`, `static`, `use`, `struct`, `enum`, `trait`,
+/// `impl`, `mod`, `macro_rules!`, whatever a macro expanded to) in the body of `host`, which
+/// holds a block hoisted next to it. The hoisted function does not see the host's local items, so
+/// a name the block writes could mean another item there. This reads the expanded HIR, which
+/// sees the items macros declare; the macro `#[context]` rejects them before expansion too, for
+/// an earlier message.
+fn check_host_has_no_items(tcx: TyCtxt<'_>, host: rustc_hir::def_id::LocalDefId) {
+    struct Items<'tcx> {
+        tcx: TyCtxt<'tcx>,
+        spans: Vec<rustc_span::Span>,
+    }
+    impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for Items<'tcx> {
+        type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
+
+        fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
+            self.tcx
+        }
+
+        fn visit_stmt(&mut self, stmt: &'tcx rustc_hir::Stmt<'tcx>) {
+            if let rustc_hir::StmtKind::Item(id) = stmt.kind {
+                let span = self.tcx.hir_item(id).span;
+                if !is_expanded_by_thrust_macros(self.tcx, span) {
+                    self.spans.push(span);
+                }
+            }
+            rustc_hir::intravisit::walk_stmt(self, stmt);
+        }
+    }
+    let mut items = Items {
+        tcx,
+        spans: Vec::new(),
+    };
+    rustc_hir::intravisit::Visitor::visit_body(&mut items, tcx.hir_body_owned_by(host));
+    for span in items.spans {
+        tcx.dcx().span_err(
+            span,
+            "a function with a `block_contract_inline!` block has an item statement (a nested \
+             `fn`, `const`, `static`, `use`, `struct`, `enum`, `trait`, `impl`, `mod` or \
+             `macro_rules!`, also one a macro expands to): the block is verified as a function \
+             next to its host, which does not see local items, so a name could mean another item \
+             there. Move the item out of the function",
+        );
+    }
+}
+
+/// Whether `span` is code a macro of `thrust_macros` generated (the formula functions and the
+/// context stub the spec macros leave in a function body), which no name of the user's can reach.
+fn is_expanded_by_thrust_macros(tcx: TyCtxt<'_>, span: rustc_span::Span) -> bool {
+    span.ctxt()
+        .outer_expn_data()
+        .macro_def_id
+        .is_some_and(|macro_def| tcx.crate_name(macro_def.krate).as_str() == "thrust_macros")
+}
+
+/// Checks the blocks of the body of `def_id`, and whether one is hoisted next to a host, as a
+/// function that is not nested in the body is.
+fn check_body_regions(tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId) -> bool {
     let (promoted, _) = tcx.mir_promoted(def_id);
     let body = promoted.borrow();
+    let root = tcx.typeck_root_def_id(def_id.to_def_id());
+    let mut hoisted = false;
     for bb in body.basic_blocks.indices() {
         if body.basic_blocks[bb].is_cleanup {
             continue;
         }
         if let Some(bc_ty) = marker_callee(tcx, &body, bb, "__block_region_open_marker") {
             check_region_uses(tcx, &body, bb, bc_ty);
+            if let mir_ty::TyKind::FnDef(bc, _) = bc_ty.kind() {
+                hoisted |= tcx.opt_parent(*bc) != Some(root);
+            }
         }
     }
+    hoisted
 }
 
 /// The extracted function's type the block ending in a call of the marker `name` passes to it.
