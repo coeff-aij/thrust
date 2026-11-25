@@ -15,6 +15,18 @@ fn _extern_spec_option_branch<T>(opt: Option<T>) -> std::ops::ControlFlow<Option
 
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == Some(output))]
+fn _extern_spec_option_from_output<T>(output: T) -> Option<T>
+    where T: thrust_models::Model,
+{
+    thrust_std_target!(
+        <Option<T> as std::ops::Try>::from_output(output),
+        crate::std_transcriptions::option_from_output(output)
+    )
+}
+
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == None)]
 fn _extern_spec_option_from_residual<T>(residual: Option<std::convert::Infallible>) -> Option<T>
     where T: thrust_models::Model,
@@ -49,4 +61,41 @@ fn _extern_spec_result_from_residual<T, E, F: From<E>>(residual: Result<std::con
         F: thrust_models::Model,
 {
     <Result<T, F> as std::ops::FromResidual<Result<std::convert::Infallible, E>>>::from_residual(residual)
+}
+
+// The transcription of an `Option` `Try` method is the target of its spec under
+// `cfg(thrust_std_conformance)`, so a transcription that calls the method (`try_fold`'s `?` and
+// `try { }`) would find no spec of std's. These copies of the three contracts above are the specs
+// of std's methods in that build; the contracts above are checked against std's bodies there.
+#[cfg(thrust_std_conformance)]
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(
+    thrust_models::exists(|x| opt == Some(x) && result == std::ops::ControlFlow::Continue(x))
+    || (opt == None && result == std::ops::ControlFlow::Break(None))
+)]
+fn _extern_spec_option_branch_std<T>(opt: Option<T>) -> std::ops::ControlFlow<Option<std::convert::Infallible>, T>
+    where T: thrust_models::Model,
+{
+    <Option<T> as std::ops::Try>::branch(opt)
+}
+
+#[cfg(thrust_std_conformance)]
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == Some(output))]
+fn _extern_spec_option_from_output_std<T>(output: T) -> Option<T>
+    where T: thrust_models::Model,
+{
+    <Option<T> as std::ops::Try>::from_output(output)
+}
+
+#[cfg(thrust_std_conformance)]
+#[thrust::extern_spec_fn]
+#[thrust_macros::requires(true)]
+#[thrust_macros::ensures(result == None)]
+fn _extern_spec_option_from_residual_std<T>(residual: Option<std::convert::Infallible>) -> Option<T>
+    where T: thrust_models::Model,
+{
+    <Option<T> as std::ops::FromResidual<Option<std::convert::Infallible>>>::from_residual(residual)
 }
