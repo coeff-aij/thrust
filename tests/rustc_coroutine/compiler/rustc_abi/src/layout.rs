@@ -847,13 +847,14 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                         ))
                     },
                 );
+                let me = self;
                 thrust_macros::block_contract!(
+                    <P: FnMut(&F) -> u128>
+                    |me: &LayoutCalculator<Cx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind, dl: &TargetDataLayout,
+                     field_iter: core::slice::Iter<'_, F>, niche_available: P| -> ()
                     requires(
-                        <P: FnMut(&F) -> u128>
-                        |self: &LayoutCalculator<Cx>, fields: &IndexSlice<FieldIdx, F>, kind: StructKind, dl: &TargetDataLayout,
-                         field_iter: core::slice::Iter<'_, F>, niche_available: P|
-                        Self::layout_pre::<FieldIdx, VariantIdx, F>(*self, fields, kind)
-                            && Cx::dl_of(*self, *dl)
+                        Self::layout_pre::<FieldIdx, VariantIdx, F>(*me, fields, kind)
+                            && Cx::dl_of(*me, *dl)
                             && <core::slice::Iter<'_, F> as crate::IteratorSpec>::inv(field_iter)
                             && forall(|s: Seq<<&F as thrust_models::Model>::Ty>, e: <&F as thrust_models::Model>::Ty, i: <core::slice::Iter<'_, F> as thrust_models::Model>::Ty|
                                 !<core::slice::Iter<'_, F> as crate::IteratorSpec>::produces(field_iter, s.push(e), i)
@@ -865,14 +866,13 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
                                     || thrust_macros::pre!(niche_available(e)))
                     ),
                     ensures(
-                        <P: FnMut(&F) -> u128> |field_iter: core::slice::Iter<'_, F>, niche_available: P|
                         <core::slice::Iter<'_, F> as crate::IteratorSpec>::inv(field_iter)
                             && Map::<core::slice::Iter<'_, F>, P>::reinitialize()
                             && Map::<core::slice::Iter<'_, F>, P>::preservation_inv(field_iter, niche_available)
                             && Map::<core::slice::Iter<'_, F>, P>::next_precondition(field_iter, niche_available)
                     ),
                     {
-                        Self::fields_ok_of_layout_pre::<FieldIdx, VariantIdx, F>(self, fields, kind, dl);
+                        Self::fields_ok_of_layout_pre::<FieldIdx, VariantIdx, F>(me, fields, kind, dl);
                         thrust_macros::proof!(Map::preservation_inv_of_stable_closure(&field_iter, &niche_available));
                     }
                 );
