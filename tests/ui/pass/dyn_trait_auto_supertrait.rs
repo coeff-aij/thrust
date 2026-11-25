@@ -4,7 +4,7 @@
 
 // Auto-trait supertraits add no methods to the vtable, so a trait with them is supported as a
 // trait object, and its contract holds through it.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape: Send + Sync {
     #[thrust_macros::ensures(result >= 3)]
@@ -13,7 +13,7 @@ trait Shape: Send + Sync {
 
 struct Square;
 
-impl thrust_models::Model for Square {
+impl Model for Square {
     type Ty = ();
 }
 

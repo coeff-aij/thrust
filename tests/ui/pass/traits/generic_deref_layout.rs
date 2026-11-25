@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 use std::ops::Deref;
 use thrust_models::forall;
 
@@ -11,7 +11,7 @@ pub struct Niche {
     pub end: u64,
 }
 
-impl thrust_models::Model for Niche {
+impl Model for Niche {
     type Ty = Self;
 }
 
@@ -21,7 +21,7 @@ pub struct LayoutData {
     pub largest_niche: Option<Niche>,
 }
 
-impl thrust_models::Model for LayoutData {
+impl Model for LayoutData {
     type Ty = Self;
 }
 

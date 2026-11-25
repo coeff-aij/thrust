@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::{Model, model::Closure};
 #[thrust_macros::context]
 trait A {
     #[thrust_macros::requires(Self::p(*self))]
@@ -20,14 +20,14 @@ struct M<I, F> {
     func: F,
 }
 
-impl<I: thrust_models::Model, F> thrust_models::Model for M<I, F> {
-    type Ty = (<I as thrust_models::Model>::Ty, thrust_models::model::Closure<F>);
+impl<I: Model, F> Model for M<I, F> {
+    type Ty = (<I as Model>::Ty, Closure<F>);
 }
 
 #[thrust_macros::context]
 impl<I, F> A for M<I, F>
 where
-    I: A + thrust_models::Model,
+    I: A + Model,
     F: FnMut(i64) -> i64,
 {
     #[thrust_macros::predicate]

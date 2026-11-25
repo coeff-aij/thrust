@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A trait with a law is used at a type parameter, where each impl proves the law.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Level {
     #[thrust_macros::predicate]
@@ -23,7 +23,7 @@ trait Level {
 
 struct A;
 
-impl thrust_models::Model for A {
+impl Model for A {
     type Ty = A;
 }
 

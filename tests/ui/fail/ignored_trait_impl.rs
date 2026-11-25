@@ -3,10 +3,10 @@
 
 // An ignored impl method's body is not checked against the trait's spec in `std.rs`, so a call
 // that resolves to it cannot take that spec: `==` runs the panicking `eq`.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

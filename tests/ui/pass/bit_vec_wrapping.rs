@@ -1,12 +1,12 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::Model;
 use thrust_models::model::BitVec;
 
 #[derive(Clone, Copy)]
 struct WrappingI32(i32);
 
-impl thrust_models::Model for WrappingI32 {
+impl Model for WrappingI32 {
     type Ty = BitVec<32, true>;
 }
 

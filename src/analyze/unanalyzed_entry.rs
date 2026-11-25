@@ -234,15 +234,12 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         contract_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
     ) -> StatedPres<'tcx> {
-        let formula_fn = contract_def_id
-            .as_local()
-            .and_then(|local| {
-                self.extract_path_with_attr(local, &analyze::annot::requires_path_path())
-            })
-            .and_then(DefId::as_local)
-            .and_then(|formula_def_id| {
-                self.formula_fn_with_args(formula_def_id, contract_args, owner_fn_id)
-            });
+        let formula_fn = contract_def_id.as_local().and_then(|local| {
+            let formula_def_id = self
+                .extract_path_with_attr(local, &analyze::annot::requires_path_path())?
+                .as_local()?;
+            self.contract_formula_fn_with_args(formula_def_id, contract_args, owner_fn_id, local)
+        });
         StatedPres {
             receivers: formula_fn
                 .map(|formula_fn| formula_fn.pre_receivers().to_vec())

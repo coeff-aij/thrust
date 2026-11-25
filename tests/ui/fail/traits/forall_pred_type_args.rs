@@ -7,7 +7,7 @@
 // verified, and a `panic!()` after the call in `main` verified too. So are `Tr::ok` at `T` and at
 // `<T as Model>::Ty`, which `C` and its model `D` define differently, and `Tr::ok` at `Ch<'+'>` and
 // at `Ch<'-'>`, whose const arguments differ only in characters a symbol cannot hold.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Tr {
     #[thrust_macros::predicate]
@@ -16,7 +16,7 @@ trait Tr {
 
 struct A;
 
-impl thrust_models::Model for A {
+impl Model for A {
     type Ty = A;
 }
 
@@ -39,11 +39,11 @@ impl Tr for (A, i32) {
 struct C(i64);
 struct D(i64);
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = D;
 }
 
-impl thrust_models::Model for D {
+impl Model for D {
     type Ty = D;
 }
 
@@ -65,7 +65,7 @@ impl Tr for D {
 
 struct Ch<const X: char>;
 
-impl<const X: char> thrust_models::Model for Ch<X> {
+impl<const X: char> Model for Ch<X> {
     type Ty = Ch<X>;
 }
 
@@ -87,7 +87,7 @@ impl Tr for (A, Ch<'-'>) {
 
 #[thrust_macros::requires(<(T, u8) as Tr>::ok((x, a)) && a == 1 && b == 1)]
 #[thrust_macros::ensures(<(T, i32) as Tr>::ok((x, b)))]
-fn f<T: thrust_models::Model>(x: T, a: u8, b: i32)
+fn f<T: Model>(x: T, a: u8, b: i32)
 where
     (T, u8): Tr,
     (T, i32): Tr,
@@ -96,15 +96,15 @@ where
 
 #[thrust_macros::requires(T::ok(x))]
 #[thrust_macros::ensures(<T::Ty as Tr>::ok(x))]
-fn g<T: thrust_models::Model + Tr>(x: T)
+fn g<T: Model + Tr>(x: T)
 where
-    T::Ty: Tr + thrust_models::Model<Ty = T::Ty>,
+    T::Ty: Tr + Model<Ty = T::Ty>,
 {
 }
 
 #[thrust_macros::requires(<(T, Ch<'+'>) as Tr>::ok((x, p)))]
 #[thrust_macros::ensures(<(T, Ch<'-'>) as Tr>::ok((x, m)))]
-fn h<T: thrust_models::Model>(x: T, p: Ch<'+'>, m: Ch<'-'>)
+fn h<T: Model>(x: T, p: Ch<'+'>, m: Ch<'-'>)
 where
     (T, Ch<'+'>): Tr,
     (T, Ch<'-'>): Tr,

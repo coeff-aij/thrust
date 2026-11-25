@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Double {
     // Support annotations in trait definitions
@@ -18,7 +18,7 @@ struct A {
     x: i64,
 }
 
-impl thrust_models::Model for A {
+impl Model for A {
     type Ty = Self;
 }
 
@@ -40,7 +40,7 @@ struct B {
     y: i64,
 }
 
-impl thrust_models::Model for B {
+impl Model for B {
     type Ty = Self;
 }
 

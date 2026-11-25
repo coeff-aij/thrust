@@ -2,14 +2,14 @@
 
 // An invariant's parameter written `&dyn Tr` is compared with the type of the variable it names;
 // the message prints it as written.
-
+use thrust_models::Model;
 trait Tr {}
 
 struct A {
     x: i64,
 }
 
-impl thrust_models::Model for A {
+impl Model for A {
     type Ty = A;
 }
 

@@ -70,7 +70,7 @@ fn for_without_iter_in_invariant(n: i64) {
 fn iter_old_of_for_without_invariant(n: i64) {
     'rows: for _ in 0..n {
         for _ in 0..n {
-            thrust_macros::invariant!(|iter: Range<i64>, iter_old!('rows): thrust_models::Ghost<Range<i64>>| iter.start >= 0); //~ ERROR: `'rows` labels a `for` loop with no invariant, which keeps no history
+            thrust_macros::invariant!(|iter: Range<i64>, iter_old!('rows): Ghost<Range<i64>>| iter.start >= 0); //~ ERROR: `'rows` labels a `for` loop with no invariant, which keeps no history
         }
     }
 }
@@ -79,7 +79,7 @@ fn iter_old_of_for_without_invariant(n: i64) {
 fn history_of_for_without_invariant(n: i64) {
     'rows: for _ in 0..n {
         for _ in 0..n {
-            thrust_macros::invariant!(|iter: Range<i64>, produced!('rows): thrust_models::Ghost<thrust_models::model::Seq<i64>>| iter.start >= 0); //~ ERROR: `'rows` labels a `for` loop with no invariant, which keeps no history
+            thrust_macros::invariant!(|iter: Range<i64>, produced!('rows): Ghost<Seq<i64>>| iter.start >= 0); //~ ERROR: `'rows` labels a `for` loop with no invariant, which keeps no history
         }
     }
 }

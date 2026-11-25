@@ -6,7 +6,7 @@
 // such an instance; `gen` reaches `apply` at its own type parameter `G`, an instance analyzed
 // nowhere but through `apply`'s analysis over `F`, which is therefore emitted: it holds, as both
 // contracts require the closure's precondition at 1.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Ap {
     #[thrust_macros::requires(thrust_macros::pre!(f(1)))]
@@ -17,7 +17,7 @@ trait Ap {
 #[derive(PartialEq)]
 struct S;
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = S;
 }
 

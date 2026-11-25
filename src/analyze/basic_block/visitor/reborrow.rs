@@ -120,13 +120,30 @@ impl<'a, 'tcx, 'ctx> mir::visit::MutVisitor<'tcx> for ReborrowVisitor<'a, 'tcx, 
             return;
         };
 
-        if m.is_mut() {
+        if m.is_mut() && !is_moved_out_of_sequence(operand) {
             let new_local = self.insert_reborrow(self.tcx.mk_place_deref(p), *inner_ty);
             *operand = mir::Operand::Move(new_local.into());
         }
 
         self.super_operand(operand, location);
     }
+}
+
+/// Whether `operand` moves a value out of a slice or an array by a slice pattern
+/// (`let [a, b] = [&mut x, &mut y]`). A moved `&mut` is reborrowed so that the place it leaves
+/// holds the reborrow's prophecy, which resolves the referent where the place is dropped. The
+/// drop of a sequence an element was moved out of resolves nothing of it (`moved_out_parts`), and
+/// the borrow checker forbids any other use of a partially moved sequence, so the element is read
+/// off the sequence instead: the moved `&mut` keeps its own final value, which its own drop
+/// resolves.
+fn is_moved_out_of_sequence(operand: &mir::Operand<'_>) -> bool {
+    let mir::Operand::Move(place) = operand else {
+        return false;
+    };
+    place
+        .projection
+        .iter()
+        .any(crate::analyze::basic_block::is_slice_pattern_elem)
 }
 
 impl<'a, 'tcx, 'ctx> ReborrowVisitor<'a, 'tcx, 'ctx> {

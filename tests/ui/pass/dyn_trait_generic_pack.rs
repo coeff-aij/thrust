@@ -4,7 +4,7 @@
 
 // Packing at a type parameter, in a crate with an invariant: `pack` is analyzed at `T = C`, where
 // packing requires `C`'s invariant, which `C { n: 2 }` has.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(result <= 100)]
@@ -15,7 +15,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

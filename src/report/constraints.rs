@@ -220,11 +220,7 @@ fn kind(
                 return plain("assertion".to_owned());
             }
             let assert_marker = crate::analyze::annot::assert_marker_path();
-            if tcx
-                .get_attrs_by_path(callee, &assert_marker)
-                .next()
-                .is_some()
-            {
+            if crate::analyze::annot::has_thrust_attr(tcx, callee, &assert_marker) {
                 return plain("proof_assert!".to_owned());
             }
             let callee_name = tcx.def_path_str(callee);

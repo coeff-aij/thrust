@@ -5,7 +5,7 @@
 // `g`'s written contract is verified over `T`, where `bump` assumes nothing, and at `C`, where the
 // call runs `C::bump`, which assumes the invariant of the value inside the `Box`. A contract
 // written at `T` cannot require it, so `g` fails at `C` whatever the argument.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(result <= 100)]
@@ -16,7 +16,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

@@ -6,9 +6,10 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=rustc_abi::layout::LayoutCalculator::univariant_biased,rustc_abi::layout::LayoutCalculator::univariant_biased_finish,case_study::iter::iter_enumerated_trusted
 //@rustc-env: THRUST_SPLIT=1 THRUST_CALL_RESULT_DIRECT=1
-// A reachability twin of the fallback's `univariant_biased.rs`: with `cfg(thrust_univariant_biased_reach = "largest_niche")`
-// `univariant_biased` asserts `false` right after the assumptions at that point, so the twin is
-// refuted only if the point is reachable under the assumptions before it.
+// A reachability twin of `univariant_biased.rs`: with `cfg(thrust_univariant_biased_reach = "largest_niche")`
+// `univariant_biased` asserts `false` right after `Map::new`'s `requires` is proved (the block
+// contract and the lemma `Map::preservation_inv_of_stable_closure`), so the twin is refuted only
+// if the point is reachable under the facts proved before it and the assumptions before them.
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage.
 // Each goal of the functions marked `#[thrust::split_goals]` is solved with the clauses it depends
 // on, the other goals in their classes.
