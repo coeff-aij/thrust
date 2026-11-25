@@ -307,11 +307,6 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
 
     let host_sig = func.sig().clone();
     // A method may parse as a free function, so the place is read from the enclosing item.
-    let hoist = HoistHost {
-        generics: &host_sig.generics,
-        outer_context: outer.as_ref(),
-        is_method: outer.is_some(),
-    };
     let can_hoist = match &outer {
         Some(outer) => hoists_into(outer),
         None => !matches!(func, FnItemWithSignature::TraitItemFn(_)),
@@ -320,7 +315,11 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
         sig: &host_sig,
         outer: outer.as_ref(),
         injected: false,
-        hoist: can_hoist.then_some(&hoist),
+        hoist: can_hoist.then_some(HoistHost {
+            generics: &host_sig.generics,
+            outer_context: outer.as_ref(),
+            is_method: outer.is_some(),
+        }),
         hoisted: Vec::new(),
     };
     if let Some(body) = func.block_mut() {
@@ -328,7 +327,7 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
     }
     let hoisted = std::mem::take(&mut injector.hoisted);
     if !injector.injected {
-        return quote!(#func #(#hoisted)*).into();
+        return quote!(#func).into();
     }
 
     let type_lowering = match &outer {
@@ -354,6 +353,15 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
             .extend(predicates);
     }
 
+    // The hoisted functions have the host's where clause as extended above.
+    let host = HoistHost {
+        generics: &func.sig().generics,
+        outer_context: outer.as_ref(),
+        is_method: outer.is_some(),
+    };
+    let hoisted = hoisted
+        .iter()
+        .map(|(name, contract)| contract.hoisted_function(name, &host));
     quote!(#func #(#hoisted)*).into()
 }
 
@@ -384,9 +392,10 @@ struct ContextInjector<'a> {
     injected: bool,
     /// Where the `block_contract_fn!`s of the body are hoisted to, or `None` where they stay
     /// nested at their block.
-    hoist: Option<&'a HoistHost<'a>>,
-    /// The functions hoisted out of the body, to emit beside the host.
-    hoisted: Vec<TokenStream2>,
+    hoist: Option<HoistHost<'a>>,
+    /// The blocks hoisted out of the body, with the names of their functions, to emit beside
+    /// the host.
+    hoisted: Vec<(syn::Ident, crate::block_contract_fn::BlockContractFn)>,
 }
 
 impl ContextInjector<'_> {
@@ -409,15 +418,18 @@ impl ContextInjector<'_> {
     /// any other macro, or when the block stays nested (and standalone expansion reports a form
     /// that does not parse).
     fn hoist_block_contract_fn(&mut self, mac: &syn::Macro) -> Option<TokenStream2> {
-        let host = self.hoist?;
+        let host = self.hoist.as_ref()?;
         if !crate::block_contract_fn::is_block_contract_fn(&mac.path) {
             return None;
         }
         let contract =
             syn::parse2::<crate::block_contract_fn::BlockContractFn>(mac.tokens.clone()).ok()?;
-        let hoisted = contract.hoist(host);
-        self.hoisted.push(hoisted.function);
-        Some(hoisted.call)
+        let name = crate::block_contract_fn::fresh_hoisted_name();
+        let call = contract.hoisted_call(&name, host);
+        self.hoisted.push((name, contract));
+        // the host's where clause gets the `Model` predicates the hoisted function needs
+        self.injected = true;
+        Some(call)
     }
 }
 

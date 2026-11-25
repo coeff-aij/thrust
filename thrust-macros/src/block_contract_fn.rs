@@ -181,28 +181,32 @@ impl BlockContractFn {
         quote!({ #function #call })
     }
 
-    /// The function hoisted next to its host and the call of it that replaces the block.
-    pub fn hoist(&self, host: &HoistHost) -> Hoisted {
-        let name = fresh_name();
-        let outer_attr = host
-            .outer_context
-            .as_ref()
-            .map(|outer| quote!(#[thrust::_outer_context(#outer)]));
-        let attrs = quote! {
-            #outer_attr
-            #[::thrust_macros::context]
-        };
-        let function = self.function(&name, attrs, host.generics);
+    /// The call of the function `name` hoisted next to its host, which replaces the block.
+    pub fn hoisted_call(&self, name: &syn::Ident, host: &HoistHost) -> TokenStream {
         let turbofish = host.turbofish();
         let callee = match host.is_method {
             true => quote!(Self::#name #turbofish),
             false => quote!(#name #turbofish),
         };
-        Hoisted {
-            function,
-            call: self.call(callee),
-        }
+        self.call(callee)
     }
+
+    /// The function `name` hoisted next to its host, with the host's generics and where clause.
+    pub fn hoisted_function(&self, name: &syn::Ident, host: &HoistHost) -> TokenStream {
+        let outer_attr = host
+            .outer_context
+            .map(|outer| quote!(#[thrust::_outer_context(#outer)]));
+        let attrs = quote! {
+            #outer_attr
+            #[::thrust_macros::context]
+        };
+        self.function(name, attrs, host.generics)
+    }
+}
+
+/// A new name for a hoisted function, unique in the compilation.
+pub fn fresh_hoisted_name() -> syn::Ident {
+    fresh_name()
 }
 
 /// The enclosing function a block is hoisted from.
@@ -234,12 +238,6 @@ impl HoistHost<'_> {
             false => quote!(::<#(#arguments),*>),
         }
     }
-}
-
-/// A hoisted block: the item to emit beside the host and the expression to put at the block.
-pub struct Hoisted {
-    pub function: TokenStream,
-    pub call: TokenStream,
 }
 
 /// Whether `path` names `block_contract_fn!`.

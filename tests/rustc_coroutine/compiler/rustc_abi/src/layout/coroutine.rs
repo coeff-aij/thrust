@@ -419,20 +419,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             // in place of the results of `deref_mut` and `index_mut`. The written value is bound
             // first, as the assignment evaluates it before the place.
             let value = Ineligible(Some(FieldIdx::new(idx)));
-            let assignments_before = thrust_macros::ghost!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>| -> IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>> {
-                assignments
-            });
-            thrust_macros::block_contract!(
-                requires(
-                    |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                    assignments_before == assignments
-                    && forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < assignments.len())
-                ),
-                ensures(
-                    |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, value: SavedLocalEligibility<VariantIdx, FieldIdx>,
-                     assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                    written_at::<VariantIdx, FieldIdx, LocalIdx>(assignments, local, value, assignments_before)
-                ),
+            thrust_macros::block_contract_fn!(
+                |assignments: &mut IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, value: SavedLocalEligibility<VariantIdx, FieldIdx>| -> ()
+                requires(forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < (*assignments).len())),
+                ensures(written_at::<VariantIdx, FieldIdx, LocalIdx>(!assignments, local, value, *assignments)),
                 {
                     assignments[local] = value;
                 }
