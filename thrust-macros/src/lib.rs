@@ -226,6 +226,17 @@ pub fn block_contract_fn(input: TokenStream) -> TokenStream {
     block_contract_fn::expand(input)
 }
 
+/// `block_contract_inline!` takes the notation of [`block_contract_fn!`] and runs the body in
+/// place. The block is verified as if it were extracted into the function of the written
+/// signature and contract, and its parameters have exactly the types of the outer variables. A
+/// parameter written `mut` may be changed by the body, and `ensures` names its final value as
+/// `x` and its entry value as `old!(x)`; any other parameter keeps its value. `return`, `?` and
+/// a `break` that leave the block are errors. See [`mod@block_contract_fn`].
+#[proc_macro]
+pub fn block_contract_inline(input: TokenStream) -> TokenStream {
+    block_contract_fn::expand_inline(input)
+}
+
 /// Context-carrying counterpart of `block_contract!` (see [`_invariant_with_context`]).
 #[proc_macro]
 pub fn _block_contract_with_context(input: TokenStream) -> TokenStream {

@@ -35,6 +35,7 @@ pub(crate) mod derived_pred;
 mod did_cache;
 mod extern_spec;
 mod fn_mut_reuse;
+mod inline_block_contract;
 mod invariant_args;
 mod lemma;
 mod local_def;

@@ -419,10 +419,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             // in place of the results of `deref_mut` and `index_mut`. The written value is bound
             // first, as the assignment evaluates it before the place.
             let value = Ineligible(Some(FieldIdx::new(idx)));
-            thrust_macros::block_contract_fn!(
-                |assignments: &mut IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, value: SavedLocalEligibility<VariantIdx, FieldIdx>| -> ()
-                requires(forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < (*assignments).len())),
-                ensures(written_at::<VariantIdx, FieldIdx, LocalIdx>(!assignments, local, value, *assignments)),
+            thrust_macros::block_contract_inline!(
+                |mut assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, value: SavedLocalEligibility<VariantIdx, FieldIdx>| -> ()
+                requires(forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < assignments.len())),
+                ensures(written_at::<VariantIdx, FieldIdx, LocalIdx>(assignments, local, value, old!(assignments))),
                 {
                     assignments[local] = value;
                 }

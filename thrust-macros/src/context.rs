@@ -419,11 +419,9 @@ impl ContextInjector<'_> {
     /// that does not parse).
     fn hoist_block_contract_fn(&mut self, mac: &syn::Macro) -> Option<TokenStream2> {
         let host = self.hoist.as_ref()?;
-        if !crate::block_contract_fn::is_block_contract_fn(&mac.path) {
-            return None;
-        }
+        let mode = crate::block_contract_fn::mode_of(&mac.path)?;
         let contract =
-            syn::parse2::<crate::block_contract_fn::BlockContractFn>(mac.tokens.clone()).ok()?;
+            crate::block_contract_fn::BlockContractFn::parse_for(mac.tokens.clone(), mode).ok()?;
         let name = crate::block_contract_fn::fresh_hoisted_name();
         let call = contract.hoisted_call(&name, host);
         self.hoisted.push((name, contract));
@@ -433,12 +431,25 @@ impl ContextInjector<'_> {
     }
 }
 
+impl ContextInjector<'_> {
+    /// Whether the block hoisted last keeps its body where it is written, which then gets the
+    /// context as the rest of the host does.
+    fn last_hoisted_runs_in_place(&self) -> bool {
+        self.hoisted
+            .last()
+            .is_some_and(|(_, contract)| contract.runs_in_place())
+    }
+}
+
 impl VisitMut for ContextInjector<'_> {
     fn visit_stmt_mut(&mut self, stmt: &mut syn::Stmt) {
         if let syn::Stmt::Macro(stmt_macro) = stmt {
             if let Some(call) = self.hoist_block_contract_fn(&stmt_macro.mac) {
                 let call: syn::Expr = syn::parse_quote!(#call);
                 *stmt = syn::Stmt::Expr(call, stmt_macro.semi_token);
+                if self.last_hoisted_runs_in_place() {
+                    syn::visit_mut::visit_stmt_mut(self, stmt);
+                }
                 return;
             }
         }
@@ -449,6 +460,9 @@ impl VisitMut for ContextInjector<'_> {
         if let syn::Expr::Macro(expr_macro) = expr {
             if let Some(call) = self.hoist_block_contract_fn(&expr_macro.mac) {
                 *expr = syn::parse_quote!(#call);
+                if self.last_hoisted_runs_in_place() {
+                    syn::visit_mut::visit_expr_mut(self, expr);
+                }
                 return;
             }
         }

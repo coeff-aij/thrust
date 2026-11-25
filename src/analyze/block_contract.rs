@@ -124,14 +124,40 @@ pub fn collect<'tcx>(ctx: &analyze::Analyzer<'tcx>, body: &Body<'tcx>) -> Vec<Bl
     contracts
 }
 
-fn contract_opened_at<'tcx>(
+/// How a region of code between two markers is told from the rest of the body: the markers'
+/// names for the messages and the blocks that end in them.
+pub struct RegionMarkers<'a> {
+    /// The opening marker, as a message names it.
+    pub open: &'a str,
+    /// The closing marker, as a message names it.
+    pub close: &'a str,
+    pub is_open: &'a dyn Fn(BasicBlock) -> bool,
+    pub is_close: &'a dyn Fn(BasicBlock) -> bool,
+}
+
+/// The code between an opening marker call and its closing marker call.
+pub struct Region {
+    /// The block that ends in the closing marker call.
+    pub closing: BasicBlock,
+    /// The closing marker's target, the block after the code.
+    pub exit: BasicBlock,
+    /// The blocks of the code, from `entry` to `closing`.
+    pub blocks: HashSet<BasicBlock>,
+}
+
+/// The code under the opening marker at `opening`. Stops where a path leaves the function, comes
+/// back to the opening, opens another region, or ends in none or several closing markers, and
+/// where the code is reached by a path that does not pass the opening.
+pub fn region_under<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     body: &Body<'tcx>,
     opening: BasicBlock,
-) -> BlockContract {
+    markers: &RegionMarkers<'_>,
+) -> Region {
     let terminator = body.basic_blocks[opening].terminator();
     let span = terminator.source_info.span;
     let fatal = |msg: &str| -> ! { ctx.tcx.dcx().span_fatal(span, msg.to_string()) };
+    let (open, close) = (markers.open, markers.close);
     let TerminatorKind::Call {
         target: Some(entry),
         ..
@@ -139,11 +165,6 @@ fn contract_opened_at<'tcx>(
     else {
         unreachable!("a marker call returns");
     };
-    assert!(
-        !analyze::basic_block::needs_own_precondition(body, entry),
-        "the code under a block contract starts at a block of its own (`separate_entries`)"
-    );
-
     let mut blocks = HashSet::new();
     let mut closings = Vec::new();
     let mut stack = vec![entry];
@@ -152,24 +173,25 @@ fn contract_opened_at<'tcx>(
             continue;
         }
         if bb == opening {
-            fatal("a path from `block_requires!` comes back to it before a `block_ensures!`");
+            fatal(&format!(
+                "a path from {open} comes back to it before a {close}"
+            ));
         }
-        match marker_of(ctx, body, bb) {
-            Some(FormulaMarker::BlockEnsures) => {
-                closings.push(bb);
-                continue;
-            }
-            Some(FormulaMarker::BlockRequires) => {
-                fatal("a block contract inside another block contract is not supported")
-            }
-            _ => {}
+        if (markers.is_close)(bb) {
+            closings.push(bb);
+            continue;
+        }
+        if (markers.is_open)(bb) {
+            fatal("a block contract inside another block contract is not supported");
         }
         let terminator = body.basic_blocks[bb].terminator();
         if matches!(
             terminator.kind,
             TerminatorKind::Return | TerminatorKind::Yield { .. } | TerminatorKind::CoroutineDrop
         ) {
-            fatal("a path from `block_requires!` leaves the function before a `block_ensures!`");
+            fatal(&format!(
+                "a path from {open} leaves the function before a {close}"
+            ));
         }
         stack.extend(
             terminator
@@ -179,8 +201,8 @@ fn contract_opened_at<'tcx>(
     }
     let closing = match closings.as_slice() {
         [closing] => *closing,
-        [] => fatal("no `block_ensures!` follows `block_requires!` on a path that returns"),
-        _ => fatal("several `block_ensures!` close one `block_requires!`"),
+        [] => fatal(&format!("no {close} follows {open} on a path that returns")),
+        _ => fatal(&format!("several {close} close one {open}")),
     };
     let TerminatorKind::Call {
         target: Some(exit), ..
@@ -189,12 +211,55 @@ fn contract_opened_at<'tcx>(
         unreachable!("a marker call returns");
     };
     if blocks.contains(&exit) {
-        fatal("the code after `block_ensures!` is also under its contract");
+        fatal(&format!(
+            "the code after {close} is also under its contract"
+        ));
     }
     if entered_from_outside(body, &blocks, entry) {
-        fatal("the code under `block_requires!` is also reached by a path that does not pass it");
+        fatal(&format!(
+            "the code under {open} is also reached by a path that does not pass it"
+        ));
     }
+    Region {
+        closing,
+        exit,
+        blocks,
+    }
+}
 
+fn contract_opened_at<'tcx>(
+    ctx: &analyze::Analyzer<'tcx>,
+    body: &Body<'tcx>,
+    opening: BasicBlock,
+) -> BlockContract {
+    let TerminatorKind::Call {
+        target: Some(entry),
+        ..
+    } = body.basic_blocks[opening].terminator().kind
+    else {
+        unreachable!("a marker call returns");
+    };
+    assert!(
+        !analyze::basic_block::needs_own_precondition(body, entry),
+        "the code under a block contract starts at a block of its own (`separate_entries`)"
+    );
+
+    let region = region_under(
+        ctx,
+        body,
+        opening,
+        &RegionMarkers {
+            open: "`block_requires!`",
+            close: "`block_ensures!`",
+            is_open: &|bb| marker_of(ctx, body, bb) == Some(FormulaMarker::BlockRequires),
+            is_close: &|bb| marker_of(ctx, body, bb) == Some(FormulaMarker::BlockEnsures),
+        },
+    );
+    let Region {
+        closing,
+        exit,
+        blocks,
+    } = region;
     let mut changed = ChangedLocals::default();
     for &bb in &blocks {
         let data = &body.basic_blocks[bb];

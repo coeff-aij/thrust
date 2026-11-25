@@ -117,6 +117,8 @@ thrust_paths! {
     assume_marker_path = "assume_marker";
     block_requires_marker_path = "block_requires_marker";
     block_ensures_marker_path = "block_ensures_marker";
+    block_region_open_marker_path = "block_region_open_marker";
+    block_region_close_marker_path = "block_region_close_marker";
     choose_marker_path = "choose_marker";
     witness_path = "witness";
     ghost_marker_path = "ghost_marker";
