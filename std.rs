@@ -1637,7 +1637,10 @@ fn _extern_spec_result_unwrap<T, E: std::fmt::Debug>(res: Result<T, E>) -> T
   where T: thrust_models::Model,
         E: thrust_models::Model,
 {
-    Result::unwrap(res)
+    thrust_std_target!(
+        Result::unwrap(res),
+        crate::std_transcriptions::result_unwrap_transcription::result_unwrap(res)
+    )
 }
 
 #[thrust::extern_spec_fn]
