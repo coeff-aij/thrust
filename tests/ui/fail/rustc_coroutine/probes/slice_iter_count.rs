@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-use thrust_models::{FnParam, Model};
+
 use thrust_models::model::{Int, Mut, Seq, UInt};
 use thrust_models::{exists, forall};
 pub struct Wrapped<T> {
@@ -16,13 +16,13 @@ pub struct Wrapped<T> {
 #[thrust_macros::context]
 trait Iterator
 where
-    Self: Model,
-    Self::Item: Model,
+    Self: thrust_models::Model,
+    Self::Item: thrust_models::Model,
 {
     type Item;
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool;
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool;
@@ -38,9 +38,9 @@ where
     #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
     fn produces_trans(
         a: &Self,
-        ab: Seq<<Self::Item as Model>::Ty>,
+        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
         b: &Self,
-        bc: Seq<<Self::Item as Model>::Ty>,
+        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -57,8 +57,8 @@ where
     fn next(&mut self) -> Option<Self::Item>;
 }
 
-impl<T: Model> Model for Wrapped<T> {
-    type Ty = <[T] as Model>::Ty;
+impl<T: thrust_models::Model> thrust_models::Model for Wrapped<T> {
+    type Ty = <[T] as thrust_models::Model>::Ty;
 }
 
 #[thrust_macros::context]
@@ -83,16 +83,16 @@ impl<T> Wrapped<T> {
 #[thrust_macros::context]
 #[thrust_macros::requires(J::invariant(iter))]
 #[thrust_macros::ensures(
-    exists(|visited: Seq<<T as Model>::Ty>,
-           mid: <J as Model>::Ty,
-           fin: <J as Model>::Ty|
+    exists(|visited: Seq<<T as thrust_models::Model>::Ty>,
+           mid: <J as thrust_models::Model>::Ty,
+           fin: <J as thrust_models::Model>::Ty|
         J::produces(iter, visited, mid)
             && J::completed(Mut::new(mid, fin))
             && result == visited)
 )]
 fn collect_wrapped<T, J>(iter: J) -> Wrapped<T>
 where
-    T: Model,
+    T: thrust_models::Model,
     J: Iterator<Item = T>,
 {
     let mut it = iter;
@@ -100,7 +100,7 @@ where
     let mut v: Vec<T> = Vec::new();
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: J, v: Vec<T>, iter: FnParam<J>|
+            |it: J, v: Vec<T>, iter: thrust_models::FnParam<J>|
                 J::invariant(it) && J::produces(iter.at_entry(), v, it)
         );
         v.push(x);
@@ -113,12 +113,12 @@ pub struct SliceIter<'a, T> {
     pos: usize,
 }
 
-impl<'a, T: Model> Model for SliceIter<'a, T> {
-    type Ty = (<&'a [T] as Model>::Ty, UInt);
+impl<'a, T: thrust_models::Model> thrust_models::Model for SliceIter<'a, T> {
+    type Ty = (<&'a [T] as thrust_models::Model>::Ty, UInt);
 }
 
 #[thrust_macros::context]
-impl<'a, T: Model> Iterator for SliceIter<'a, T>
+impl<'a, T: thrust_models::Model> Iterator for SliceIter<'a, T>
 {
     type Item = &'a T;
 
@@ -132,7 +132,7 @@ impl<'a, T: Model> Iterator for SliceIter<'a, T>
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
+    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
         self.0 == o.0
             && self.1 <= o.1
             && o.1 <= self.0.len()
@@ -149,14 +149,14 @@ impl<'a, T: Model> Iterator for SliceIter<'a, T>
 // The trusted stub behind `next`: Thrust trusts a function only on its own contract, and the
 // method of an impl of the local trait has the trait's.
 #[thrust_macros::context]
-impl<'a, T: Model> SliceIter<'a, T>
+impl<'a, T: thrust_models::Model> SliceIter<'a, T>
 {
     #[thrust::trusted]
     #[thrust_macros::requires(<Self as Iterator>::invariant(*self))]
     #[thrust_macros::ensures(
         <Self as Iterator>::invariant(!self)
             && (result == None ==> <Self as Iterator>::completed(self))
-            && forall(|x: <&'a T as Model>::Ty| result == Some(x) ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
+            && forall(|x: <&'a T as thrust_models::Model>::Ty| result == Some(x) ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
     )]
     fn next_item(&mut self) -> Option<&'a T> {
         None

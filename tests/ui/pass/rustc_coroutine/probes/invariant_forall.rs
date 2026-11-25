@@ -1,13 +1,13 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-use thrust_models::model::Int;
+
 use thrust_models::forall;
 
 #[thrust_macros::requires(n > 0)]
 #[thrust_macros::ensures(
     result.len() == n
-    && forall(|k: Int| (0 <= k && k < n) ==> result[k] == 0)
+    && forall(|k: thrust_models::model::Int| (0 <= k && k < n) ==> result[k] == 0)
 )]
 #[thrust_macros::context]
 fn zeros(n: i64) -> Vec<i64> {
@@ -18,7 +18,7 @@ fn zeros(n: i64) -> Vec<i64> {
             |i: i64, w: Vec<i64>, n: i64|
                 w.len() == i
                 && i <= n
-                && forall(|k: Int| (0 <= k && k < i) ==> w[k] == 0)
+                && forall(|k: thrust_models::model::Int| (0 <= k && k < i) ==> w[k] == 0)
         );
         w.push(0);
         i += 1;

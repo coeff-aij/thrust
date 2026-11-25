@@ -14,7 +14,7 @@
 // contracts instead of unfolding them; so is `layout_pre`, which `univariant`'s body reveals, and
 // `dl_of` keeps its definition.
 #![feature(new_range_api)]
-use thrust_models::Model;
+
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
 #[path = "../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
@@ -38,10 +38,10 @@ use rustc_index::{Idx, IndexSlice};
 #[thrust_macros::ensures(true)]
 fn drive<
     'a,
-    Cx: HasDataLayout + Model<Ty: PartialEq>,
-    FieldIdx: Idx + Model<Ty: PartialEq>,
-    VariantIdx: Idx + Model<Ty: PartialEq>,
-    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + Model<Ty: PartialEq>,
+    Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
+    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
 >(
     calc: &LayoutCalculator<Cx>,
     fields: &IndexSlice<FieldIdx, F>,

@@ -8,7 +8,7 @@
 // for a given layout from its own `requires` and for `tag_to_layout`'s result from the closure's
 // postcondition.
 // The fail twin: nothing is required of `tag_to_layout`'s result.
-use thrust_models::Model;
+
 use std::ops::Deref;
 use thrust_models::forall;
 
@@ -17,7 +17,7 @@ pub struct LayoutData {
     pub niche: i64,
 }
 
-impl Model for LayoutData {
+impl thrust_models::Model for LayoutData {
     type Ty = Self;
 }
 

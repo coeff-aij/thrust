@@ -11,7 +11,7 @@
 // rustc's index types is their bound 0xFFFF_FF00. `BitMatrix::new` is rustc's, with the words'
 // count as `num_words` computes it, and `insert` sets a bit as `compute_layout` does for each
 // pair of conflicting saved locals; the ghost `col_bound` is above every set bit's column.
-use thrust_models::{exists, forall, Model};
+
 use thrust_models::model::Int;
 use thrust_models::Ghost;
 
@@ -22,7 +22,7 @@ pub struct BitMatrix {
     col_bound: Ghost<Int>,
 }
 
-impl Model for BitMatrix {
+impl thrust_models::Model for BitMatrix {
     type Ty = Self;
 }
 
@@ -30,7 +30,7 @@ impl Model for BitMatrix {
 impl BitMatrix {
     #[thrust_macros::predicate]
     fn wf(self) -> bool {
-        exists(|rw: Int| {
+        thrust_models::exists(|rw: Int| {
             self.words.len() == self.num_rows * rw
                 && 64 * rw >= self.num_columns
                 && 64 * rw < self.num_columns + 64
@@ -67,14 +67,14 @@ impl BitMatrix {
     && (*storage_conflicts).num_rows <= (*local_layouts).len()
     && *(*storage_conflicts).col_bound <= (*storage_conflicts).num_rows
     && BitMatrix::wf(*storage_conflicts)
-    && forall(|v: Int| forall(|f: Int|
+    && thrust_models::forall(|v: Int| thrust_models::forall(|f: Int|
         (0 <= v && v < (*variant_fields).len() && 0 <= f && f < (*variant_fields)[v].len())
             ==> (*variant_fields)[v][f] < (*local_layouts).len()))
-    && forall(|k: Int|
+    && thrust_models::forall(|k: Int|
         (0 <= k && k < (*local_layouts).len()) ==> k <= 4294967040usize)
     && (*variant_fields).len() <= 4294967040usize
     && prefix_layouts.len() + 1 + (*local_layouts).len() <= 4294967040usize
-    && forall(|v: Int|
+    && thrust_models::forall(|v: Int|
         (0 <= v && v < (*variant_fields).len()) ==> (*variant_fields)[v].len() <= 4294967040usize)
     && prefix_layouts.len() + 1 + (*local_layouts).len() <= 4294967295usize)]
 #[thrust_macros::ensures(true)]

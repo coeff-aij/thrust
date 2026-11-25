@@ -11,7 +11,7 @@
 // drives them.
 // Each goal is solved with the clauses it depends on (`THRUST_SPLIT_GOALS`).
 #![feature(new_range_api)]
-use thrust_models::{FnParam, Model};
+
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
 #[path = "../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
@@ -45,7 +45,7 @@ impl<I: Idx, T> IndexVec<I, T> {
 #[thrust_macros::context]
 #[thrust_macros::requires(<I as Idx>::index_logic(index) < (*slice).len())]
 #[thrust_macros::ensures(*result == (*slice)[<I as Idx>::index_logic(index)])]
-fn read_entry<I: Idx + Model, T: Model>(slice: &IndexSlice<I, T>, index: I) -> &T {
+fn read_entry<I: Idx + thrust_models::Model, T: thrust_models::Model>(slice: &IndexSlice<I, T>, index: I) -> &T {
     &slice[index]
 }
 
@@ -67,8 +67,8 @@ fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> { //~ ERROR: Unsat
         thrust_macros::invariant!(
             |v: IndexVec<usize, i64>,
              i: usize,
-             n: FnParam<usize>,
-             elem: FnParam<i64>|
+             n: thrust_models::FnParam<usize>,
+             elem: thrust_models::FnParam<i64>|
                 v.len() == i
                     && i <= n.at_entry()
                     && forall(|k: USize| 0 <= k && k < i ==> v[k] == elem.at_entry())

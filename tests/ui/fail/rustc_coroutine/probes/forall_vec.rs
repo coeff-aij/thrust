@@ -1,10 +1,10 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-use thrust_models::model::Int;
+
 use thrust_models::forall;
 
-#[thrust_macros::requires(forall(|i: Int|
+#[thrust_macros::requires(forall(|i: thrust_models::model::Int|
     (0 <= i && i < (*v).len()) ==> (*v)[i] >= 0))]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]

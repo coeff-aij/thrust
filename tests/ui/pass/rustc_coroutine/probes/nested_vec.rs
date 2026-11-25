@@ -1,12 +1,12 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-use thrust_models::model::Int;
+
 use thrust_models::forall;
 
 #[thrust_macros::requires((*v).len() > 0)]
 #[thrust_macros::requires((*v)[0].len() > 0)]
-#[thrust_macros::requires(forall(|i: Int| forall(|j: Int|
+#[thrust_macros::requires(forall(|i: thrust_models::model::Int| forall(|j: thrust_models::model::Int|
     (0 <= i && i < (*v).len() && 0 <= j && j < (*v)[i].len()) ==> (*v)[i][j] >= 0)))]
 #[thrust_macros::ensures(true)]
 #[thrust_macros::context]

@@ -24,7 +24,7 @@
 // overflow), is refuted; only it is verified.
 
 #![feature(new_range_api)]
-use thrust_models::Model;
+
 #[path = "../../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
 #[path = "../../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
@@ -210,7 +210,7 @@ struct FieldLayout {
     largest_niche: Option<Niche>,
 }
 
-impl Model for FieldLayout {
+impl thrust_models::Model for FieldLayout {
     type Ty = Self;
 }
 
@@ -222,7 +222,7 @@ struct Placed {
     largest_niche: Option<Niche>,
 }
 
-impl Model for Placed {
+impl thrust_models::Model for Placed {
     type Ty = Self;
 }
 
@@ -232,7 +232,7 @@ enum LayoutError {
     SizeOverflow,
 }
 
-impl Model for LayoutError {
+impl thrust_models::Model for LayoutError {
     type Ty = Self;
 }
 
@@ -242,7 +242,7 @@ enum NicheBias {
     End,
 }
 
-impl Model for NicheBias {
+impl thrust_models::Model for NicheBias {
     type Ty = Self;
 }
 

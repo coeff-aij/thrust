@@ -8,7 +8,7 @@
 // (stage 7) uses and the `layout.rs` root assumes. The code is the module tree under
 // tests/rustc_coroutine/; this file selects the lemmas.
 #![feature(new_range_api)]
-use thrust_models::Model;
+
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
 #[path = "../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
@@ -67,13 +67,13 @@ fn acc_bound_strict(fields: &IndexVec<u32, u32>, a: &IndexVec<u32, u32>, e: &u32
 #[thrust_macros::context]
 #[thrust_macros::requires(forall(|p: Int, i: case_study::USize|
     !((*it).0.1 <= p && p < (*it).0.0.len() && L::index_is((*it).0.0[p], i)) || i < n))]
-#[thrust_macros::ensures(forall(|v: Seq<&<L as Model>::Ty>, o: <Filter<core::slice::Iter<'a, L>, P> as Model>::Ty, j: Int|
+#[thrust_macros::ensures(forall(|v: Seq<&<L as thrust_models::Model>::Ty>, o: <Filter<core::slice::Iter<'a, L>, P> as thrust_models::Model>::Ty, j: Int|
     !(<Filter<core::slice::Iter<'a, L>, P> as IteratorSpec>::produces(*it, v, o) && 0 <= j && j < v.len())
         || L::index_logic(*v[j]) + 1 < n))]
 #[thrust_macros::lemma]
 fn filter_yields_below_strict<'a, L, P>(it: &Filter<core::slice::Iter<'a, L>, P>, n: usize)
 where
-    L: rustc_index::Idx + Model,
+    L: rustc_index::Idx + thrust_models::Model,
     P: Fn(&&'a L) -> bool,
 {
 }

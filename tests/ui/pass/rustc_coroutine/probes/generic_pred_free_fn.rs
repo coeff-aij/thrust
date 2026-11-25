@@ -1,12 +1,12 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-use thrust_models::Model;
+
 struct P {
     v: i64,
 }
 
-impl Model for P {
+impl thrust_models::Model for P {
     type Ty = P;
 }
 
@@ -37,7 +37,7 @@ impl Tr for P {
 #[thrust_macros::ensures(true)]
 fn f<T>(x: &mut T) -> i64
 where
-    T: Tr + Model,
+    T: Tr + thrust_models::Model,
 {
     x.use_it()
 }

@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-use thrust_models::Model;
+
 // `Size` of layout.rs: a struct model (`Ty = Self`) whose derived `Ord` compares the field, so
 // `max` is specified through a local `PartialOrdSpec` that states that order.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -9,7 +9,7 @@ pub struct Size {
     raw: u64,
 }
 
-impl Model for Size {
+impl thrust_models::Model for Size {
     type Ty = Self;
 }
 
