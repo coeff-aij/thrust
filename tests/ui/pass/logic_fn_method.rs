@@ -1,12 +1,12 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 use thrust_models::model::Int;
 
 struct Pair(i64, i64);
 
-impl thrust_models::Model for Pair {
+impl Model for Pair {
     type Ty = (Int, Int);
 }
 

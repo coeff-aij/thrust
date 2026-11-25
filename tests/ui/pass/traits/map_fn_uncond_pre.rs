@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+use thrust_models::Model;
 use thrust_models::model::{Closure, Mut};
 use thrust_models::{exists, forall};
 
@@ -29,16 +30,16 @@ struct Map<I, F> {
     func: F,
 }
 
-impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
-    type Ty = Map<<I as thrust_models::Model>::Ty, Closure<F>>;
+impl<I: Model, F> Model for Map<I, F> {
+    type Ty = Map<<I as Model>::Ty, Closure<F>>;
 }
 
 #[thrust_macros::context]
-impl<I: Iterator + thrust_models::Model, B: thrust_models::Model, F: Fn(I::Item) -> B> Iterator for Map<I, F>
+impl<I: Iterator + Model, B: Model, F: Fn(I::Item) -> B> Iterator for Map<I, F>
 where
-    <I as Iterator>::Item: thrust_models::Model,
-    <<I as Iterator>::Item as thrust_models::Model>::Ty:
-        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty>,
+    <I as Iterator>::Item: Model,
+    <<I as Iterator>::Item as Model>::Ty:
+        Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
 {
     type Item = B;
 
@@ -61,7 +62,7 @@ where
         // reachability-conditioned form is what made the `FnMut` invariant
         // non-inductive.
         I::invariant(self.iter)
-            && forall(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+            && forall(|i: <<I as Iterator>::Item as Model>::Ty|
                 thrust_macros::pre!((self.func)(i)))
     }
 
@@ -75,7 +76,7 @@ where
     fn step(self, item: Self::Item, dist: Self) -> bool {
         // exists(|i: Self::Item| self.iter.step(i, dist.iter)) &&
         // pre!(self.func(i)) && post!(self.func(i), item) && self.func == dist.func
-        exists(|i: <<I as Iterator>::Item as thrust_models::Model>::Ty|
+        exists(|i: <<I as Iterator>::Item as Model>::Ty|
             I::step(self.iter, i, dist.iter)
                 && thrust_macros::pre!((self.func)(i))
                 && thrust_macros::post!((self.func)(i), item)

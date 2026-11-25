@@ -5,14 +5,14 @@
 // `assume!` does; its bound lets the formula use `Wrap<P>`'s predicate. The code under the contract
 // starts from `requires` alone, whose `callable` of `w`'s own closure is what `call`
 // requires.
-
+use thrust_models::{Model, model::Closure};
 pub struct Wrap<F> {
     n: i64,
     f: F,
 }
 
-impl<F> thrust_models::Model for Wrap<F> {
-    type Ty = (<i64 as thrust_models::Model>::Ty, thrust_models::model::Closure<F>);
+impl<F> Model for Wrap<F> {
+    type Ty = (<i64 as Model>::Ty, Closure<F>);
 }
 
 #[thrust_macros::context]

@@ -4,14 +4,14 @@
 
 // A loop over a type parameter bounded by `IteratorSpec`, verified once, and called at a local
 // type whose `next` is checked against `Iterator::next`'s contract for `IteratorSpec` types.
-
+use thrust_models::{exists, FnParam, forall, Model, model::{Int, Mut, Seq}};
 #[derive(PartialEq)]
 struct Counter {
     cur: i64,
     end: i64,
 }
 
-impl thrust_models::Model for Counter {
+impl Model for Counter {
     type Ty = Self;
 }
 
@@ -42,7 +42,7 @@ impl IteratorSpec for Counter {
             && self.cur <= o.cur
             && o.cur <= o.end
             && visited.len() == o.cur - self.cur
-            && thrust_models::forall(|i: thrust_models::model::Int|
+            && forall(|i: Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.cur + i)
     }
 
@@ -55,9 +55,9 @@ impl IteratorSpec for Counter {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -65,16 +65,16 @@ impl IteratorSpec for Counter {
 
 #[thrust_macros::context]
 #[thrust_macros::requires(I::inv(iter))]
-#[thrust_macros::ensures(thrust_models::exists(|last: I::Ty| thrust_models::exists(|fin: I::Ty|
-    I::produces(iter, result, last) && I::completed(thrust_models::model::Mut::new(last, fin)))))]
+#[thrust_macros::ensures(exists(|last: I::Ty| exists(|fin: I::Ty|
+    I::produces(iter, result, last) && I::completed(Mut::new(last, fin)))))]
 fn collect<I: IteratorSpec>(iter: I) -> Vec<I::Item>
 where
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     let mut it = iter;
     let mut out = Vec::new();
     while let Some(x) = it.next() {
-        thrust_macros::invariant!(|it: I, out: Vec<I::Item>, iter: thrust_models::FnParam<I>|
+        thrust_macros::invariant!(|it: I, out: Vec<I::Item>, iter: FnParam<I>|
             I::inv(it) && I::produces(iter.at_entry(), out, it));
         out.push(x);
     }

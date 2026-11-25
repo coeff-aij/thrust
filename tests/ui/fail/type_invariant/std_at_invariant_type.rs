@@ -1,13 +1,13 @@
 //@error-in-other-file: would promise the invariant
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::Model;
 // std's `Option::unwrap` is not analyzed, and its contract at `C` would promise the invariant of
 // the result, which the `Some` does not have: std code at a type with an invariant is rejected.
 struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

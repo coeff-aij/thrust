@@ -1,12 +1,12 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait A {
     type Item;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::ok(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::ok(*self, i)))]
     fn get(&mut self) -> Option<Self::Item>;
 
     fn other(&mut self) -> Option<Self::Item>;
@@ -19,15 +19,15 @@ struct W<I> {
     inner: I,
 }
 
-impl<I: thrust_models::Model> thrust_models::Model for W<I> {
-    type Ty = (<I as thrust_models::Model>::Ty,);
+impl<I: Model> Model for W<I> {
+    type Ty = (<I as Model>::Ty,);
 }
 
 #[thrust_macros::context]
 impl<I> A for W<I>
 where
-    I: A + thrust_models::Model,
-    <I as A>::Item: thrust_models::Model,
+    I: A + Model,
+    <I as A>::Item: Model,
 {
     type Item = I::Item;
 

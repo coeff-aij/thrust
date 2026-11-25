@@ -1,5 +1,5 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
-
+use thrust_models::Model;
 // rustc checks that a `match` in a formula is exhaustive, in an `ensures`, a logic function's
 // body and a ghost term alike. A `match` of a non-Boolean type relies on it: its last arm is the
 // value where no earlier arm matches, and the selectors it reads are read under their testers
@@ -13,7 +13,7 @@ enum Shape {
     Empty,
 }
 
-impl thrust_models::Model for Shape {
+impl Model for Shape {
     type Ty = Self;
 }
 

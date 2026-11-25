@@ -3,7 +3,7 @@
 // As `pass/iterators/adapter_closure_in_inv.rs`, with more closures of the same type in a `Vec`
 // field that `inv` states no `pre!` of: the `pre!` stated covers only one value of the type, and
 // `Vec<P>` holds its elements behind a raw allocation, so the call stops.
-
+use thrust_models::{forall, Model, model::{Closure, Seq}};
 use thrust_models::model::Int;
 
 pub struct Keep<P> {
@@ -13,8 +13,8 @@ pub struct Keep<P> {
     others: Vec<P>,
 }
 
-impl<P> thrust_models::Model for Keep<P> {
-    type Ty = (i64, i64, thrust_models::model::Closure<P>, Vec<thrust_models::model::Closure<P>>);
+impl<P> Model for Keep<P> {
+    type Ty = (i64, i64, Closure<P>, Vec<Closure<P>>);
 }
 
 impl<P: Fn(&i64) -> bool> Iterator for Keep<P> {
@@ -37,7 +37,7 @@ impl<P: Fn(&i64) -> bool> IteratorSpec for Keep<P> {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         self.0 <= self.1
-            && thrust_models::forall(|x: Int| !(self.0 <= x && x < self.1) || thrust_macros::pre!(self.2(&x)))
+            && forall(|x: Int| !(self.0 <= x && x < self.1) || thrust_macros::pre!(self.2(&x)))
     }
 
     #[thrust_macros::predicate]
@@ -54,9 +54,9 @@ impl<P: Fn(&i64) -> bool> IteratorSpec for Keep<P> {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }

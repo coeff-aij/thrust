@@ -4,11 +4,11 @@
 
 // A generic impl method's spec bound, reached through a trait method called at a type parameter,
 // holds at the instance: `Good` implements `IteratorSpec`.
-
+use thrust_models::{Model, model::{Int, Seq}};
 #[derive(PartialEq)]
 struct Good;
 
-impl thrust_models::Model for Good {
+impl Model for Good {
     type Ty = Self;
 }
 
@@ -41,9 +41,9 @@ impl IteratorSpec for Good {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -51,11 +51,11 @@ impl IteratorSpec for Good {
 
 struct W<J>(Option<J>);
 
-impl<J: thrust_models::Model> thrust_models::Model for W<J> {
-    type Ty = Option<<J as thrust_models::Model>::Ty>;
+impl<J: Model> Model for W<J> {
+    type Ty = Option<<J as Model>::Ty>;
 }
 
-impl<J: Iterator<Item = i64> + thrust_models::Model> Iterator for W<J> {
+impl<J: Iterator<Item = i64> + Model> Iterator for W<J> {
     type Item = i64;
 
     fn next(&mut self) -> Option<i64> {
@@ -67,7 +67,7 @@ impl<J: Iterator<Item = i64> + thrust_models::Model> Iterator for W<J> {
 }
 
 #[thrust_macros::context]
-impl<J: Iterator<Item = i64> + thrust_models::Model> IteratorSpec for W<J> {
+impl<J: Iterator<Item = i64> + Model> IteratorSpec for W<J> {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         true
@@ -87,9 +87,9 @@ impl<J: Iterator<Item = i64> + thrust_models::Model> IteratorSpec for W<J> {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<thrust_models::model::Int>,
+        ab: Seq<Int>,
         b: &Self,
-        bc: thrust_models::model::Seq<thrust_models::model::Int>,
+        bc: Seq<Int>,
         c: &Self,
     ) {
     }
@@ -100,7 +100,7 @@ impl<J: Iterator<Item = i64> + thrust_models::Model> IteratorSpec for W<J> {
 #[thrust_macros::ensures(true)]
 fn step<I: IteratorSpec>(it: &mut I)
 where
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     let _ = it.next();
 }

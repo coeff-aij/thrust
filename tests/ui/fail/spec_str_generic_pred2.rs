@@ -1,9 +1,9 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@no-rustfix
-
+use thrust_models::Model;
 // A `&str` has no `Model`, so a generic predicate comparing at `T` cannot be applied at it.
 #[thrust_macros::predicate]
-fn distinct<T: thrust_models::Model>(x: T, y: T) -> bool { x != y }
+fn distinct<T: Model>(x: T, y: T) -> bool { x != y }
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(distinct::<&'static str>(result, a))] //~ ERROR: the trait bound `str: thrust_models::Model` is not satisfied

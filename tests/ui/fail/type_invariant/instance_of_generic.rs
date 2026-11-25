@@ -1,11 +1,11 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // `W<u32>` has an invariant and `W<T>` none, so `h`'s contract has no conjunct at `T` and one at
 // `T := u32`: `h` is analyzed at `u32`, where it breaks the invariant of `*w`.
 struct W<T>(T);
-impl<T: thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Model> Model for W<T> {
     type Ty = T::Ty;
 }
 #[thrust_macros::context]

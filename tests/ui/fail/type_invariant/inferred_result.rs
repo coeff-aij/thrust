@@ -1,11 +1,11 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // A function without a contract returns a value that breaks the invariant.
 struct Even(i64);
 
-impl thrust_models::Model for Even {
+impl Model for Even {
     type Ty = Self;
 }
 

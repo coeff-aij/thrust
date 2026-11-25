@@ -2,7 +2,7 @@
 
 // The proof of a law over a `&mut` need not write through it: an empty proof leaves the final
 // value equal to the current one, and the law would still be assumed for every final value.
-
+use thrust_models::model::Int;
 use thrust_models::Model;
 
 #[thrust_macros::context]
@@ -19,7 +19,7 @@ trait L: Model {
 struct A(i64);
 
 impl Model for A {
-    type Ty = (thrust_models::model::Int,);
+    type Ty = (Int,);
 }
 
 #[thrust_macros::context]

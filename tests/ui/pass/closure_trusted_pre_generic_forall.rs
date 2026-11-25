@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_VERIFY_ONLY=main,g
 // The twin of `fail/closure_trusted_pre_generic_forall.rs`: `main` runs `g` at a `Q` that
 // holds no closure.
-
+use thrust_models::forall;
 pub trait Call {
     fn call(&self, x: i64);
 }
@@ -32,7 +32,7 @@ fn h<P: Fn(i64), Q: Call>(f: P, q: Q) {
     q.call(0);
 }
 
-#[thrust_macros::requires(thrust_models::forall(|a: i64| thrust_macros::pre!(f(a))))]
+#[thrust_macros::requires(forall(|a: i64| thrust_macros::pre!(f(a))))]
 #[thrust_macros::ensures(true)]
 fn g<P: Fn(i64), Q: Call>(f: P, q: Q) {
     h(f, q)
