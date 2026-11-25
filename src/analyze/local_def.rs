@@ -2929,6 +2929,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.ctx
             .body_checks()
             .record(self.local_def_id, analyze::BodyCheck::Checked);
+        self.ctx.record_body_analysis(self.analysis_key());
         self.ctx.enter_body(self.local_def_id);
         self.unelaborate_derefs();
         self.window_reads =

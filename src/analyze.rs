@@ -43,6 +43,7 @@ mod lemma;
 mod local_def;
 mod model_eq;
 mod pred_inst;
+mod reached_instances;
 mod reconstruct_slice_indexing;
 pub(crate) mod selection;
 mod two_phase_borrow;
@@ -50,6 +51,7 @@ pub mod unanalyzed_entry;
 
 // TODO: organize structure and remove cross dependency between refine
 pub use did_cache::DefIdCache;
+pub use reached_instances::InstanceWalk;
 
 // Also the paths siblings use: analyze::{predicate_typing_env, trait_bounds, trait_item_args,
 // fn_mut_bounded_params}.
@@ -533,13 +535,26 @@ impl<'tcx> AnalysisKey<'tcx> {
     /// mention the caller's type parameters, only the caller's (`owner_fn_id`'s) where-clauses
     /// can resolve a projection over them, so its environment is used; otherwise the body's own.
     pub fn typing_env(&self, tcx: TyCtxt<'tcx>) -> mir_ty::TypingEnv<'tcx> {
+        mir_ty::TypingEnv::post_analysis(tcx, self.env_def_id(tcx))
+    }
+
+    /// The def whose where-clauses make [`AnalysisKey::typing_env`].
+    pub fn env_def_id(&self, tcx: TyCtxt<'tcx>) -> DefId {
         use mir_ty::TypeVisitableExt as _;
         let identity = mir_ty::GenericArgs::identity_for_item(tcx, self.local_def_id);
         if self.generic_args.has_param() && self.generic_args != identity {
-            mir_ty::TypingEnv::post_analysis(tcx, self.owner_fn_id)
+            self.owner_fn_id
         } else {
-            mir_ty::TypingEnv::post_analysis(tcx, self.local_def_id)
+            self.local_def_id.to_def_id()
         }
+    }
+
+    pub fn local_def_id(&self) -> LocalDefId {
+        self.local_def_id
+    }
+
+    pub fn generic_args(&self) -> mir_ty::GenericArgsRef<'tcx> {
+        self.generic_args
     }
 }
 
@@ -698,6 +713,8 @@ pub struct Analyzer<'tcx> {
     concrete_instances: Rc<RefCell<HashSet<LocalDefId>>>,
     /// The generic defs whose bodies were analyzed at concrete arguments, and those arguments.
     analyzed_instances: RefCell<Vec<(DefId, mir_ty::GenericArgsRef<'tcx>)>>,
+    /// Every analysis of a body, in the order they ran; see [`Analyzer::record_body_analysis`].
+    analyzed_bodies: RefCell<Vec<AnalysisKey<'tcx>>>,
     /// See [`HistInvRelations`].
     hist_inv_relations: HistInvRelations<'tcx>,
     /// See [`FnMutReuse`].
@@ -746,6 +763,10 @@ pub struct Analyzer<'tcx> {
     assumptions: Vec<AssumeSite>,
     /// The fn-like defs whose bodies are trusted rather than analyzed.
     trusted_bodies: HashSet<LocalDefId>,
+    /// The bodies outside `THRUST_VERIFY_ONLY`, checked only per instance, that the analysis
+    /// reached at no instance, trusted for their contract from then on
+    /// (`crate_::Analyzer::trust_unreached_unselected_per_instance`).
+    unreached_trusted_bodies: HashSet<LocalDefId>,
     /// What each analyzed body's calls into code Thrust does not analyze cover, by the body and
     /// the function called with its generic arguments.
     handovers: Vec<(
@@ -1073,6 +1094,7 @@ impl<'tcx> Analyzer<'tcx> {
             pending_laws,
             concrete_instances: Default::default(),
             analyzed_instances: Default::default(),
+            analyzed_bodies: Default::default(),
             hist_inv_relations: Default::default(),
             fn_mut_reuse: Default::default(),
             spec_assumptions: Default::default(),
@@ -1094,6 +1116,7 @@ impl<'tcx> Analyzer<'tcx> {
             invariant_annotations: Default::default(),
             assumptions: Default::default(),
             trusted_bodies: Default::default(),
+            unreached_trusted_bodies: Default::default(),
             handovers: Default::default(),
             handover_counts: Default::default(),
             body_checks: Default::default(),
@@ -2659,6 +2682,28 @@ impl<'tcx> Analyzer<'tcx> {
     /// `FnMut`-bounded type parameter.
     pub fn has_concrete_instance(&self, local_def_id: LocalDefId) -> bool {
         self.concrete_instances.borrow().contains(&local_def_id)
+    }
+
+    /// Records an analysis of a body, from which
+    /// [`Analyzer::instances_reached_from_new_analyses`] follows what the body runs.
+    pub fn record_body_analysis(&self, key: AnalysisKey<'tcx>) {
+        self.analyzed_bodies.borrow_mut().push(key);
+    }
+
+    /// Whether the body of `local_def_id` has been analyzed, at any arguments.
+    pub fn has_analyzed_body(&self, local_def_id: LocalDefId) -> bool {
+        self.analyzed_bodies
+            .borrow()
+            .iter()
+            .any(|key| key.local_def_id() == local_def_id)
+    }
+
+    /// Whether the body of `def_id` has been analyzed at the concrete `generic_args`.
+    pub fn analyzed_at(&self, def_id: DefId, generic_args: mir_ty::GenericArgsRef<'tcx>) -> bool {
+        self.analyzed_instances
+            .borrow()
+            .iter()
+            .any(|(analyzed, args)| *analyzed == def_id && *args == generic_args)
     }
 
     /// Whether a refinement in `rty`, a contract at `generic_args` made from `caller_def_id`,
