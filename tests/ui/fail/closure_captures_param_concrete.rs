@@ -1,8 +1,8 @@
 //@compile-flags: -C debug-assertions=off
 // The closure holds `t` at `&mut &T`; restated at `&mut &i64`, the clause would read a `T` as an
 // integer, which `g::<bool>` makes ill-sorted.
-#[thrust_macros::requires(thrust_macros::pre!(f(&x)))]
-#[thrust_macros::ensures(thrust_models::exists(|g| thrust_macros::post!(thrust_models::model::Mut::new(f, g)(&x), result)))]
+use thrust_models::{exists, Model, model::Mut}; #[thrust_macros::requires(thrust_macros::pre!(f(&x)))]
+#[thrust_macros::ensures(exists(|g| thrust_macros::post!(Mut::new(f, g)(&x), result)))]
 fn call<F: FnMut(&i64) -> i64>(x: i64, mut f: F) -> i64 {
     f(&x)
 }
@@ -15,7 +15,7 @@ struct S<C>(C);
 
 impl<C> S<C> {
     #[thrust_macros::context]
-    fn g<T: thrust_models::Model>(&self, t: &T) -> i64 {
+    fn g<T: Model>(&self, t: &T) -> i64 {
         call(
             1,
             thrust_macros::closure!(

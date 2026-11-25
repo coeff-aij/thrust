@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 use thrust_models::exists;
 
 #[derive(PartialEq)]
@@ -11,7 +11,7 @@ enum E {
     C(Option<i64>),
 }
 
-impl thrust_models::Model for E {
+impl Model for E {
     type Ty = Self;
 }
 

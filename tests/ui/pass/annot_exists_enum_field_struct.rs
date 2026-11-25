@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 use thrust_models::exists;
 
 struct Item {
@@ -9,7 +9,7 @@ struct Item {
     o: Option<i64>,
 }
 
-impl thrust_models::Model for Item {
+impl Model for Item {
     type Ty = Self;
 }
 

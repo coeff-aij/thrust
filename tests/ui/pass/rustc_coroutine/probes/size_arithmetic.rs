@@ -21,7 +21,7 @@
 // a niche offset within the field.
 
 #![feature(new_range_api)]
-
+use thrust_models::Model;
 #[path = "../../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
 #[path = "../../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
@@ -207,7 +207,7 @@ struct FieldLayout {
     largest_niche: Option<Niche>,
 }
 
-impl thrust_models::Model for FieldLayout {
+impl Model for FieldLayout {
     type Ty = Self;
 }
 
@@ -219,7 +219,7 @@ struct Placed {
     largest_niche: Option<Niche>,
 }
 
-impl thrust_models::Model for Placed {
+impl Model for Placed {
     type Ty = Self;
 }
 
@@ -229,7 +229,7 @@ enum LayoutError {
     SizeOverflow,
 }
 
-impl thrust_models::Model for LayoutError {
+impl Model for LayoutError {
     type Ty = Self;
 }
 
@@ -239,7 +239,7 @@ enum NicheBias {
     End,
 }
 
-impl thrust_models::Model for NicheBias {
+impl Model for NicheBias {
     type Ty = Self;
 }
 

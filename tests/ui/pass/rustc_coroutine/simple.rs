@@ -10,7 +10,7 @@
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
 #![feature(new_range_api)]
-
+use thrust_models::Model;
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
 #[path = "../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
@@ -31,9 +31,9 @@ use thrust_models::forall;
 #[thrust_macros::requires(forall(|k: USize| k == 0usize || k == 1usize ==> <FieldIdx as Idx>::can_new(k)))]
 #[thrust_macros::ensures(true)]
 fn drive<
-    Cx: HasDataLayout + thrust_models::Model<Ty: PartialEq>,
-    FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-    VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
+    Cx: HasDataLayout + Model<Ty: PartialEq>,
+    FieldIdx: Idx + Model<Ty: PartialEq>,
+    VariantIdx: Idx + Model<Ty: PartialEq>,
 >(
     cx: &Cx,
     a: Scalar,

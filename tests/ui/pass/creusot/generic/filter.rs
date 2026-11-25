@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::{exists, forall};
+use thrust_models::{FnParam, model::{UInt, UIntN}}; use thrust_models::{exists, forall};
 use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};
 use thrust_models::{Ghost, Model};
@@ -9,9 +9,9 @@ use thrust_models::{Ghost, Model};
 /// The model of `usize`, which carries its width while `THRUST_INT_RANGE` is set: `Seq::len`
 /// returns it, and the ghost `idx` holds lengths.
 #[cfg(not(thrust_int_range))]
-type USize = thrust_models::model::UInt;
+type USize = UInt;
 #[cfg(thrust_int_range)]
-type USize = thrust_models::model::UIntN<64>;
+type USize = UIntN<64>;
 
 // `filter` collected into a `Vec`, generic in the iterator `I` and an `FnMut` predicate `P`, as
 // std's `iter.filter(p).collect::<Vec<_>>()` is (with the predicate taking the item by value,
@@ -161,7 +161,7 @@ where
     let mut gidx = thrust_macros::ghost!(|| -> Seq<USize> { Seq::empty() });
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: I, q: P, out: Vec<I::Item>, gs: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gbs: Ghost<Seq<bool>>, gfs: Ghost<Seq<Closure<P>>>, gidx: Ghost<Seq<USize>>, iter: thrust_models::FnParam<I>, p: thrust_models::FnParam<P>|
+            |it: I, q: P, out: Vec<I::Item>, gs: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gbs: Ghost<Seq<bool>>, gfs: Ghost<Seq<Closure<P>>>, gidx: Ghost<Seq<USize>>, iter: FnParam<I>, p: FnParam<P>|
             I::invariant(it)
                 && I::produces(iter.at_entry(), gs, it)
                 && forall(|c: Closure<P>, x: <<I as Iterator>::Item as Model>::Ty| thrust_macros::pre!(c(x)))

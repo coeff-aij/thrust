@@ -1,14 +1,14 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::{FnParam, model::{UInt, UIntN}}; use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
 /// The model of `u32`, which carries its width while `THRUST_INT_RANGE` is set.
 #[cfg(not(thrust_int_range))]
-type U32 = thrust_models::model::UInt;
+type U32 = UInt;
 #[cfg(thrust_int_range)]
-type U32 = thrust_models::model::UIntN<32>;
+type U32 = UIntN<32>;
 
 // Creusot's `examples/counter`: `v.iter().map_inv(|x, _prod| { cnt += 1; *x }).collect()`, where
 // the closure's precondition `cnt == _prod.len()` reads the history. The iterator spec is the
@@ -199,7 +199,7 @@ impl FromIterator<u32> for Vec<u32> {
         let mut v: Vec<u32> = Vec::new();
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: Vec<u32>, iter: thrust_models::FnParam<&mut I>|
+                |it: &mut I, v: Vec<u32>, iter: FnParam<&mut I>|
                 !it == !iter.at_entry()
                     && I::invariant(*it)
                     && forall(|e: U32| I::produces(*it, e) ==> I::produces(*iter.at_entry(), e))

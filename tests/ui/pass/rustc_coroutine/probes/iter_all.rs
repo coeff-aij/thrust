@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off -A unused-variables -A unused_parens -A unused_imports
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
-
+use thrust_models::{FnParam, Model};
 use std::marker::PhantomData;
 use thrust_models::model::{Closure, Int, Mut, Seq, UInt};
 use thrust_models::{exists, forall, Ghost};
@@ -14,13 +14,13 @@ use thrust_models::{exists, forall, Ghost};
 #[thrust_macros::context]
 trait Iterator
 where
-    Self: thrust_models::Model,
-    Self::Item: thrust_models::Model,
+    Self: Model,
+    Self::Item: Model,
 {
     type Item;
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool;
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool;
@@ -36,9 +36,9 @@ where
     #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
     fn produces_trans(
         a: &Self,
-        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -59,7 +59,7 @@ pub struct DenseBitSet {
     words: Vec<u64>,
 }
 
-impl thrust_models::Model for DenseBitSet {
+impl Model for DenseBitSet {
     type Ty = UInt;
 }
 
@@ -67,7 +67,7 @@ pub struct BitIter {
     word: u64,
 }
 
-impl thrust_models::Model for BitIter {
+impl Model for BitIter {
     type Ty = UInt;
 }
 
@@ -95,7 +95,7 @@ impl Iterator for BitIter {
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         o + visited.len() == self
             && forall(|i: Int| !(0 <= i && i < visited.len()) || 0 <= visited[i])
     }
@@ -115,7 +115,7 @@ impl BitIter {
     #[thrust_macros::ensures(
         <Self as Iterator>::invariant(!self)
             && (result == None ==> <Self as Iterator>::completed(self))
-            && forall(|x: <usize as thrust_models::Model>::Ty| result == Some(x) ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
+            && forall(|x: <usize as Model>::Ty| result == Some(x) ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
     )]
     fn next_bit(&mut self) -> Option<usize> {
         None
@@ -132,13 +132,13 @@ impl<I, F> IterAllSpec<I, F>
 where
     I: Iterator,
     F: Fn(I::Item) -> bool,
-    I::Item: thrust_models::Model + Copy,
+    I::Item: Model + Copy,
 {
     #[thrust_macros::predicate]
     fn pre_all(iter: I, func: F) -> bool {
-        forall(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
-        forall(|e: <I::Item as thrust_models::Model>::Ty|
-        forall(|i: <I as thrust_models::Model>::Ty|
+        forall(|s: Seq<<I::Item as Model>::Ty>|
+        forall(|e: <I::Item as Model>::Ty|
+        forall(|i: <I as Model>::Ty|
             !I::produces(iter, s.push(e), i) || thrust_macros::pre!(func(e)))))
     }
 
@@ -162,11 +162,11 @@ where
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(iter) && IterAllSpec::<I, F>::pre_all(iter, f))]
 #[thrust_macros::ensures(
-    exists(|visited: Seq<<I::Item as thrust_models::Model>::Ty>,
-           mid: <I as thrust_models::Model>::Ty|
+    exists(|visited: Seq<<I::Item as Model>::Ty>,
+           mid: <I as Model>::Ty|
         I::produces(iter, visited, mid)
             && (result == true ==>
-                exists(|fin: <I as thrust_models::Model>::Ty| I::completed(Mut::new(mid, fin)))
+                exists(|fin: <I as Model>::Ty| I::completed(Mut::new(mid, fin)))
                     && forall(|k: Int| !(0 <= k && k < visited.len()) || thrust_macros::post!(f(visited[k]), true)))
             && (result == false ==>
                 0 < visited.len()
@@ -177,7 +177,7 @@ fn iter_all<I, F>(iter: I, f: F) -> bool
 where
     I: Iterator,
     F: Fn(I::Item) -> bool,
-    I::Item: thrust_models::Model + Copy,
+    I::Item: Model + Copy,
 {
     let mut it = iter;
     I::produces_refl(&it);
@@ -185,7 +185,7 @@ where
     let mut seen: Vec<I::Item> = Vec::new();
     loop {
         thrust_macros::invariant!(
-            |it: I, seen: Vec<I::Item>, iter: thrust_models::FnParam<I>, f: F|
+            |it: I, seen: Vec<I::Item>, iter: FnParam<I>, f: F|
                 I::invariant(it)
                     && I::produces(iter.at_entry(), seen, it)
                     && IterAllSpec::<I, F>::accepted(f, seen)

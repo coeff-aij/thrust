@@ -2,7 +2,7 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_TRY_SPECS=1 THRUST_SOLVER_TIMEOUT_SECS=300
 // slow: RQ1 input, 120 s; try_fold over a closure by default: pass/creusot/try_fold.rs, fail/creusot/generic/std/try_fold_mapinv.rs
-use thrust_models::{exists, forall};
+use thrust_models::{Ghost, model::IntN}; use thrust_models::{exists, forall};
 use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
@@ -11,7 +11,7 @@ use thrust_models::Model;
 #[cfg(not(thrust_int_range))]
 type ISize = thrust_models::model::Int;
 #[cfg(thrust_int_range)]
-type ISize = thrust_models::model::IntN<64>;
+type ISize = IntN<64>;
 
 // std's `Iterator::try_fold` (its body as std writes it, `?` on each call, `&mut self` as the
 // parameter `iter`, with the ghosts of the chain and a call of the lemma `try_fold_chain_push` beside
@@ -181,7 +181,7 @@ where
     let mut gfs = thrust_macros::ghost!(|f: F| -> Seq<Closure<F>> { Seq::singleton(f) });
     while let Some(x) = iter.next() {
         thrust_macros::invariant!(
-            |iter: &mut I, accum: B, f: F, gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gaccs: thrust_models::Ghost<Seq<<B as Model>::Ty>>, gfs: thrust_models::Ghost<Seq<Closure<F>>>, old!(iter): &mut I, old!(init): B, old!(f): F|
+            |iter: &mut I, accum: B, f: F, gs: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gaccs: Ghost<Seq<<B as Model>::Ty>>, gfs: Ghost<Seq<Closure<F>>>, old!(iter): &mut I, old!(init): B, old!(f): F|
             !iter == !old!(iter)
                 && I::invariant(*iter)
                 && forall(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, it1: <I as Model>::Ty, accs: Seq<<B as Model>::Ty>, fs: Seq<Closure<F>>, x: <<I as Iterator>::Item as Model>::Ty, it2: <I as Model>::Ty|
@@ -194,9 +194,9 @@ where
         let gx = thrust_macros::ghost!(|x: <I as Iterator>::Item| -> <I as Iterator>::Item { x });
         accum = f(accum, x)?;
         try_fold_chain_push::<I, B, F>();
-        let ngs = thrust_macros::ghost!(|gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gx: thrust_models::Ghost<<I as Iterator>::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { gs.push(gx) });
-        let ngaccs = thrust_macros::ghost!(|gaccs: thrust_models::Ghost<Seq<<B as Model>::Ty>>, accum: B| -> Seq<<B as Model>::Ty> { gaccs.push(accum) });
-        let ngfs = thrust_macros::ghost!(|gfs: thrust_models::Ghost<Seq<Closure<F>>>, f: F| -> Seq<Closure<F>> { gfs.push(f) });
+        let ngs = thrust_macros::ghost!(|gs: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gx: Ghost<<I as Iterator>::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { gs.push(gx) });
+        let ngaccs = thrust_macros::ghost!(|gaccs: Ghost<Seq<<B as Model>::Ty>>, accum: B| -> Seq<<B as Model>::Ty> { gaccs.push(accum) });
+        let ngfs = thrust_macros::ghost!(|gfs: Ghost<Seq<Closure<F>>>, f: F| -> Seq<Closure<F>> { gfs.push(f) });
         // Keeps the previous chain live at the snapshots above.
         let _live = (&gs, &gaccs, &gfs, &gx);
         gs = ngs;

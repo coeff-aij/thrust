@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::{exists, forall, Ghost};
+use thrust_models::FnParam; use thrust_models::{exists, forall, Ghost};
 use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
@@ -169,7 +169,7 @@ where
     let mut gfs = thrust_macros::ghost!(|g: F| -> Seq<Closure<F>> { Seq::singleton(g) });
     loop {
         thrust_macros::invariant!(
-            |it: I, accum: B, g: F, gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gaccs: thrust_models::Ghost<Seq<<B as Model>::Ty>>, gfs: thrust_models::Ghost<Seq<Closure<F>>>, iter: thrust_models::FnParam<I>, init: thrust_models::FnParam<B>, f: thrust_models::FnParam<F>|
+            |it: I, accum: B, g: F, gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gaccs: thrust_models::Ghost<Seq<<B as Model>::Ty>>, gfs: thrust_models::Ghost<Seq<Closure<F>>>, iter: FnParam<I>, init: FnParam<B>, f: FnParam<F>|
             I::invariant(it)
                 && forall(|s: Seq<<<I as Iterator>::Item as Model>::Ty>, it1: <I as Model>::Ty, accs: Seq<<B as Model>::Ty>, fs: Seq<Closure<F>>, x: <<I as Iterator>::Item as Model>::Ty, it2: <I as Model>::Ty|
                     !(fold_chain::<I, B, F>(iter.at_entry(), init.at_entry(), f.at_entry(), s, it1, accs, fs) && I::produces(it1, Seq::singleton(x), it2))

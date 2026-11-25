@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::forall;
+use thrust_models::FnParam; use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
 
@@ -105,7 +105,7 @@ fn fold<F: Fn(isize, isize) -> isize>(start: isize, end: isize, init: isize, f: 
     let mut acc = init;
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: Range, acc: isize, f: thrust_models::FnParam<F>|
+            |it: Range, acc: isize, f: FnParam<F>|
             it.start >= 0
                 && it.start <= it.end
                 && acc >= 0

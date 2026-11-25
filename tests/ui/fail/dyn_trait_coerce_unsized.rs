@@ -6,7 +6,7 @@
 // the checks of packing.
 
 #![feature(coerce_unsized, unsize)]
-use std::marker::Unsize;
+use thrust_models::Model; use std::marker::Unsize;
 use std::ops::CoerceUnsized;
 
 #[thrust_macros::context]
@@ -17,7 +17,7 @@ trait Shape {
 
 struct Tri;
 
-impl thrust_models::Model for Tri {
+impl Model for Tri {
     type Ty = ();
 }
 

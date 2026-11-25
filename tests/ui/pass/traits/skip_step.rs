@@ -2,7 +2,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
-use thrust_models::model::{Array, Int, Mut, Seq};
+use thrust_models::FnParam; use thrust_models::model::{Array, Int, Mut, Seq};
 use thrust_models::{exists, forall, Model};
 
 // The step form of the iterator spec (`skip.rs` is the Creusot form) on the same `Skip` adapter.
@@ -51,7 +51,7 @@ where
             // The inner states reached so far form a chain of `step`s from the entry state to the
             // current one; `n` counts the items still to drain.
             thrust_macros::invariant!(
-                |s: &mut Skip<I>, n: usize, self: thrust_models::FnParam<&mut Skip<I>>|
+                |s: &mut Skip<I>, n: usize, self: FnParam<&mut Skip<I>>|
                     !s == !self.at_entry()
                         && (*s).1 == 0
                         && I::invariant((*s).0)

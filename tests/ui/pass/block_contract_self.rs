@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // A block contract in a method of a generic impl names a predicate of the impl by `Self::`. The
 // receiver keeps its model, `C`'s (the `Model` impl below), in the method: a formula relates it
 // to the receiver's field, of type `C`.
@@ -10,17 +10,17 @@ pub struct Calc<C> {
     c: C,
 }
 
-impl<C: thrust_models::Model> thrust_models::Model for Calc<C> {
-    type Ty = <C as thrust_models::Model>::Ty;
+impl<C: Model> Model for Calc<C> {
+    type Ty = <C as Model>::Ty;
 }
 
 #[thrust_macros::predicate]
-fn either<C: thrust_models::Model<Ty: PartialEq>>(a: C, b: C) -> bool {
+fn either<C: Model<Ty: PartialEq>>(a: C, b: C) -> bool {
     a == b || b == b
 }
 
 #[thrust_macros::context]
-impl<C: Copy + thrust_models::Model<Ty: PartialEq>> Calc<C> {
+impl<C: Copy + Model<Ty: PartialEq>> Calc<C> {
     #[thrust_macros::predicate]
     fn below(calc: Calc<C>, n: i64) -> bool {
         0 <= n

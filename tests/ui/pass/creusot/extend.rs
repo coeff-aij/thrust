@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::model::{Int, Mut, Seq};
+use thrust_models::FnParam; use thrust_models::model::{Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
 // Creusot's `examples/extend`: `v1.extend(v2.into_iter())` appends `v2` to `v1`. The iterator is
@@ -111,7 +111,7 @@ impl Extend<u32> for Vec<u32> {
         let mut pushed = thrust_macros::ghost!(|| -> Seq<<u32 as Model>::Ty> { Seq::empty() });
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: &mut Vec<u32>, pushed: Ghost<Seq<<u32 as Model>::Ty>>, iter: thrust_models::FnParam<&mut I>, self: thrust_models::FnParam<&mut Vec<u32>>|
+                |it: &mut I, v: &mut Vec<u32>, pushed: Ghost<Seq<<u32 as Model>::Ty>>, iter: FnParam<&mut I>, self: FnParam<&mut Vec<u32>>|
                 !it == !iter.at_entry()
                     && !v == !self.at_entry()
                     && I::invariant(*it)

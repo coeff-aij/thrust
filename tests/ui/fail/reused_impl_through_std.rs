@@ -6,13 +6,13 @@
 // `clone` runs it at `Wrapper`, whose `deref` requires a positive field, so `W::clone` at
 // `Wrapper` is checked as an instance of its generic contract, as a direct call is: `Wrapper(0)`
 // panics.
-
+use thrust_models::Model;
 use std::ops::Deref;
 
 #[derive(Clone, Copy)]
 struct Wrapper(u64);
 
-impl thrust_models::Model for Wrapper {
+impl Model for Wrapper {
     type Ty = (u64,);
 }
 
@@ -37,7 +37,7 @@ fn _extern_spec_wrapper_deref(w: &Wrapper) -> &u64 {
 
 struct W<F>(F);
 
-impl<F: thrust_models::Model> thrust_models::Model for W<F> {
+impl<F: Model> Model for W<F> {
     type Ty = W<F::Ty>;
 }
 

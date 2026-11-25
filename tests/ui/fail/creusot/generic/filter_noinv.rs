@@ -3,7 +3,7 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
 // `filter.rs` with every `invariant!` removed: the loop invariant is left to inference.
-use thrust_models::{exists, forall};
+use thrust_models::model::{UInt, UIntN}; use thrust_models::{exists, forall};
 use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};
 use thrust_models::{Ghost, Model};
@@ -11,9 +11,9 @@ use thrust_models::{Ghost, Model};
 /// The model of `usize`, which carries its width while `THRUST_INT_RANGE` is set: `Seq::len`
 /// returns it, and the ghost `idx` holds lengths.
 #[cfg(not(thrust_int_range))]
-type USize = thrust_models::model::UInt;
+type USize = UInt;
 #[cfg(thrust_int_range)]
-type USize = thrust_models::model::UIntN<64>;
+type USize = UIntN<64>;
 
 // `filter` collected into a `Vec`, generic in the iterator `I` and an `FnMut` predicate `P`, as
 // std's `iter.filter(p).collect::<Vec<_>>()` is (with the predicate taking the item by value,

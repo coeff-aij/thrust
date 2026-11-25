@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
-
+use thrust_models::{FnParam, model::IntN};
 // Creusot's `examples/decuple_range`: `(0..10).map(|x| x * 10).collect()` with a closure that is
 // defined only below 100. The iterator spec is the step form of `creusot/weaker/map_call.rs`; `Map` is
 // the generic adapter from there, used at `Map<Range, closure>`. Creusot uses `map_inv`; the
@@ -18,7 +18,7 @@ use thrust_models::Model;
 #[cfg(not(thrust_int_range))]
 type ISize = thrust_models::model::Int;
 #[cfg(thrust_int_range)]
-type ISize = thrust_models::model::IntN<64>;
+type ISize = IntN<64>;
 
 // The step form of the iterator specification, Thrust's own: `step(self, item, dist)` relates
 // one call of `next` to its successor state, and the unary `produces(self, item)` says `item` is
@@ -190,7 +190,7 @@ impl FromIterator<isize> for Vec<isize> {
         let mut v: Vec<isize> = Vec::new();
         while let Some(x) = it.next() {
             thrust_macros::invariant!(
-                |it: &mut I, v: Vec<isize>, iter: thrust_models::FnParam<&mut I>|
+                |it: &mut I, v: Vec<isize>, iter: FnParam<&mut I>|
                 !it == !iter.at_entry()
                     && I::invariant(*it)
                     && forall(|e: ISize| I::produces(*it, e) ==> I::produces(*iter.at_entry(), e))

@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The pass twin starting the sum at 1.
-
+use thrust_models::{FnParam, forall, Model};
 use thrust_models::model::{Int, Seq};
 use thrust_models::Ghost;
 
@@ -13,7 +13,7 @@ struct Counter {
     end: i64,
 }
 
-impl thrust_models::Model for Counter {
+impl Model for Counter {
     type Ty = Self;
 }
 
@@ -44,7 +44,7 @@ impl IteratorSpec for Counter {
             && self.cur <= o.cur
             && o.cur <= o.end
             && visited.len() == o.cur - self.cur
-            && thrust_models::forall(|i: thrust_models::model::Int|
+            && forall(|i: thrust_models::model::Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.cur + i)
     }
 
@@ -57,9 +57,9 @@ impl IteratorSpec for Counter {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: thrust_models::model::Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: thrust_models::model::Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -71,7 +71,7 @@ impl IteratorSpec for Counter {
 fn sum(n: i64) -> i64 {
     let mut s = 1;
     for x in (Counter { cur: 0, end: n }) {
-        thrust_macros::invariant!(|iter: Counter, iter_old: Ghost<Counter>, produced: Ghost<Seq<Int>>, s: i64, n: thrust_models::FnParam<i64>|
+        thrust_macros::invariant!(|iter: Counter, iter_old: Ghost<Counter>, produced: Ghost<Seq<Int>>, s: i64, n: FnParam<i64>|
             0 <= n.at_entry() && iter_old.cur == 0 && iter_old.end == n.at_entry()
                 && 2 * s == produced.len() * (produced.len() - 1));
         s += x;

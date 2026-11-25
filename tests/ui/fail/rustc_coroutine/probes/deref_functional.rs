@@ -9,7 +9,7 @@
 // nothing. A newtype over an interned pointer, as rustc's `Layout`, discharges the requirement.
 
 // The fail twin: `end` does not require that `deref` is a function.
-
+use thrust_models::Model;
 use std::ops::Deref;
 use thrust_models::{exists, forall};
 
@@ -18,7 +18,7 @@ pub struct LayoutData {
     pub niche: i64,
 }
 
-impl thrust_models::Model for LayoutData {
+impl Model for LayoutData {
     type Ty = Self;
 }
 
@@ -28,11 +28,11 @@ pub struct Interned<'a, T>(&'a T);
 #[derive(Copy, Clone)]
 pub struct Layout<'a>(Interned<'a, LayoutData>);
 
-impl<'a, T> thrust_models::Model for Interned<'a, T> {
+impl<'a, T> Model for Interned<'a, T> {
     type Ty = Self;
 }
 
-impl<'a> thrust_models::Model for Layout<'a> {
+impl<'a> Model for Layout<'a> {
     type Ty = Self;
 }
 

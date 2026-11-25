@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::{exists, forall};
+use thrust_models::{FnParam, Ghost}; use thrust_models::{exists, forall};
 use thrust_models::model::{Closure, Mut};
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
@@ -145,7 +145,7 @@ where
     let mut gs = thrust_macros::ghost!(|| -> Seq<<<I as Iterator>::Item as Model>::Ty> { Seq::empty() });
     while let Some(x) = it.next() {
         thrust_macros::invariant!(
-            |it: &mut I, g: F, gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, f: thrust_models::FnParam<F>, iter: thrust_models::FnParam<&mut I>|
+            |it: &mut I, g: F, gs: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, f: FnParam<F>, iter: FnParam<&mut I>|
             !it == !iter.at_entry()
                 && I::invariant(*it)
                 && I::produces(*iter.at_entry(), gs, *it)
@@ -157,7 +157,7 @@ where
             ControlFlow::Continue(()) => {}
             ControlFlow::Break(b) => return ControlFlow::Break(b),
         }
-        gs = thrust_macros::ghost!(|gs: thrust_models::Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gx: thrust_models::Ghost<<I as Iterator>::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { gs.push(gx) });
+        gs = thrust_macros::ghost!(|gs: Ghost<Seq<<<I as Iterator>::Item as Model>::Ty>>, gx: Ghost<<I as Iterator>::Item>| -> Seq<<<I as Iterator>::Item as Model>::Ty> { gs.push(gx) });
     }
     ControlFlow::Continue(())
 }

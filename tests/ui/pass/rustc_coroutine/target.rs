@@ -25,7 +25,7 @@
 // - const-generic arrays (`From<[T; N]>`)
 
 // //== ./../rustc_hashes/src/lib.rs
-
+use thrust_models::Model;
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct Hash64 {
     inner: u64,
@@ -2152,122 +2152,122 @@ impl<FieldIdx: Idx> VariantLayout<FieldIdx> {
 // //== Thrust model declarations
 //
 // Every user-defined type is modeled by itself (field by field). Without these,
-// projections such as `<&Size as thrust_models::Model>::Ty` in the injected
+// projections such as `<&Size as Model>::Ty` in the injected
 // std specs cannot be normalized and are treated as opaque sorts. IndexSlice
 // is unsized and has no model yet.
 
-impl thrust_models::Model for Hash64 {
+impl Model for Hash64 {
     type Ty = Self;
 }
-impl<T> thrust_models::Model for DenseBitSet<T> {
+impl<T> Model for DenseBitSet<T> {
     type Ty = Self;
 }
-impl<'a> thrust_models::Model for WordIter<'a> {
+impl<'a> Model for WordIter<'a> {
     type Ty = Self;
 }
-impl<'a, T: Idx> thrust_models::Model for BitIter<'a, T> {
+impl<'a, T: Idx> Model for BitIter<'a, T> {
     type Ty = Self;
 }
-impl<R: Idx, C: Idx> thrust_models::Model for BitMatrix<R, C> {
+impl<R: Idx, C: Idx> Model for BitMatrix<R, C> {
     type Ty = Self;
 }
-impl<I: Idx> thrust_models::Model for IdxRange<I> {
+impl<I: Idx> Model for IdxRange<I> {
     type Ty = Self;
 }
-impl<'a, T> thrust_models::Model for SliceIter<'a, T> {
+impl<'a, T> Model for SliceIter<'a, T> {
     type Ty = Self;
 }
-impl<'a, I: Idx, T> thrust_models::Model for IterEnumerated<'a, I, T> {
+impl<'a, I: Idx, T> Model for IterEnumerated<'a, I, T> {
     type Ty = Self;
 }
-impl<I: Idx, T> thrust_models::Model for IndexVec<I, T> {
+impl<I: Idx, T> Model for IndexVec<I, T> {
     type Ty = Self;
 }
-impl<VariantIdx, FieldIdx> thrust_models::Model for SavedLocalEligibility<VariantIdx, FieldIdx> {
+impl<VariantIdx, FieldIdx> Model for SavedLocalEligibility<VariantIdx, FieldIdx> {
     type Ty = Self;
 }
-impl<F> thrust_models::Model for LayoutCalculatorError<F> {
+impl<F> Model for LayoutCalculatorError<F> {
     type Ty = Self;
 }
-impl<Cx> thrust_models::Model for LayoutCalculator<Cx> {
+impl<Cx> Model for LayoutCalculator<Cx> {
     type Ty = Self;
 }
-impl thrust_models::Model for NicheBias {
+impl Model for NicheBias {
     type Ty = Self;
 }
-impl thrust_models::Model for ReprFlags {
+impl Model for ReprFlags {
     type Ty = Self;
 }
-impl thrust_models::Model for IntegerType {
+impl Model for IntegerType {
     type Ty = Self;
 }
-impl thrust_models::Model for ScalableElt {
+impl Model for ScalableElt {
     type Ty = Self;
 }
-impl thrust_models::Model for ReprOptions {
+impl Model for ReprOptions {
     type Ty = Self;
 }
-impl thrust_models::Model for PointerSpec {
+impl Model for PointerSpec {
     type Ty = Self;
 }
-impl thrust_models::Model for TargetDataLayout {
+impl Model for TargetDataLayout {
     type Ty = Self;
 }
-impl thrust_models::Model for Endian {
+impl Model for Endian {
     type Ty = Self;
 }
-impl thrust_models::Model for Size {
+impl Model for Size {
     type Ty = Self;
 }
-impl thrust_models::Model for Align {
+impl Model for Align {
     type Ty = Self;
 }
-impl thrust_models::Model for AbiAlign {
+impl Model for AbiAlign {
     type Ty = Self;
 }
-impl thrust_models::Model for Integer {
+impl Model for Integer {
     type Ty = Self;
 }
-impl thrust_models::Model for Float {
+impl Model for Float {
     type Ty = Self;
 }
-impl thrust_models::Model for Primitive {
+impl Model for Primitive {
     type Ty = Self;
 }
-impl thrust_models::Model for WrappingRange {
+impl Model for WrappingRange {
     type Ty = Self;
 }
-impl thrust_models::Model for Scalar {
+impl Model for Scalar {
     type Ty = Self;
 }
-impl<FieldIdx: Idx> thrust_models::Model for FieldsShape<FieldIdx> {
+impl<FieldIdx: Idx> Model for FieldsShape<FieldIdx> {
     type Ty = Self;
 }
-impl thrust_models::Model for AddressSpace {
+impl Model for AddressSpace {
     type Ty = Self;
 }
-impl thrust_models::Model for NumScalableVectors {
+impl Model for NumScalableVectors {
     type Ty = Self;
 }
-impl thrust_models::Model for BackendRepr {
+impl Model for BackendRepr {
     type Ty = Self;
 }
-impl<FieldIdx: Idx, VariantIdx: Idx> thrust_models::Model for Variants<FieldIdx, VariantIdx> {
+impl<FieldIdx: Idx, VariantIdx: Idx> Model for Variants<FieldIdx, VariantIdx> {
     type Ty = Self;
 }
-impl<VariantIdx: Idx> thrust_models::Model for TagEncoding<VariantIdx> {
+impl<VariantIdx: Idx> Model for TagEncoding<VariantIdx> {
     type Ty = Self;
 }
-impl thrust_models::Model for Niche {
+impl Model for Niche {
     type Ty = Self;
 }
-impl<FieldIdx: Idx, VariantIdx: Idx> thrust_models::Model for LayoutData<FieldIdx, VariantIdx> {
+impl<FieldIdx: Idx, VariantIdx: Idx> Model for LayoutData<FieldIdx, VariantIdx> {
     type Ty = Self;
 }
-impl thrust_models::Model for StructKind {
+impl Model for StructKind {
     type Ty = Self;
 }
-impl<FieldIdx: Idx> thrust_models::Model for VariantLayout<FieldIdx> {
+impl<FieldIdx: Idx> Model for VariantLayout<FieldIdx> {
     type Ty = Self;
 }
 

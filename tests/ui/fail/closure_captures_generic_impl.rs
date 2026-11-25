@@ -3,8 +3,8 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 // A capture whose type is a type parameter of the method, in a generic impl: the closure holds it
 // in the method's generics and the clause names it in its own.
-#[thrust_macros::requires(thrust_macros::pre!(f(&x)))]
-#[thrust_macros::ensures(thrust_models::exists(|g| thrust_macros::post!(thrust_models::model::Mut::new(f, g)(&x), result)))]
+use thrust_models::{exists, Model, model::Mut}; #[thrust_macros::requires(thrust_macros::pre!(f(&x)))]
+#[thrust_macros::ensures(exists(|g| thrust_macros::post!(Mut::new(f, g)(&x), result)))]
 fn call<F: FnMut(&i64) -> i64>(x: i64, mut f: F) -> i64 {
     f(&x)
 }
@@ -17,7 +17,7 @@ struct S<C>(C);
 
 impl<C> S<C> {
     #[thrust_macros::context]
-    fn g<T: thrust_models::Model>(&self, t: &T) -> i64 {
+    fn g<T: Model>(&self, t: &T) -> i64 {
         call(
             1,
             thrust_macros::closure!(

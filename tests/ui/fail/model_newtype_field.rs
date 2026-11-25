@@ -4,7 +4,7 @@
 
 // `size` reports one more element than the sequence holds, which its postcondition ties to
 // the length the whole value carries.
-
+use thrust_models::Model;
 use std::marker::PhantomData;
 
 struct Idx;
@@ -14,11 +14,11 @@ struct IndexVec<I, T> {
     _marker: PhantomData<fn(&I)>,
 }
 
-impl<I, T> thrust_models::Model for IndexVec<I, T>
+impl<I, T> Model for IndexVec<I, T>
 where
-    T: thrust_models::Model,
+    T: Model,
 {
-    type Ty = <[T] as thrust_models::Model>::Ty;
+    type Ty = <[T] as Model>::Ty;
 }
 
 #[thrust_macros::context]

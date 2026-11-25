@@ -4,15 +4,15 @@
 
 // The enumerate position over a bit-set iterator stays below the domain size: `BitIter`'s model
 // is (bound, count), as in tests/ui/pass/rustc_coroutine/eligibility.rs.
-
+use thrust_models::{Model, model::{UInt, UIntN}};
 use thrust_models::model::{Mut, Seq};
 use thrust_models::{exists, forall};
 
 /// The model of `usize`, which carries its width while `THRUST_INT_RANGE` is set.
 #[cfg(not(thrust_int_range))]
-type USize = thrust_models::model::UInt;
+type USize = UInt;
 #[cfg(thrust_int_range)]
-type USize = thrust_models::model::UIntN<64>;
+type USize = UIntN<64>;
 
 
 // The iterator trait, local to the case study (rewrites.md R9): Creusot's `common.rs` as the
@@ -23,13 +23,13 @@ type USize = thrust_models::model::UIntN<64>;
 #[thrust_macros::context]
 trait Iterator
 where
-    Self: thrust_models::Model,
-    Self::Item: thrust_models::Model,
+    Self: Model,
+    Self::Item: Model,
 {
     type Item;
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool;
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool;
 
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool;
@@ -45,9 +45,9 @@ where
     #[thrust_macros::ensures(Self::produces(*a, ab.concat(bc), *c))]
     fn produces_trans(
         a: &Self,
-        ab: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -82,15 +82,15 @@ pub struct Enumerate<I> {
     count: usize,
 }
 
-impl<I: thrust_models::Model> thrust_models::Model for Enumerate<I> {
-    type Ty = (<I as thrust_models::Model>::Ty, USize);
+impl<I: Model> Model for Enumerate<I> {
+    type Ty = (<I as Model>::Ty, USize);
 }
 
 #[thrust_macros::context]
 impl<I> Iterator for Enumerate<I>
 where
     I: Iterator,
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     type Item = (usize, I::Item);
 
@@ -111,9 +111,9 @@ where
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         visited.len() == o.1 - self.1
-            && exists(|s: Seq<<I::Item as thrust_models::Model>::Ty>|
+            && exists(|s: Seq<<I::Item as Model>::Ty>|
                 I::produces(self.0, s, o.0)
                     && s.len() == visited.len()
                     && forall(|i: USize| !(0 <= i && i < s.len()) || visited[i] == (self.1 + i, s[i])))
@@ -130,13 +130,13 @@ pub struct DenseBitSet {
     marker: (),
 }
 
-impl thrust_models::Model for DenseBitSet {
+impl Model for DenseBitSet {
     type Ty = (USize, ());
 }
 
 pub struct BitIter {}
 
-impl thrust_models::Model for BitIter {
+impl Model for BitIter {
     type Ty = (USize, USize);
 }
 
@@ -170,7 +170,7 @@ impl Iterator for BitIter {
     }
 
     #[thrust_macros::predicate]
-    fn produces(self, visited: Seq<<Self::Item as thrust_models::Model>::Ty>, o: Self) -> bool {
+    fn produces(self, visited: Seq<<Self::Item as Model>::Ty>, o: Self) -> bool {
         self.0 == o.0
             && o.1 == self.1 + visited.len()
             && o.1 <= self.0
@@ -192,7 +192,7 @@ impl BitIter {
     #[thrust_macros::ensures(
         <Self as Iterator>::invariant(!self)
             && (result == None ==> <Self as Iterator>::completed(self))
-            && forall(|x: <usize as thrust_models::Model>::Ty| result == Some(x) ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
+            && forall(|x: <usize as Model>::Ty| result == Some(x) ==> <Self as Iterator>::produces(*self, Seq::singleton(x), !self))
     )]
     fn next_bit(&mut self) -> Option<usize> {
         None

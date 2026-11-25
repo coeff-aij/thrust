@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-use thrust_models::model::{Closure, Int, Mut};
+use thrust_models::Model; use thrust_models::model::{Closure, Int, Mut};
 use thrust_models::{exists, forall};
 
 #[thrust_macros::context]
@@ -29,8 +29,8 @@ struct Map<I, F> {
     func: F,
 }
 
-impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
-    type Ty = Map<<I as thrust_models::Model>::Ty, Closure<F>>;
+impl<I: Model, F> Model for Map<I, F> {
+    type Ty = Map<<I as Model>::Ty, Closure<F>>;
 }
 
 // `Map`'s own struct-level type arguments are `<I, F>` -- fixing the closure's
@@ -38,7 +38,7 @@ impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
 // appears in `Map<I, F>`'s own type arguments) removes the type parameter that
 // panicked when a call site tried to resolve it.
 #[thrust_macros::context]
-impl<I: Iterator<Item = i64> + thrust_models::Model, F: Fn(i64) -> i64> Iterator for Map<I, F>
+impl<I: Iterator<Item = i64> + Model, F: Fn(i64) -> i64> Iterator for Map<I, F>
 {
     type Item = i64;
 

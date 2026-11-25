@@ -7,7 +7,7 @@
 // and the call site can then pin the item down.
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-use thrust_models::model::Int;
+use thrust_models::Model; use thrust_models::model::Int;
 use thrust_models::{exists, forall};
 
 #[thrust_macros::context]
@@ -46,7 +46,7 @@ struct Range {
     end: i64,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 
@@ -103,7 +103,7 @@ struct Inc {
     iter: Range,
 }
 
-impl thrust_models::Model for Inc {
+impl Model for Inc {
     type Ty = Inc;
 }
 

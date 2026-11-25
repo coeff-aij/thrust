@@ -1,12 +1,12 @@
 //@compile-flags: -C debug-assertions=off
 // The `F: FnMut` bound of `call` makes the closure `FnMut`, which holds `dl` behind a `&mut`:
 // restated as `&&D`, its type would not match the term `dl` names.
-struct D {
+use thrust_models::Model; struct D {
     a: i64,
     b: i64,
 }
 
-impl thrust_models::Model for D {
+impl Model for D {
     type Ty = D;
 }
 

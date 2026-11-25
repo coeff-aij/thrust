@@ -3,12 +3,12 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
 // A closure passed straight to `call`, whose `F: FnMut` bound makes it `FnMut` although its body
 // only reads `dl`, holds `dl` behind a `&mut`.
-struct D {
+use thrust_models::Model; struct D {
     a: i64,
     b: i64,
 }
 
-impl thrust_models::Model for D {
+impl Model for D {
     type Ty = D;
 }
 

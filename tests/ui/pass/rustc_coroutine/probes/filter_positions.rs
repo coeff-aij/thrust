@@ -8,7 +8,7 @@
 // per accepted entry never runs out. The count follows from Creusot's index map of the case
 // study's `Filter`, which the pass walks with the number taken so far, without a count function.
 #![feature(new_range_api)]
-
+use thrust_models::Model;
 #[path = "../../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
 #[path = "../../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
@@ -45,8 +45,8 @@ fn enumerates(f: Array<Int, Int>, m: USize, fields: &[usize], flags: &[bool]) ->
 #[thrust_macros::requires(forall(|s: Seq<&USize>, k: Int, r: bool|
     !(0 <= k && k < s.len() && Filter::<core::slice::Iter<'a, usize>, P>::answers((*it).1, s, k, r))
         || r == flags[*s[k]]))]
-#[thrust_macros::ensures(forall(|v: Seq<&USize>, mid: <Filter<core::slice::Iter<'a, usize>, P> as thrust_models::Model>::Ty,
-        fin: <Filter<core::slice::Iter<'a, usize>, P> as thrust_models::Model>::Ty, s: Seq<&USize>, f: Array<Int, Int>|
+#[thrust_macros::ensures(forall(|v: Seq<&USize>, mid: <Filter<core::slice::Iter<'a, usize>, P> as Model>::Ty,
+        fin: <Filter<core::slice::Iter<'a, usize>, P> as Model>::Ty, s: Seq<&USize>, f: Array<Int, Int>|
     !(Filter::<core::slice::Iter<'a, usize>, P>::produces_at(*it, v, mid, s, f)
         && <Filter<core::slice::Iter<'a, usize>, P> as IteratorSpec>::completed(Mut::new(mid, fin)))
         || enumerates(f, v.len(), fields, flags)))]

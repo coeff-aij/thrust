@@ -7,10 +7,10 @@
 // not hold of `Bad`, whose `next` panics natively.
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 struct Bad;
 
-impl thrust_models::Model for Bad {
+impl Model for Bad {
     type Ty = Self;
 }
 

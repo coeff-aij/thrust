@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
-use thrust_models::forall;
+use thrust_models::{FnParam, model::Mut}; use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::{Ghost, Model};
 
@@ -30,7 +30,7 @@ where
     // invariant had reached. Resolution is too strong to demand of every iterator -- one may
     // legitimately write to itself on the exhausted path -- but every history that led to the
     // iterator still leads to the one it hands back.
-    #[thrust_macros::requires(Self::completed(thrust_models::model::Mut::new(cur, fin)))]
+    #[thrust_macros::requires(Self::completed(Mut::new(cur, fin)))]
     #[thrust_macros::ensures(forall(|b: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| Self::produces(b, s, cur) ==> Self::produces(b, s, fin))))]
     fn exhaustion_preserves_produces(
         cur: Ghost<<Self as Model>::Ty>,
@@ -135,7 +135,7 @@ where
     let rr = r;
     loop {
         thrust_macros::invariant!(
-            |rr: &mut Run<I>, r: thrust_models::FnParam<&mut Run<I>>|
+            |rr: &mut Run<I>, r: FnParam<&mut Run<I>>|
             I::invariant((*rr).0)
                 && !rr == !r.at_entry()
                 && (*rr).1 == (*r.at_entry()).1

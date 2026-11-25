@@ -1,11 +1,11 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 struct Inner {
     c: i64,
 }
 
-impl thrust_models::Model for Inner {
+impl Model for Inner {
     type Ty = Self;
 }
 
@@ -13,7 +13,7 @@ struct Outer {
     b: Inner,
 }
 
-impl thrust_models::Model for Outer {
+impl Model for Outer {
     type Ty = Self;
 }
 

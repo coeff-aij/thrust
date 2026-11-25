@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::forall;
+use thrust_models::FnParam; use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Model;
 
@@ -100,7 +100,7 @@ fn filter(start: isize, end: isize, k: isize) -> Vec<isize> {
     let mut it = Range { start, end };
     let mut out: Vec<isize> = Vec::new();
     while let Some(x) = it.next() {
-        thrust_macros::invariant!(|it: Range, out: Vec<isize>, start: thrust_models::FnParam<isize>, end: thrust_models::FnParam<isize>, k: isize|
+        thrust_macros::invariant!(|it: Range, out: Vec<isize>, start: FnParam<isize>, end: FnParam<isize>, k: isize|
             it.start >= start.at_entry()
                 && it.start <= end.at_entry()
                 && it.end == end.at_entry()

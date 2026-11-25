@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-use thrust_models::forall;
+use thrust_models::FnParam; use thrust_models::forall;
 
 // A loop invariant refers to a closure parameter via `FnParam<F>`, whose
 // `f.at_entry()` yields `Closure<F>`. Here the invariant relates `acc` to the
@@ -21,7 +21,7 @@ where
     let mut i = 0_i64;
     while i < n {
         thrust_macros::invariant!(
-            |i: i64, acc: i64, n: i64, f: thrust_models::FnParam<F>|
+            |i: i64, acc: i64, n: i64, f: FnParam<F>|
             ((n > 0) ==> i <= n)
                 && ((i > 0) ==> thrust_macros::post!(f.at_entry()(i - 1), acc))
                 && forall(|x: i64| thrust_macros::pre!(f.at_entry()(x)))
@@ -43,7 +43,7 @@ where
     let mut i = 0_i64;
     while i < 10 {
         thrust_macros::invariant!(
-            |i: i64, f: thrust_models::FnParam<F>|
+            |i: i64, f: FnParam<F>|
             f.at_entry() == f.at_entry() && i <= 10
         );
         i += 1;

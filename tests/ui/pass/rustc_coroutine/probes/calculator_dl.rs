@@ -5,7 +5,7 @@
 // layout.rs's `LayoutCalculator<Cx>` reduced: its model is its one field's, so a contract names
 // the data layout of `self.cx` as `Cx::dl_of(*self, dl)`, and a caller holding the calculator
 // states it with its own `C::dl_of(*calc, dl)`.
-
+use thrust_models::Model;
 use thrust_models::forall;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -13,7 +13,7 @@ pub struct TargetDataLayout {
     pub pointer_size: u64,
 }
 
-impl thrust_models::Model for TargetDataLayout {
+impl Model for TargetDataLayout {
     type Ty = Self;
 }
 
@@ -54,8 +54,8 @@ pub struct LayoutCalculator<Cx> {
     pub cx: Cx,
 }
 
-impl<Cx: thrust_models::Model> thrust_models::Model for LayoutCalculator<Cx> {
-    type Ty = <Cx as thrust_models::Model>::Ty;
+impl<Cx: Model> Model for LayoutCalculator<Cx> {
+    type Ty = <Cx as Model>::Ty;
 }
 
 #[thrust_macros::context]

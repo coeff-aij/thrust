@@ -5,7 +5,7 @@
 // A destructor of a generic type is checked once over its type parameters, also when generic
 // defs are verified per instance: here only `Vec::clear` drops a `G<u8>`, at an instance that no
 // call site of the crate reaches, and `G { n: 1, .. }` panics.
-
+use thrust_models::Model;
 struct G<T> {
     n: i32,
     t: T,
@@ -17,7 +17,7 @@ impl<T> Drop for G<T> {
     }
 }
 
-impl<T> thrust_models::Model for G<T> {
+impl<T> Model for G<T> {
     type Ty = Self;
 }
 

@@ -1,14 +1,14 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
-use thrust_models::model::{Closure, Int, Mut, Seq};
+use thrust_models::model::{UInt, UIntN}; use thrust_models::model::{Closure, Int, Mut, Seq};
 use thrust_models::{exists, forall, Ghost, Model};
 
 /// The model of `u32`, which carries its width while `THRUST_INT_RANGE` is set.
 #[cfg(not(thrust_int_range))]
-type U32 = thrust_models::model::UInt;
+type U32 = UInt;
 #[cfg(thrust_int_range)]
-type U32 = thrust_models::model::UIntN<32>;
+type U32 = UIntN<32>;
 
 // Fail twin: the client asserts `cnt == x.len() + 1`.
 // Creusot's `counter` (`examples/iterators/03_std_iterators.rs`, 3620de437), with Creusot's

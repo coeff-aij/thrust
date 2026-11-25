@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-#[thrust_macros::requires(true)]
+use thrust_models::Model; #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
 #[thrust::trusted]
 fn rand() -> i64 { unimplemented!() }
@@ -19,7 +19,7 @@ trait Foo {
 }
 
 struct Bar;
-impl thrust_models::Model for Bar {
+impl Model for Bar {
     type Ty = ();
 }
 impl Foo for Bar {}

@@ -12,7 +12,7 @@
 // The code is the module tree under tests/rustc_coroutine/; this file selects the stage and
 // drives it.
 #![feature(new_range_api)]
-
+use thrust_models::FnParam;
 #[path = "../../../rustc_coroutine/compiler/rustc_hashes/src/lib.rs"]
 pub mod rustc_hashes;
 #[path = "../../../rustc_coroutine/compiler/rustc_index/src/lib.rs"]
@@ -58,8 +58,8 @@ fn filled(n: usize, elem: i64) -> IndexVec<usize, i64> { //~ ERROR: Unsat
         thrust_macros::invariant!(
             |v: IndexVec<usize, i64>,
              i: usize,
-             n: thrust_models::FnParam<usize>,
-             elem: thrust_models::FnParam<i64>|
+             n: FnParam<usize>,
+             elem: FnParam<i64>|
                 v.len() == i
                     && i <= n.at_entry()
                     && forall(|k: USize| 0 <= k && k < i ==> v[k] == elem.at_entry())
