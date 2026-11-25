@@ -1,14 +1,14 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C overflow-checks=on -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // In a specification, `p.x` of a `&mut P` is a field of the current value, `(*p).x`.
 struct P {
     x: i64,
     y: i64,
 }
 
-impl thrust_models::Model for P {
+impl Model for P {
     type Ty = P;
 }
 

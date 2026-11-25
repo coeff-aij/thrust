@@ -3,15 +3,15 @@
 // As `pass/iterators/adapter_closure_to_trusted.rs`, with an `inv` that states no `pre!` of the
 // closure: the consumer's `requires` of `inv` states nothing of it, so the call does not
 // cover the closure, which `next` runs.
-
+use thrust_models::{Model, model::{Closure, Seq}};
 pub struct Keep<P> {
     cur: i64,
     end: i64,
     pred: P,
 }
 
-impl<P> thrust_models::Model for Keep<P> {
-    type Ty = (i64, i64, thrust_models::model::Closure<P>);
+impl<P> Model for Keep<P> {
+    type Ty = (i64, i64, Closure<P>);
 }
 
 impl<P: Fn(&i64) -> bool> Iterator for Keep<P> {
@@ -50,9 +50,9 @@ impl<P: Fn(&i64) -> bool> IteratorSpec for Keep<P> {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -63,7 +63,7 @@ impl<P: Fn(&i64) -> bool> IteratorSpec for Keep<P> {
 #[thrust_macros::ensures(true)]
 fn consume<I: IteratorSpec<Item = i64>>(mut it: I)
 where
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     let _ = it.next();
 }

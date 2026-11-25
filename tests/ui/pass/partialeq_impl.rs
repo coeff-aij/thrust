@@ -1,11 +1,11 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::Model;
 enum X {
     A(i32),
 }
 
-impl thrust_models::Model for X {
+impl Model for X {
     type Ty = Self;
 }
 

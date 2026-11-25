@@ -4,11 +4,11 @@
 
 // The element `next` hands back is the one at the cursor, which starts at 0: claiming the
 // element at 1 is false of every slice with a different pair of leading elements.
-
+use thrust_models::Model;
 #[thrust_macros::requires((*s).len() > 0)]
 #[thrust_macros::ensures(result == (*s)[1])]
 fn head<T>(s: &[T]) -> T
-    where T: thrust_models::Model + Copy, T::Ty: PartialEq
+    where T: Model + Copy, T::Ty: PartialEq
 {
     let mut it = s.iter();
     match it.next() {

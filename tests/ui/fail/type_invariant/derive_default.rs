@@ -1,12 +1,12 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 // A derived `Default` builds `D` from its fields' defaults, which break the invariant: a derived
 // method that would promise it is rejected.
 #[derive(Default)] //~ ERROR: which the derive does not keep
 struct D {
     n: u32,
 }
-impl thrust_models::Model for D {
+impl Model for D {
     type Ty = Self;
 }
 #[thrust_macros::context]

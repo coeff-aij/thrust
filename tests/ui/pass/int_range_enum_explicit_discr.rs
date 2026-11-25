@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_INT_RANGE=all THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // An enum with explicit, negative discriminants: the payload facts of a value are guarded by its
 // discriminant as declared, so the postcondition's quantifier over `u8` rules out every `A`.
 use thrust_models::forall;
@@ -12,7 +12,7 @@ pub enum E {
     A(u8) = -3,
 }
 
-impl thrust_models::Model for E {
+impl Model for E {
     type Ty = Self;
 }
 

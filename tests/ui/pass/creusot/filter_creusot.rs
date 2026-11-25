@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens -A dead_code
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300
+use thrust_models::FnParam;
 // slow: Creusot's Filter form; the pass side gets no answer within 120 s and answers within 300 s
 // Creusot's `examples/iterators/17_filter.rs` (3620de437): `Filter` and its `Iterator` impl, with
 // Creusot's code and Thrust's annotations, in Creusot's own form: `produces` relates the visited
@@ -157,7 +158,7 @@ where
         I::produces_refl(&s.iter);
         loop {
             thrust_macros::invariant!(
-                |s: &mut Self, self: thrust_models::FnParam<&mut Self>|
+                |s: &mut Self, self: FnParam<&mut Self>|
                 !s == !self.at_entry()
                     && Self::invariant(*s)
                     && (*s).1 == (*self.at_entry()).1

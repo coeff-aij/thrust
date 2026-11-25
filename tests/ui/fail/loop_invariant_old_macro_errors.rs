@@ -30,7 +30,7 @@ fn undeclared(v: Vec<i64>) -> Vec<i64> {
 #[thrust_macros::context]
 fn in_assert(v: Vec<i64>) -> Vec<i64> {
     let w = v;
-    thrust_macros::proof_assert!(|w: Vec<i64>, old!(v): Vec<i64>| w.len() == old!(v).len()); //~ ERROR: only in `invariant!` and `partial_invariant!`
+    thrust_macros::assume!(|w: Vec<i64>, old!(v): Vec<i64>| w.len() == old!(v).len()); //~ ERROR: only in `invariant!`, `partial_invariant!` and `proof_assert!`
     w
 }
 

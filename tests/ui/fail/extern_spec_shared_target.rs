@@ -4,7 +4,7 @@
 // One extern spec covers the target `<Seq<i64> as Index<R>>::index` at every key type, with the
 // contract each key type gives through the spec trait `KeyValue`. Two specs of one target that
 // could cover one instance are rejected (`fail/extern_spec_overlap_*.rs`).
-
+use thrust_models::Model;
 use std::ops::Index;
 use std::slice::SliceIndex;
 
@@ -31,7 +31,7 @@ impl<T> Key<T> for u8 {
 }
 
 #[thrust_macros::context]
-trait KeyValue: thrust_models::Model {
+trait KeyValue: Model {
     #[thrust_macros::predicate]
     fn has_value(self, out: i64) -> bool;
 }
@@ -56,8 +56,8 @@ struct Seq<T> {
     raw: Vec<T>,
 }
 
-impl<T: thrust_models::Model> thrust_models::Model for Seq<T> {
-    type Ty = <Vec<T> as thrust_models::Model>::Ty;
+impl<T: Model> Model for Seq<T> {
+    type Ty = <Vec<T> as Model>::Ty;
 }
 
 impl<T, R: Key<T>> Index<R> for Seq<T> {

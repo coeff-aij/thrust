@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_PER_INSTANCE_GENERICS=1
-
+use thrust_models::Model;
 // `fail/traits/default_without_contract_at_param.rs` with each generic body analyzed at its
 // instances: the call at `Sq` takes `Sq`'s override, not the default's type.
 trait Shape {
@@ -12,7 +12,7 @@ trait Shape {
 
 struct Sq;
 
-impl thrust_models::Model for Sq {
+impl Model for Sq {
     type Ty = ();
 }
 

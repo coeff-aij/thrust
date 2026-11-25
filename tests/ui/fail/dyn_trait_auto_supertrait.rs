@@ -4,7 +4,7 @@
 
 // The impl breaks the contract of a trait with auto-trait supertraits, which still binds the
 // impls of a trait used as a trait object.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape: Send + Sync {
     #[thrust_macros::ensures(result >= 3)]
@@ -13,7 +13,7 @@ trait Shape: Send + Sync {
 
 struct Square;
 
-impl thrust_models::Model for Square {
+impl Model for Square {
     type Ty = ();
 }
 

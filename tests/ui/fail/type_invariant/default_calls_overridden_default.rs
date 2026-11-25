@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // The default `reset` writes through `get`, which `C` overrides to lend its field, so at `C` it
 // breaks the invariant; `get`'s contract is not the default's but `C::get`'s, inferred from its
 // body.
@@ -25,7 +25,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

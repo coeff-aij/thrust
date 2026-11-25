@@ -1,11 +1,11 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::Model;
 struct Cache {
     page: Box<i64>,
 }
 
-impl thrust_models::Model for Cache {
+impl Model for Cache {
     type Ty = Self;
 }
 

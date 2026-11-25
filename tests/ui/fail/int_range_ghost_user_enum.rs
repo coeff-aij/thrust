@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_INT_RANGE=conversions THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // A user enum whose field is fixed in its definition: under the guard, the ghost term's payload is
 // `2^64` (model arithmetic is unbounded), and the payload of `E::A` is assumed below `2^64`; the
 // expected error is the obligation on the term.
@@ -13,7 +13,7 @@ pub enum E {
     B,
 }
 
-impl thrust_models::Model for E {
+impl Model for E {
     type Ty = Self;
 }
 

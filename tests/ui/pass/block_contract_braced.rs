@@ -1,9 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-
-// `block_contract!` on a braced block: the block is checked from `requires` against `ensures`,
-// and the code after it reads only the contract; `ensures` names the block's value `result`,
-// and a local the block leaves unchanged (`z`) keeps what held before.
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 #[thrust::trusted]
 #[thrust::callable]
 fn rand() -> i64 {
@@ -15,8 +12,8 @@ fn main() {
     let z = n + 1;
     let mut x = n;
     let y = thrust_macros::block_contract!(
-        requires(|x: i64| true),
-        ensures(|x: i64, result: i64| result == x && result >= 0),
+        |mut x: i64| -> i64
+        ensures(result == x && result >= 0),
         {
             x += 1;
             if x < 0 {

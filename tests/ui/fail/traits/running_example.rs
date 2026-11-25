@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
-
+use thrust_models::FnParam;
 // The paper's running example: a generic `Map` adapter over a `Range` source, consumed by a
 // generic `count` with a written loop invariant. The call site's closure is defined on every
 // value a `1..5` range can still produce, which is exactly what `Map::invariant` requires at
@@ -147,15 +147,15 @@ impl Iterator for Range {
 #[thrust_macros::context]
 #[thrust_macros::requires(I::invariant(*it))]
 #[thrust_macros::ensures(I::invariant(!it))]
-fn count<I: Iterator + thrust_models::Model>(it: &mut I) -> usize
+fn count<I: Iterator + Model>(it: &mut I) -> usize
 where
-    I::Item: thrust_models::Model,
+    I::Item: Model,
 {
     let mut n = 0;
     let b = it;
     while let Some(_) = b.next() {
         thrust_macros::invariant!(
-            |b: &mut I, n: usize, it: thrust_models::FnParam<&mut I>|
+            |b: &mut I, n: usize, it: FnParam<&mut I>|
             I::invariant(*b) && !b == !it.at_entry()
         );
         n += 1;

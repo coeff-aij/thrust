@@ -4,7 +4,7 @@
 
 // As `dyn_trait_invariant_escape`, with a contract of the impl's own on `get`: a method whose
 // `&mut self` borrow outlives the call may be in the vtable of a type without an invariant.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(true)]
@@ -18,7 +18,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 
