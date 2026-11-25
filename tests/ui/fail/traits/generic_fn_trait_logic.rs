@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // As the pass twin: `Lin`'s `score` of 3 is 3, not 4.
 #[thrust_macros::context]
 trait Score {
@@ -10,7 +10,7 @@ trait Score {
     fn eval(x: i32) -> i32;
 }
 struct Lin;
-impl thrust_models::Model for Lin { type Ty = (); }
+impl Model for Lin { type Ty = (); }
 #[thrust_macros::context]
 impl Score for Lin {
     #[thrust_macros::logic]

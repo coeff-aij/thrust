@@ -3,7 +3,7 @@
 
 // Rejected, not Unsat. `next` is trusted: its contract, which mentions `produces`, is not checked
 // against its body, so the inferred relation need not hold of what `next` yields.
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait Iter {
     type Item;
@@ -11,7 +11,7 @@ trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: Self::Item) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
 }
 
@@ -21,7 +21,7 @@ struct Range {
     end: isize,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 
@@ -31,7 +31,7 @@ impl Iter for Range {
 
     #[thrust::trusted]
     #[thrust_macros::requires(true)]
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item> { //~ ERROR: assumed without being checked against a body
         if self.start < self.end {
             let item = self.start;

@@ -1,6 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+use thrust_models::{FnParam, model::Mut};
 use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::{Ghost, Model};
@@ -44,7 +45,7 @@ where
     // there, so nothing on its own connects the iterator handed back to the state the loop
     // invariant had reached; an iterator that legitimately writes to itself on the exhausted
     // path (setting a flag, emptying a slot) still preserves every history that led to it.
-    #[thrust_macros::requires(Self::completed(thrust_models::model::Mut::new(cur, fin)))]
+    #[thrust_macros::requires(Self::completed(Mut::new(cur, fin)))]
     #[thrust_macros::ensures(forall(|b: <Self as Model>::Ty| forall(|s: Seq<<Self::Item as Model>::Ty>| Self::produces(b, s, cur) ==> Self::produces(b, s, fin))))]
     fn exhaustion_preserves_produces(
         cur: Ghost<<Self as Model>::Ty>,
@@ -157,7 +158,7 @@ where
     let rr = r;
     loop {
         thrust_macros::invariant!(
-            |rr: &mut Run<I>, r: thrust_models::FnParam<&mut Run<I>>, init: thrust_models::FnParam<Ghost<<I as Model>::Ty>>|
+            |rr: &mut Run<I>, r: FnParam<&mut Run<I>>, init: FnParam<Ghost<<I as Model>::Ty>>|
             I::invariant((*rr).0)
                 && !rr == !r.at_entry()
                 && I::produces(init.at_entry(), (*rr).1, (*rr).0)

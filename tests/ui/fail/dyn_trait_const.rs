@@ -4,7 +4,7 @@
 
 // A constant holding a trait object is not supported: the coercion that packed it is not
 // analyzed.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape {
     #[thrust_macros::ensures(result >= 3)]
@@ -13,7 +13,7 @@ trait Shape {
 
 struct Tri;
 
-impl thrust_models::Model for Tri {
+impl Model for Tri {
     type Ty = ();
 }
 

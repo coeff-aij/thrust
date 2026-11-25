@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The pass twin with a trait precondition that admits 0, which the impl's `get` does not.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Get {
     #[thrust_macros::requires(x >= 0)]
@@ -13,17 +13,17 @@ trait Get {
 
 struct W<T>(T);
 
-impl<T> thrust_models::Model for W<T>
+impl<T> Model for W<T>
 where
-    T: thrust_models::Model,
+    T: Model,
 {
-    type Ty = (<T as thrust_models::Model>::Ty,);
+    type Ty = (<T as Model>::Ty,);
 }
 
 #[thrust_macros::context]
 impl<T> Get for W<T>
 where
-    T: thrust_models::Model,
+    T: Model,
 {
     #[thrust_macros::requires(x > 0)]
     #[thrust_macros::ensures(result == x)]

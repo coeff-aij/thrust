@@ -3,13 +3,13 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The pass twin with an override that panics instead of summing.
-
+use thrust_models::{exists, forall, Model, model::{Int, Mut, Seq}};
 #[derive(PartialEq)]
 struct Up {
     n: usize,
 }
 
-impl thrust_models::Model for Up {
+impl Model for Up {
     type Ty = Up;
 }
 
@@ -43,7 +43,7 @@ impl IteratorSpec for Up {
         self.n <= o.n
             && o.n <= 3
             && visited.len() == o.n - self.n
-            && thrust_models::forall(|i: thrust_models::model::Int| {
+            && forall(|i: Int| {
                 !(0 <= i && i < visited.len()) || visited[i] == self.n + i
             })
     }
@@ -56,9 +56,9 @@ impl IteratorSpec for Up {
     fn produces_refl(a: &Self) {}
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<usize as thrust_models::Model>::Ty>,
+        ab: Seq<<usize as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<usize as thrust_models::Model>::Ty>,
+        bc: Seq<<usize as Model>::Ty>,
         c: &Self,
     ) {
     }
@@ -67,11 +67,11 @@ impl IteratorSpec for Up {
 #[thrust::extern_spec_fn]
 #[thrust_macros::requires(I::inv(it))]
 #[thrust_macros::ensures(
-    thrust_models::exists(|prod: thrust_models::model::Seq<<usize as thrust_models::Model>::Ty>,
-                           done: <I as thrust_models::Model>::Ty,
-                           fin: <I as thrust_models::Model>::Ty|
+    exists(|prod: Seq<<usize as Model>::Ty>,
+                           done: <I as Model>::Ty,
+                           fin: <I as Model>::Ty|
         I::produces(it, prod, done)
-            && I::completed(thrust_models::model::Mut::new(done, fin))
+            && I::completed(Mut::new(done, fin))
             && result == seq_sum(prod, prod.len()))
 )]
 fn _extern_spec_usize_sum<I>(it: I) -> usize

@@ -4,13 +4,13 @@
 
 // The twin of `fail/reused_impl_through_std.rs`: `Wrapper`'s `deref` accepts any value, as `W`'s
 // generic `clone` assumes of `F`'s.
-
+use thrust_models::Model;
 use std::ops::Deref;
 
 #[derive(Clone, Copy)]
 struct Wrapper(u64);
 
-impl thrust_models::Model for Wrapper {
+impl Model for Wrapper {
     type Ty = (u64,);
 }
 
@@ -32,7 +32,7 @@ fn _extern_spec_wrapper_deref(w: &Wrapper) -> &u64 {
 
 struct W<F>(F);
 
-impl<F: thrust_models::Model> thrust_models::Model for W<F> {
+impl<F: Model> Model for W<F> {
     type Ty = W<F::Ty>;
 }
 

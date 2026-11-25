@@ -4,7 +4,7 @@
 
 // `next`'s `ensures` concludes `produces` of the state before or the state after. Accepted: any
 // relation that makes the clauses hold is a typing of the program.
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait Iter {
     type Item;
@@ -12,7 +12,7 @@ trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: Self::Item) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> (Self::produces(*self, i) || Self::produces(!self, i))))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> (Self::produces(*self, i) || Self::produces(!self, i))))]
     fn next(&mut self) -> Option<Self::Item>;
 }
 
@@ -22,7 +22,7 @@ struct Range {
     end: isize,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 

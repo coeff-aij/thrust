@@ -5,7 +5,7 @@
 // `Vec::clear` drops the `W` it holds, inside `std`, where Thrust types no call of the
 // destructor: the prophecy of the `&mut` it holds is left unresolved, so nothing is known of `a`,
 // which is 1.
-
+use thrust_models::Model;
 struct W<'a>(&'a mut i32);
 
 impl Drop for W<'_> {
@@ -14,7 +14,7 @@ impl Drop for W<'_> {
     }
 }
 
-impl thrust_models::Model for W<'_> {
+impl Model for W<'_> {
     type Ty = Self;
 }
 

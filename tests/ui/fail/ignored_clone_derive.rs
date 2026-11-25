@@ -3,10 +3,10 @@
 
 // A derived `clone`, trusted with the trait's spec, runs each field's `clone`, here an ignored one
 // whose body is not checked against the spec: `v.0 .0` is `0`.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -20,7 +20,7 @@ impl Clone for S {
 #[derive(Clone)]
 struct W(S);
 
-impl thrust_models::Model for W {
+impl Model for W {
     type Ty = Self;
 }
 

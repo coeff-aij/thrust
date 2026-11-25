@@ -5,7 +5,7 @@
 // Section 3.2 of the paper: the generic `target` of `simple_loop.rs`, verified once, called at two
 // implementations whose predicates differ (`x > 0` and `x < 0`); each call uses the contract of
 // `target` with `T::p` replaced by that implementation's definition.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait A {
     #[thrust_macros::requires(Self::p(x))]
@@ -32,7 +32,7 @@ fn target<T: A>(a: &T, x: i64) -> i64 {
 #[derive(PartialEq)]
 struct Pos;
 
-impl thrust_models::Model for Pos {
+impl Model for Pos {
     type Ty = Pos;
 }
 
@@ -51,7 +51,7 @@ impl A for Pos {
 #[derive(PartialEq)]
 struct Neg;
 
-impl thrust_models::Model for Neg {
+impl Model for Neg {
     type Ty = Neg;
 }
 

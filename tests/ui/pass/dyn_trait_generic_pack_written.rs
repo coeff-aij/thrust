@@ -4,7 +4,7 @@
 
 // The twin of `fail/dyn_trait_generic_pack_written.rs`: `pack`, with a written contract, packs
 // at `T = C` a value whose invariant holds.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(result <= 100)]
@@ -20,7 +20,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 
