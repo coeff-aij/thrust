@@ -153,7 +153,7 @@ where
     fn next(&mut self) -> Option<I::Item> {
         let s = self;
         I::produces_refl(&s.iter);
-        loop {
+        while let Some(n) = s.iter.next() {
             thrust_macros::invariant!(
                 |s: &mut Self, self: thrust_models::FnParam<&mut Self>|
                 !s == !self.at_entry()
@@ -164,15 +164,11 @@ where
                             || thrust_macros::post!(Mut::new((*s).1, (*s).1)(t[i]), false))
                         && I::produces((*self.at_entry()).0, t, (*s).0))
             );
-            match s.iter.next() {
-                None => return None,
-                Some(n) => {
-                    if (s.func)(&n) {
-                        return Some(n);
-                    }
-                }
+            if (s.func)(&n) {
+                return Some(n);
             }
         }
+        None
     }
 
 

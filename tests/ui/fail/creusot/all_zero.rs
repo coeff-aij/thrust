@@ -13,15 +13,16 @@ use thrust_models::model::Int;
         && forall(|i: Int| (0 <= i && i < (!v).len()) ==> ((!v)[i] == 0))
 )]
 fn all_zero(v: &mut Vec<usize>) {
-    for x in v.iter_mut() {
+    let w = v;
+    for i in 0..w.len() {
         thrust_macros::invariant!(
-            |iter: core::slice::IterMut<'_, usize>, v: thrust_models::FnParam<&mut Vec<usize>>|
-                iter.0 == *v.at_entry()
-                    && iter.1 == !v.at_entry()
-                    && iter.1.len() == iter.0.len()
-                    && iter.2 <= iter.0.len()
-                    && forall(|j: Int| (0 <= j && j < iter.2) ==> (iter.1[j] == 0))
+            |iter: core::ops::Range<usize>, w: &mut Vec<usize>, v: thrust_models::FnParam<&mut Vec<usize>>|
+                iter.start <= iter.end
+                    && iter.end == (*v.at_entry()).len()
+                    && (*w).len() == (*v.at_entry()).len()
+                    && !w == !v.at_entry()
+                    && forall(|j: Int| (0 <= j && j < iter.start) ==> ((*w)[j] == 0))
         );
-        *x = 1;
+        w[i] = 1;
     }
 }
