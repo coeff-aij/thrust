@@ -1,338 +1,622 @@
-//! The code between a `block_requires!` and the `block_ensures!` after it, which the code around
-//! it reads through the contract, as it reads a call to a function with a written contract.
+//! The block of `block_contract!`, which runs in place and is verified as a call of the
+//! function it is extracted into.
 //!
-//! The opening block, which ends in the `block_requires!` marker, goes on to the code under the
-//! contract, whose first block has the `requires` formula as its whole precondition: the code
-//! is checked once from there, and the `block_ensures!` marker checks the `ensures` formula and
-//! ends the path. The opening block also goes on to the block after the contract, past the code,
-//! with each local the code may change given a fresh value and the `ensures` formula assumed, as
-//! a call's result and its `&mut` arguments are given in RustHorn. The other locals keep the
-//! values and the facts they had at the opening, which is the frame of the contract.
+//! The macro leaves the body between two marker calls that name the extracted function `__bc`
+//! (`__block_region_open_marker(__bc)`, `__block_region_close_marker(__bc)`). `__bc` takes the
+//! outer variables of the block as parameters with their own types and has its own contract, so
+//! the analysis reads the region as the call
+//! `(result, x1, ..) = __bc(v1, .., x1, ..)` and never reads the body, which `__bc` verifies as
+//! its own function. A parameter written `mut` is changed by the body, so `__bc` returns its
+//! final value after the result and the call assigns it back to the outer variable; every other
+//! variable keeps its value and facts, and a `&mut` parameter is passed as the call passes any
+//! `&mut`, which gives the callee a fresh current value and keeps the final one.
+//!
+//! The rewrite is on the MIR, so that the call is typed as any other call to a function with a
+//! contract is: the opening marker call becomes the call of `__bc`, followed by the assignments of
+//! the results, and the blocks of the body are emptied.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
-use rustc_middle::mir::visit::{MutatingUseContext, NonMutatingUseContext, PlaceContext, Visitor};
-use rustc_middle::mir::{self, BasicBlock, Body, Local, TerminatorKind};
+use rustc_abi::FieldIdx;
+use rustc_middle::mir::visit::{PlaceContext, Visitor};
+use rustc_middle::mir::{self, BasicBlock, Body, Local, Location, Operand, Place, TerminatorKind};
+use rustc_middle::ty::{self as mir_ty, TyCtxt};
 
 use crate::analyze;
-use crate::analyze::basic_block::{formula_marker_call, DropPoints, FormulaMarker, MovedOut};
+use crate::analyze::block_region::{region_under, Region, RegionMarkers};
 
-/// A local the code under a contract may change.
-/// Ordered from the change that keeps the most of a local to the one that keeps the least.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Change {
-    /// Only moved out of or dropped, which leaves its value as it is.
-    Moved,
-    /// Written only through a dereference of it: a `&mut` keeps its final value.
-    ThroughDeref,
-    /// Assigned or borrowed mutably as a whole or in a part of its own.
-    Whole,
+/// The name of the local that holds the value of the block's body, which the macro declares
+/// before the closing marker.
+const RESULT_NAME: &str = "__block_contract_result";
+
+/// What to write instead of an exit that leaves the block.
+const LEAVE_HINT: &str = ". To exit the function, return a `Result` as the block's value and apply \
+     `?` after the block (for `return` and `?`); to exit a loop, return a `ControlFlow` and `match` \
+     on it, or use `let ... else`, after the block (for `break` and `continue`)";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RegionMarker {
+    Open,
+    Close,
 }
 
-#[derive(Debug, Clone)]
-pub struct BlockContract {
-    /// The block that ends in the `block_requires!` marker call.
-    pub opening: BasicBlock,
-    /// The first block of the code under the contract, the opening marker's target.
-    pub entry: BasicBlock,
-    /// The block that ends in the `block_ensures!` marker call.
-    pub closing: BasicBlock,
-    /// The block after the contract, the closing marker's target.
-    pub exit: BasicBlock,
-    /// The blocks of the code under the contract, from `entry` to `closing`.
-    pub blocks: HashSet<BasicBlock>,
-    /// The locals the code under the contract may change.
-    pub changed: BTreeMap<Local, Change>,
-    /// The locals the code under the contract drops, with the parts moved out of each, as the
-    /// drop points of its blocks give them.
-    pub ends: Vec<(Local, MovedOut)>,
-}
-
-fn marker_of<'tcx>(
+/// The kind of region marker a block ends in and the extracted function the marker names.
+fn marker_at<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
     body: &Body<'tcx>,
     bb: BasicBlock,
-) -> Option<FormulaMarker> {
+) -> Option<(RegionMarker, mir_ty::Ty<'tcx>)> {
     let TerminatorKind::Call { func, args, .. } = &body.basic_blocks[bb].terminator().kind else {
         return None;
     };
-    formula_marker_call(ctx, &body.local_decls, func, args).map(|(marker, ..)| marker)
+    let (def_id, _) = func.const_fn_def()?;
+    let marker = if Some(def_id) == ctx.def_ids().block_region_open_marker() {
+        RegionMarker::Open
+    } else if Some(def_id) == ctx.def_ids().block_region_close_marker() {
+        RegionMarker::Close
+    } else {
+        return None;
+    };
+    Some((marker, args[0].node.ty(&body.local_decls, ctx.tcx())))
 }
 
-/// Puts a block of its own between each `block_requires!` marker call and its target where the
-/// target is reached from elsewhere too, such as the head of a loop the code under the contract
-/// starts with, so that the first block under the contract is entered only from the marker.
-pub fn separate_entries<'tcx>(ctx: &analyze::Analyzer<'tcx>, body: &mut Body<'tcx>) {
+/// Replaces each region of `body` by the call of the function it is extracted into.
+pub fn replace_regions_by_calls<'tcx>(ctx: &analyze::Analyzer<'tcx>, body: &mut Body<'tcx>) {
+    let is = |body: &Body<'tcx>, bb: BasicBlock, wanted: RegionMarker| {
+        marker_at(ctx, body, bb).is_some_and(|(marker, _)| marker == wanted)
+    };
     let openings: Vec<BasicBlock> = body
         .basic_blocks
         .indices()
-        .filter(|&bb| {
-            !body.basic_blocks[bb].is_cleanup
-                && marker_of(ctx, body, bb) == Some(FormulaMarker::BlockRequires)
-        })
+        .filter(|&bb| !body.basic_blocks[bb].is_cleanup && is(body, bb, RegionMarker::Open))
         .collect();
     for opening in openings {
-        let terminator = body.basic_blocks[opening].terminator();
-        let TerminatorKind::Call {
-            target: Some(target),
-            ..
-        } = terminator.kind
-        else {
-            unreachable!("a marker call returns");
-        };
-        if !analyze::basic_block::needs_own_precondition(body, target) {
-            continue;
-        }
-        let source_info = terminator.source_info;
-        let entry = body.basic_blocks_mut().push(mir::BasicBlockData::new(
-            Some(mir::Terminator {
-                source_info,
-                kind: TerminatorKind::Goto { target },
-            }),
-            false,
-        ));
-        let TerminatorKind::Call { target, .. } =
-            &mut body.basic_blocks_mut()[opening].terminator_mut().kind
-        else {
-            unreachable!("a marker call returns");
-        };
-        *target = Some(entry);
+        let region = region_under(
+            ctx,
+            body,
+            opening,
+            &RegionMarkers {
+                open: "`block_contract!`",
+                close: "`block_contract!` end marker",
+                leave_hint: LEAVE_HINT,
+                is_open: &|bb| is(body, bb, RegionMarker::Open),
+                is_close: &|bb| is(body, bb, RegionMarker::Close),
+            },
+        );
+        replace_region(ctx, body, opening, region);
     }
 }
 
-/// The block contracts of `body`. Stops at a `block_requires!` whose code can be left other
-/// than through one `block_ensures!`, and at a `block_ensures!` that closes none.
-pub fn collect<'tcx>(ctx: &analyze::Analyzer<'tcx>, body: &Body<'tcx>) -> Vec<BlockContract> {
-    let mut contracts = Vec::new();
-    for (bb, data) in body.basic_blocks.iter_enumerated() {
-        if data.is_cleanup || marker_of(ctx, body, bb) != Some(FormulaMarker::BlockRequires) {
-            continue;
-        }
-        contracts.push(contract_opened_at(ctx, body, bb));
+/// Whether the parameter of `bc` at `index` is written `mut`.
+fn is_mut_param(tcx: TyCtxt<'_>, bc: rustc_hir::def_id::LocalDefId, index: usize) -> bool {
+    let params = tcx.hir_body_owned_by(bc).params;
+    matches!(
+        params[index].pat.kind,
+        rustc_hir::PatKind::Binding(rustc_hir::BindingMode(_, rustc_hir::Mutability::Mut), ..)
+    )
+}
+
+/// The names of the parameters of the extracted function `bc`.
+fn param_names(
+    tcx: TyCtxt<'_>,
+    bc: rustc_hir::def_id::LocalDefId,
+) -> Vec<rustc_span::symbol::Ident> {
+    tcx.hir_body_owned_by(bc)
+        .params
+        .iter()
+        .map(|param| match param.pat.kind {
+            rustc_hir::PatKind::Binding(_, _, ident, None) => ident,
+            _ => panic!("a parameter of an extracted block is a name"),
+        })
+        .collect()
+}
+
+/// The places the name `name` is bound to at `scope`, and whether it is bound to a constant
+/// (a unit value has no local).
+fn bound_places<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    name: rustc_span::symbol::Ident,
+    scope: mir::SourceScope,
+) -> (Vec<Place<'tcx>>, bool) {
+    let bound = analyze::basic_block::bindings_in_scope(tcx, body, name, scope);
+    let places = bound
+        .iter()
+        .filter_map(|vdi| match vdi.value {
+            mir::VarDebugInfoContents::Place(place) => Some(place),
+            mir::VarDebugInfoContents::Const(_) => None,
+        })
+        .collect();
+    let constant = bound
+        .iter()
+        .any(|vdi| matches!(vdi.value, mir::VarDebugInfoContents::Const(_)));
+    (places, constant)
+}
+
+/// The place of the one local the name `name` is bound to at `scope`.
+fn outer_place<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    name: rustc_span::symbol::Ident,
+    scope: mir::SourceScope,
+    span: rustc_span::Span,
+) -> Place<'tcx> {
+    match bound_places(tcx, body, name, scope).0.as_slice() {
+        [place] => *place,
+        _ => tcx.dcx().span_fatal(
+            span,
+            format!("`block_contract!` parameter `{name}` names no single outer variable"),
+        ),
     }
-    for (bb, data) in body.basic_blocks.iter_enumerated() {
-        if !data.is_cleanup
-            && marker_of(ctx, body, bb) == Some(FormulaMarker::BlockEnsures)
-            && !contracts.iter().any(|contract| contract.closing == bb)
-        {
-            ctx.tcx.dcx().span_fatal(
-                data.terminator().source_info.span,
-                "`block_ensures!` closes no `block_requires!`",
+}
+
+/// `ty` as a comparison of the types of a variable and of a parameter sees it: regions erased and
+/// associated types normalized.
+fn comparable_type<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> mir_ty::Ty<'tcx> {
+    tcx.try_normalize_erasing_regions(typing_env, ty)
+        .unwrap_or_else(|_| tcx.erase_regions(ty))
+}
+
+/// Whether a value of `ty`, passed as a parameter, holds a `&mut` the call does not reborrow: one
+/// inside the value, or inside what a `&mut` parameter points to. Only a parameter that is a
+/// `&mut` itself is reborrowed, so that the callee gets a fresh current value and the caller keeps
+/// the final one; a `&mut` deeper in the type is copied, and a write through the copy would leave
+/// the caller's value stale. A type parameter holds none here: a body cannot write through a value
+/// of a type it does not know, and an instance that does hold one is rejected where the analysis
+/// sees its type.
+fn holds_unreborrowed_mut_ref<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+) -> bool {
+    let inspected = match (ty.ref_mutability(), ty.builtin_deref(false)) {
+        (Some(mir::Mutability::Mut), Some(pointee)) => pointee,
+        _ => ty,
+    };
+    analyze::may_hold_mut_ref(tcx, typing_env, inspected)
+}
+
+/// Rejects a block whose parameters or result do not have exactly the types of the variables the
+/// call passes, which the dead call in the macro's expansion lets through when a coercion
+/// (`&mut T` to `&T`, `&&T` to `&T`, an unsizing) or an inference choice makes them agree, and a
+/// non-`mut` parameter that holds a `&mut` below its top level.
+fn check_parameter_types<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    body: &Body<'tcx>,
+    sig: mir_ty::FnSig<'tcx>,
+    names: &[rustc_span::symbol::Ident],
+    params: &[(Place<'tcx>, bool)],
+    span: rustc_span::Span,
+) {
+    for ((name, (place, is_mut)), declared) in names.iter().zip(params).zip(sig.inputs()) {
+        let actual = place.ty(&body.local_decls, tcx).ty;
+        if comparable_type(tcx, typing_env, actual) != comparable_type(tcx, typing_env, *declared) {
+            tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "`block_contract!` parameter `{name}` is declared `{declared}` but the \
+                     variable has type `{actual}`; a parameter has exactly the type of the \
+                     variable it names (no coercion)"
+                ),
+            );
+        }
+        if !is_mut && holds_unreborrowed_mut_ref(tcx, typing_env, actual) {
+            tcx.dcx().span_fatal(
+                span,
+                format!(
+                    "`block_contract!` parameter `{name}` of type `{actual}` is not `mut` \
+                     but holds a `&mut` inside the value; only a parameter that is itself a \
+                     `&mut` is passed as a reborrow, so a write through the inner `&mut` would \
+                     not reach the variable. Pass the inner `&mut` itself as a parameter"
+                ),
             );
         }
     }
-    contracts
 }
 
-fn contract_opened_at<'tcx>(
+fn replace_region<'tcx>(
     ctx: &analyze::Analyzer<'tcx>,
-    body: &Body<'tcx>,
+    body: &mut Body<'tcx>,
     opening: BasicBlock,
-) -> BlockContract {
-    let terminator = body.basic_blocks[opening].terminator();
-    let span = terminator.source_info.span;
-    let fatal = |msg: &str| -> ! { ctx.tcx.dcx().span_fatal(span, msg.to_string()) };
-    let TerminatorKind::Call {
-        target: Some(entry),
+    region: Region,
+) {
+    let tcx = ctx.tcx();
+    let Region {
+        closing,
+        blocks,
+        exit,
         ..
+    } = region;
+    let terminator = body.basic_blocks[opening].terminator().clone();
+    let source_info = terminator.source_info;
+    let TerminatorKind::Call {
+        unwind, fn_span, ..
     } = terminator.kind
     else {
         unreachable!("a marker call returns");
     };
-    assert!(
-        !analyze::basic_block::needs_own_precondition(body, entry),
-        "the code under a block contract starts at a block of its own (`separate_entries`)"
+    let (_, bc_ty) = marker_at(ctx, body, opening).expect("an opening block ends in the marker");
+    let mir_ty::TyKind::FnDef(bc, bc_args) = bc_ty.kind() else {
+        panic!("a region marker names the extracted function");
+    };
+    let bc_local = bc.expect_local();
+    let (_, closing_ty) =
+        marker_at(ctx, body, closing).expect("a closing block ends in the marker");
+    assert_eq!(
+        bc_ty, closing_ty,
+        "both markers of a region name one function"
     );
 
-    let mut blocks = HashSet::new();
-    let mut closings = Vec::new();
-    let mut stack = vec![entry];
-    while let Some(bb) = stack.pop() {
-        if !blocks.insert(bb) {
-            continue;
-        }
-        if bb == opening {
-            fatal("a path from `block_requires!` comes back to it before a `block_ensures!`");
-        }
-        match marker_of(ctx, body, bb) {
-            Some(FormulaMarker::BlockEnsures) => {
-                closings.push(bb);
-                continue;
-            }
-            Some(FormulaMarker::BlockRequires) => {
-                fatal("a block contract inside another block contract is not supported")
-            }
-            _ => {}
-        }
-        let terminator = body.basic_blocks[bb].terminator();
-        if matches!(
-            terminator.kind,
-            TerminatorKind::Return | TerminatorKind::Yield { .. } | TerminatorKind::CoroutineDrop
-        ) {
-            fatal("a path from `block_requires!` leaves the function before a `block_ensures!`");
-        }
-        stack.extend(
-            terminator
-                .successors()
-                .filter(|succ| !body.basic_blocks[*succ].is_cleanup),
+    let sig = tcx.instantiate_bound_regions_with_erased(tcx.fn_sig(bc).instantiate(tcx, bc_args));
+    let names = param_names(tcx, bc_local);
+    let scope = source_info.scope;
+    let params: Vec<(Place<'tcx>, bool)> = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let place = outer_place(tcx, body, *name, scope, source_info.span);
+            (place, is_mut_param(tcx, bc_local, index))
+        })
+        .collect();
+    let args = params
+        .iter()
+        .map(|(place, _)| rustc_span::source_map::Spanned {
+            node: Operand::Copy(*place),
+            span: source_info.span,
+        })
+        .collect();
+
+    let result_name = rustc_span::symbol::Ident::from_str(RESULT_NAME);
+    let closing_info = body.basic_blocks[closing].terminator().source_info;
+    let returned = sig.output();
+    let in_out = params.iter().any(|(_, is_mut)| *is_mut);
+    let result_ty = if in_out {
+        returned.tuple_fields()[0]
+    } else {
+        returned
+    };
+    // MIR optimizations may give the value the local of an outer variable the body returns
+    // (`{ x }`): the value is then that variable, which the call must not assign, so a fresh
+    // local takes the call's result.
+    let is_outer_variable = |place: &Place<'tcx>| params.iter().any(|(outer, _)| outer == place);
+    let result_place = match bound_places(tcx, body, result_name, closing_info.scope) {
+        (places, _) if places.len() == 1 && !is_outer_variable(&places[0]) => places[0],
+        (places, _) if places.len() == 1 => body
+            .local_decls
+            .push(mir::LocalDecl::new(result_ty, closing_info.span).immutable())
+            .into(),
+        (places, true) if places.is_empty() => body
+            .local_decls
+            .push(mir::LocalDecl::new(result_ty, closing_info.span).immutable())
+            .into(),
+        _ => tcx.dcx().span_fatal(
+            closing_info.span,
+            "the value of a `block_contract!` block names no single variable",
+        ),
+    };
+    let typing_env = mir_ty::TypingEnv::post_analysis(tcx, body.source.def_id());
+    check_parameter_types(
+        tcx,
+        typing_env,
+        body,
+        sig,
+        &names,
+        &params,
+        source_info.span,
+    );
+    let result_actual = result_place.ty(&body.local_decls, tcx).ty;
+    if comparable_type(tcx, typing_env, result_actual)
+        != comparable_type(tcx, typing_env, result_ty)
+    {
+        tcx.dcx().span_fatal(
+            closing_info.span,
+            format!(
+                "the value of a `block_contract!` block has type `{result_actual}` but \
+                 the block declares `{result_ty}`"
+            ),
         );
     }
-    let closing = match closings.as_slice() {
-        [closing] => *closing,
-        [] => fatal("no `block_ensures!` follows `block_requires!` on a path that returns"),
-        _ => fatal("several `block_ensures!` close one `block_requires!`"),
-    };
-    let TerminatorKind::Call {
-        target: Some(exit), ..
-    } = body.basic_blocks[closing].terminator().kind
-    else {
-        unreachable!("a marker call returns");
-    };
-    if blocks.contains(&exit) {
-        fatal("the code after `block_ensures!` is also under its contract");
-    }
-    if entered_from_outside(body, &blocks, entry) {
-        fatal("the code under `block_requires!` is also reached by a path that does not pass it");
-    }
-
-    let mut changed = ChangedLocals::default();
-    for &bb in &blocks {
-        let data = &body.basic_blocks[bb];
-        for (statement_index, statement) in data.statements.iter().enumerate() {
-            let location = mir::Location {
-                block: bb,
-                statement_index,
-            };
-            changed.visit_statement(statement, location);
-        }
-        if bb != closing {
-            let location = mir::Location {
-                block: bb,
-                statement_index: data.statements.len(),
-            };
-            changed.visit_terminator(data.terminator(), location);
-        }
-    }
-    BlockContract {
-        opening,
-        entry,
-        closing,
-        exit,
-        blocks,
-        changed: changed.0,
-        ends: Vec::new(),
-    }
-}
-
-/// Whether a block of the code under a contract, other than its first, has a predecessor outside
-/// the code: a path that reaches it without the `block_requires!` marker, such as the other arm
-/// of an `if` whose one arm holds the marker. The analysis reads the code only from the marker
-/// and ends every path at `block_ensures!`, so such a path would not reach the code after the
-/// contract, and what follows would be checked on the marker's path alone. The code must be
-/// entered only through the marker, as a statement contract in ACSL or Why3's abstract block,
-/// which are single-entry by their syntax. A predecessor no path from the start reaches is no
-/// way in. It reads the body after `separate_entries`, whose first block of the code is entered
-/// only from the marker.
-fn entered_from_outside(body: &Body<'_>, blocks: &HashSet<BasicBlock>, entry: BasicBlock) -> bool {
-    let predecessors = body.basic_blocks.predecessors();
-    let reachable = mir::traversal::reachable_as_bitset(body);
-    let way_in = |pred: &BasicBlock| {
-        !blocks.contains(pred) && !body.basic_blocks[*pred].is_cleanup && reachable.contains(*pred)
-    };
-    blocks
-        .iter()
-        .filter(|&&bb| bb != entry)
-        .any(|&bb| predecessors[bb].iter().any(way_in))
-}
-
-/// The locals a piece of code may change: the base local of every place it writes, borrows
-/// mutably, moves or drops.
-#[derive(Default)]
-struct ChangedLocals(BTreeMap<Local, Change>);
-
-impl<'tcx> Visitor<'tcx> for ChangedLocals {
-    fn visit_place(&mut self, place: &mir::Place<'tcx>, context: PlaceContext, _: mir::Location) {
-        let change = match context {
-            PlaceContext::MutatingUse(MutatingUseContext::Retag) => return,
-            PlaceContext::MutatingUse(MutatingUseContext::Drop)
-            | PlaceContext::NonMutatingUse(NonMutatingUseContext::Move) => Change::Moved,
-            PlaceContext::MutatingUse(_) => match place.projection.first() {
-                Some(mir::ProjectionElem::Deref) => Change::ThroughDeref,
-                _ => Change::Whole,
-            },
-            PlaceContext::NonMutatingUse(_) | PlaceContext::NonUse(_) => return,
-        };
-        let entry = self.0.entry(place.local).or_insert(change);
-        *entry = (*entry).max(change);
-    }
-}
-
-/// The locals the blocks `blocks` drop, each once, with the parts moved out of it where it is
-/// dropped.
-pub fn drops_in_code(
-    body: &Body<'_>,
-    drop_points: &HashMap<BasicBlock, DropPoints>,
-    blocks: &HashSet<BasicBlock>,
-) -> Vec<(Local, MovedOut)> {
-    let mut ends: BTreeMap<Local, MovedOut> = BTreeMap::new();
-    let mut blocks: Vec<_> = blocks.iter().copied().collect();
-    blocks.sort();
-    for bb in blocks {
-        let points = &drop_points[&bb];
-        let data = &body.basic_blocks[bb];
-        for statement_index in 0..data.statements.len() {
-            for local in points.after_statement(statement_index).iter() {
-                ends.entry(local)
-                    .or_insert_with(|| points.moved_out(statement_index, local));
-            }
-        }
-        for target in data.terminator().successors() {
-            if body.basic_blocks[target].is_cleanup {
-                continue;
-            }
-            for (local, moved_out) in points.after_terminator(&target) {
-                ends.entry(local).or_insert(moved_out);
-            }
-        }
-    }
-    ends.into_iter().collect()
-}
-
-/// `body` with each contract's closing marker call going nowhere, so that the liveness of the
-/// code under a contract is that of the code and the `ensures` formula alone: a local neither
-/// uses is no parameter of its blocks, as a variable a helper function is not passed is not one
-/// of its parameters. The opening marker call goes on to a block that branches to the code and
-/// to the block after the contract, as the opening block does in the analysis, so that the code
-/// after a contract stays reachable: a backward dataflow analysis starts from the blocks the
-/// start reaches, and a contract that follows another on every path would otherwise have no
-/// liveness from the blocks after its first.
-pub fn body_ending_at_closings<'tcx>(
-    mut body: Body<'tcx>,
-    contracts: &[BlockContract],
-) -> Body<'tcx> {
-    for contract in contracts {
-        let terminator = body.basic_blocks.as_mut()[contract.closing].terminator_mut();
-        let TerminatorKind::Call { target, unwind, .. } = &mut terminator.kind else {
-            unreachable!("a closing block ends in the marker call");
-        };
-        *target = None;
-        *unwind = mir::UnwindAction::Unreachable;
-        let source_info = body.basic_blocks[contract.opening].terminator().source_info;
-        let branch = body.basic_blocks.as_mut().push(mir::BasicBlockData::new(
-            Some(mir::Terminator {
+    let mut assignments = Vec::new();
+    let mut destination = result_place;
+    if in_out {
+        let tmp = body
+            .local_decls
+            .push(mir::LocalDecl::new(returned, source_info.span).immutable());
+        destination = tmp.into();
+        let mut assign = |to: Place<'tcx>, index: usize, ty: mir_ty::Ty<'tcx>| {
+            let field = tcx.mk_place_field(Place::from(tmp), FieldIdx::from_usize(index), ty);
+            assignments.push(mir::Statement::new(
                 source_info,
-                kind: TerminatorKind::FalseEdge {
-                    real_target: contract.entry,
-                    imaginary_target: contract.exit,
-                },
-            }),
-            false,
-        ));
-        let terminator = body.basic_blocks.as_mut()[contract.opening].terminator_mut();
-        let TerminatorKind::Call { target, .. } = &mut terminator.kind else {
-            unreachable!("an opening block ends in the marker call");
+                mir::StatementKind::Assign(Box::new((to, mir::Rvalue::Use(Operand::Move(field))))),
+            ));
         };
-        *target = Some(branch);
+        let fields = returned.tuple_fields();
+        assign(result_place, 0, fields[0]);
+        let mut next = 1;
+        for (place, is_mut) in &params {
+            if *is_mut {
+                assign(*place, next, fields[next]);
+                next += 1;
+            }
+        }
     }
-    body
+
+    let after_call = body.basic_blocks_mut().push(mir::BasicBlockData::new(
+        Some(mir::Terminator {
+            source_info,
+            kind: TerminatorKind::Goto { target: exit },
+        }),
+        false,
+    ));
+    body.basic_blocks_mut()[after_call].statements = assignments;
+    body.basic_blocks_mut()[opening].terminator_mut().kind = TerminatorKind::Call {
+        func: Operand::function_handle(tcx, *bc, bc_args.iter(), source_info.span),
+        args,
+        destination,
+        target: Some(after_call),
+        unwind,
+        call_source: mir::CallSource::Normal,
+        fn_span,
+    };
+    for bb in blocks {
+        let data = &mut body.basic_blocks_mut()[bb];
+        data.statements.clear();
+        data.terminator_mut().kind = TerminatorKind::Unreachable;
+    }
+}
+
+/// Reports each use, in the body of a `block_contract!` block, of a variable declared
+/// outside the block that is not a parameter of the block. The block is verified as the function
+/// `__bc`, which does not see such a variable: a name the body writes for it could resolve to a
+/// module item there (a variable holding a closure or a function pointer shadows a function of
+/// the module in place only).
+///
+/// This reads the MIR as borrowck does (`mir_promoted`), before the optimizations that rename one
+/// local into another (`CopyProp` turns an unlisted `let y = x;` into a use of `x`), where a use
+/// is an operand of a statement or terminator, a closure's captures included.
+///
+/// A function's check covers the closures written in it, whose borrowck rustc does with the
+/// function's.
+pub fn check_regions_use_only_parameters(tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId) {
+    let mut hoisted = check_body_regions(tcx, def_id);
+    if tcx.typeck_root_def_id(def_id.to_def_id()) == def_id.to_def_id() {
+        for nested in tcx.nested_bodies_within(def_id) {
+            hoisted |= check_body_regions(tcx, nested);
+        }
+        if hoisted {
+            check_host_has_no_items(tcx, def_id);
+        }
+    }
+}
+
+/// Reports an item statement (a nested `fn`, `const`, `static`, `use`, `struct`, `enum`, `trait`,
+/// `impl`, `mod`, `macro_rules!`, whatever a macro expanded to) in the body of `host`, which
+/// holds a block hoisted next to it. The hoisted function does not see the host's local items, so
+/// a name the block writes could mean another item there. This reads the expanded HIR, which
+/// sees the items macros declare; the macro `#[context]` rejects them before expansion too, for
+/// an earlier message.
+fn check_host_has_no_items(tcx: TyCtxt<'_>, host: rustc_hir::def_id::LocalDefId) {
+    struct Items<'tcx> {
+        tcx: TyCtxt<'tcx>,
+        spans: Vec<rustc_span::Span>,
+    }
+    impl<'tcx> rustc_hir::intravisit::Visitor<'tcx> for Items<'tcx> {
+        type NestedFilter = rustc_middle::hir::nested_filter::OnlyBodies;
+
+        fn maybe_tcx(&mut self) -> TyCtxt<'tcx> {
+            self.tcx
+        }
+
+        fn visit_stmt(&mut self, stmt: &'tcx rustc_hir::Stmt<'tcx>) {
+            if let rustc_hir::StmtKind::Item(id) = stmt.kind {
+                let span = self.tcx.hir_item(id).span;
+                if !is_expanded_by_thrust_macros(self.tcx, span) {
+                    self.spans.push(span);
+                }
+            }
+            rustc_hir::intravisit::walk_stmt(self, stmt);
+        }
+    }
+    let mut items = Items {
+        tcx,
+        spans: Vec::new(),
+    };
+    rustc_hir::intravisit::Visitor::visit_body(&mut items, tcx.hir_body_owned_by(host));
+    for span in items.spans {
+        tcx.dcx().span_err(
+            span,
+            "a function with a `block_contract!` block has an item statement (a nested \
+             `fn`, `const`, `static`, `use`, `struct`, `enum`, `trait`, `impl`, `mod` or \
+             `macro_rules!`, also one a macro expands to): the block is verified as a function \
+             next to its host, which does not see local items, so a name could mean another item \
+             there. Move the item out of the function",
+        );
+    }
+}
+
+/// Whether `span` is code a macro of `thrust_macros` generated (the formula functions and the
+/// context stub the spec macros leave in a function body), which no name of the user's can reach.
+fn is_expanded_by_thrust_macros(tcx: TyCtxt<'_>, span: rustc_span::Span) -> bool {
+    span.ctxt()
+        .outer_expn_data()
+        .macro_def_id
+        .is_some_and(|macro_def| tcx.crate_name(macro_def.krate).as_str() == "thrust_macros")
+}
+
+/// Checks the blocks of the body of `def_id`, and whether one is hoisted next to a host, as a
+/// function that is not nested in the body is.
+fn check_body_regions(tcx: TyCtxt<'_>, def_id: rustc_hir::def_id::LocalDefId) -> bool {
+    let (promoted, _) = tcx.mir_promoted(def_id);
+    let body = promoted.borrow();
+    let root = tcx.typeck_root_def_id(def_id.to_def_id());
+    let mut hoisted = false;
+    for bb in body.basic_blocks.indices() {
+        if body.basic_blocks[bb].is_cleanup {
+            continue;
+        }
+        if let Some(bc_ty) = marker_callee(tcx, &body, bb, "__block_region_open_marker") {
+            check_region_uses(tcx, &body, bb, bc_ty);
+            if let mir_ty::TyKind::FnDef(bc, _) = bc_ty.kind() {
+                hoisted |= tcx.opt_parent(*bc) != Some(root);
+            }
+        }
+    }
+    hoisted
+}
+
+/// The extracted function's type the block ending in a call of the marker `name` passes to it.
+fn marker_callee<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    bb: BasicBlock,
+    name: &str,
+) -> Option<mir_ty::Ty<'tcx>> {
+    let TerminatorKind::Call { func, args, .. } = &body.basic_blocks[bb].terminator().kind else {
+        return None;
+    };
+    let (def_id, _) = func.const_fn_def()?;
+    if tcx.item_name(def_id).as_str() != name {
+        return None;
+    }
+    Some(args[0].node.ty(&body.local_decls, tcx))
+}
+
+/// What a use of a place names: its local, and for the environment of a closure (`_1`) the
+/// captured variable the place reaches, the first field below it, as `var_debug_info` names the
+/// captures (`(*_1).0`).
+type UseKey = (Local, Option<FieldIdx>);
+
+fn use_key(is_closure: bool, local: Local, projection: &[mir::PlaceElem<'_>]) -> UseKey {
+    if !is_closure || local != Local::from_u32(1) {
+        return (local, None);
+    }
+    let capture = projection.iter().find_map(|elem| match elem {
+        mir::PlaceElem::Field(field, _) => Some(*field),
+        mir::PlaceElem::Deref
+        | mir::PlaceElem::Index(_)
+        | mir::PlaceElem::ConstantIndex { .. }
+        | mir::PlaceElem::Subslice { .. }
+        | mir::PlaceElem::Downcast(..)
+        | mir::PlaceElem::OpaqueCast(_)
+        | mir::PlaceElem::Subtype(_)
+        | mir::PlaceElem::UnwrapUnsafeBinder(_) => None,
+    });
+    (local, capture)
+}
+
+/// What the code of a region uses, with where, and the locals it declares itself.
+struct RegionLocals<'a, 'tcx> {
+    body: &'a Body<'tcx>,
+    is_closure: bool,
+    declared: HashSet<Local>,
+    used: Vec<(UseKey, rustc_span::Span)>,
+}
+
+impl<'tcx> Visitor<'tcx> for RegionLocals<'_, 'tcx> {
+    fn visit_statement(&mut self, statement: &mir::Statement<'tcx>, location: Location) {
+        if let mir::StatementKind::StorageLive(local) = statement.kind {
+            self.declared.insert(local);
+        }
+        self.super_statement(statement, location);
+    }
+
+    fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, location: Location) {
+        if context.is_storage_marker() {
+            return;
+        }
+        let span = self.body.source_info(location).span;
+        self.used.push((
+            use_key(self.is_closure, place.local, place.projection),
+            span,
+        ));
+        for elem in place.projection {
+            if let mir::PlaceElem::Index(index) = elem {
+                self.used.push(((index, None), span));
+            }
+        }
+    }
+}
+
+fn check_region_uses<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    body: &Body<'tcx>,
+    opening: BasicBlock,
+    bc_ty: mir_ty::Ty<'tcx>,
+) {
+    let mir_ty::TyKind::FnDef(bc, _) = bc_ty.kind() else {
+        return;
+    };
+    let Some(bc_local) = bc.as_local() else {
+        return;
+    };
+    let is_closure = tcx.is_closure_like(body.source.def_id());
+    let scope = body.basic_blocks[opening].terminator().source_info.scope;
+    let listed: HashSet<UseKey> = param_names(tcx, bc_local)
+        .into_iter()
+        .flat_map(|name| bound_places(tcx, body, name, scope).0)
+        .map(|place| use_key(is_closure, place.local, place.projection))
+        .collect();
+
+    let TerminatorKind::Call {
+        target: Some(entry),
+        ..
+    } = body.basic_blocks[opening].terminator().kind
+    else {
+        return;
+    };
+    let mut locals = RegionLocals {
+        body,
+        is_closure,
+        declared: HashSet::new(),
+        used: Vec::new(),
+    };
+    let mut seen = HashSet::new();
+    let mut stack = vec![entry];
+    while let Some(bb) = stack.pop() {
+        let data = &body.basic_blocks[bb];
+        if data.is_cleanup || !seen.insert(bb) {
+            continue;
+        }
+        locals.visit_basic_block_data(bb, data);
+        let ends_region =
+            marker_callee(tcx, body, bb, "__block_region_close_marker") == Some(bc_ty);
+        if !ends_region {
+            stack.extend(data.terminator().successors());
+        }
+    }
+
+    // a temporary of the host has no name and is not an outer variable the body writes
+    let names: HashMap<UseKey, rustc_span::symbol::Symbol> = body
+        .var_debug_info
+        .iter()
+        .filter_map(|vdi| match vdi.value {
+            mir::VarDebugInfoContents::Place(place) => {
+                Some((use_key(is_closure, place.local, place.projection), vdi.name))
+            }
+            mir::VarDebugInfoContents::Const(_) => None,
+        })
+        .collect();
+    let mut reported = HashSet::new();
+    for (key, span) in &locals.used {
+        let Some(name) = names.get(key) else {
+            continue;
+        };
+        let is_outer = !locals.declared.contains(&key.0) && !listed.contains(key);
+        if is_outer && reported.insert(*key) {
+            tcx.dcx().span_err(
+                *span,
+                format!(
+                    "the body of `block_contract!` uses the variable `{name}`, which is \
+                     declared outside the block and is not one of its parameters; the block is \
+                     verified as a function that does not see it, where the name could mean \
+                     another item. List `{name}` as a parameter"
+                ),
+            );
+        }
+    }
 }

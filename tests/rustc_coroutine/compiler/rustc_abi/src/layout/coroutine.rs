@@ -14,6 +14,7 @@ use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated};
 use crate::case_study::USize;
 use crate::case_study::{counts, lemmas};
 use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all};
+use SavedLocalEligibility::*;
 use std::iter::{self, Enumerate};
 use std::slice::IterMut;
 
@@ -207,8 +208,6 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
     DenseBitSet<LocalIdx>,
     IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>,
 ) {
-    use SavedLocalEligibility::*;
-
     let mut assignments: IndexVec<LocalIdx, _> = IndexVec::from_elem_n(Unassigned, nb_locals);
 
     let mut ineligible_locals = DenseBitSet::new_empty(nb_locals);
@@ -419,20 +418,10 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             // in place of the results of `deref_mut` and `index_mut`. The written value is bound
             // first, as the assignment evaluates it before the place.
             let value = Ineligible(Some(FieldIdx::new(idx)));
-            let assignments_before = thrust_macros::ghost!(|assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>| -> IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>> {
-                assignments
-            });
-            thrust_macros::block_contract!(
-                requires(
-                    |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                    assignments_before == assignments
-                    && forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < assignments.len())
-                ),
-                ensures(
-                    |assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, value: SavedLocalEligibility<VariantIdx, FieldIdx>,
-                     assignments_before: thrust_models::Ghost<IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>>|
-                    written_at::<VariantIdx, FieldIdx, LocalIdx>(assignments, local, value, assignments_before)
-                ),
+            thrust_macros::block_contract_inline!(
+                |mut assignments: IndexVec<LocalIdx, SavedLocalEligibility<VariantIdx, FieldIdx>>, local: LocalIdx, value: SavedLocalEligibility<VariantIdx, FieldIdx>| -> ()
+                requires(forall(|i: USize| <LocalIdx as Idx>::index_is(local, i) ==> i < assignments.len())),
+                ensures(written_at::<VariantIdx, FieldIdx, LocalIdx>(assignments, local, value, old!(assignments))),
                 {
                     assignments[local] = value;
                 }

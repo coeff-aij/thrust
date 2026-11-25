@@ -5,9 +5,7 @@
 //!
 //! The forms differ only in the marker they call: an `invariant!` is the loop head's whole
 //! invariant, a `partial_invariant!` is conjoined with the inferred one, a `proof_assert!` is
-//! checked where it is written and assumed after it, an `assume!` is assumed there unchecked, and
-//! a `block_requires!` and the `block_ensures!` after it are the contract of the code between
-//! them.
+//! checked where it is written and assumed after it, and an `assume!` is assumed there unchecked.
 //!
 //! All expand a predicate closure with explicit parameter types into a
 //! `#[thrust::formula_fn]` over `Model::Ty` parameters plus a marker call
@@ -47,8 +45,6 @@ pub enum Marker {
     Partial,
     Assert,
     Assume,
-    BlockRequires,
-    BlockEnsures,
 }
 
 impl Marker {
@@ -66,18 +62,15 @@ impl Marker {
         match name {
             "proof_assert" => Some(Marker::Assert),
             "assume" => Some(Marker::Assume),
-            "block_requires" => Some(Marker::BlockRequires),
-            "block_ensures" => Some(Marker::BlockEnsures),
             _ => None,
         }
     }
 
-    /// Whether the form is a statement (`proof_assert!`, `assume!`, `block_requires!`,
-    /// `block_ensures!`), whose closure may leave a closure local's type to the local (`|f: _|`,
+    /// Whether the form is a statement (`proof_assert!`, `assume!`), whose closure may leave a closure local's type to the local (`|f: _|`,
     /// `<P: Fn(i64) -> i64> |w: Wrap<P>|`).
     fn is_statement(self) -> bool {
         match self {
-            Marker::Assert | Marker::Assume | Marker::BlockRequires | Marker::BlockEnsures => true,
+            Marker::Assert | Marker::Assume => true,
             Marker::Full | Marker::Partial => false,
         }
     }
@@ -91,10 +84,6 @@ impl Marker {
             }
             Marker::Assert => syn::parse_quote!(::thrust_macros::_proof_assert_with_context),
             Marker::Assume => syn::parse_quote!(::thrust_macros::_assume_with_context),
-            Marker::BlockRequires => {
-                syn::parse_quote!(::thrust_macros::_block_requires_with_context)
-            }
-            Marker::BlockEnsures => syn::parse_quote!(::thrust_macros::_block_ensures_with_context),
         }
     }
 
@@ -104,8 +93,6 @@ impl Marker {
             Marker::Partial => format_ident!("__partial_invariant_marker"),
             Marker::Assert => format_ident!("__assert_marker"),
             Marker::Assume => format_ident!("__assume_marker"),
-            Marker::BlockRequires => format_ident!("__block_requires_marker"),
-            Marker::BlockEnsures => format_ident!("__block_ensures_marker"),
         }
     }
 
@@ -115,8 +102,6 @@ impl Marker {
             Marker::Full | Marker::Partial => "_thrust_invariant",
             Marker::Assert => "_thrust_assert",
             Marker::Assume => "_thrust_assume",
-            Marker::BlockRequires => "_thrust_block_requires",
-            Marker::BlockEnsures => "_thrust_block_ensures",
         }
     }
 }
@@ -184,7 +169,7 @@ fn rename_entry_values(
         Marker::Full | Marker::Partial | Marker::Assert => {
             crate::entry_value::rename_in_invariant(input)
         }
-        Marker::Assume | Marker::BlockRequires | Marker::BlockEnsures => {
+        Marker::Assume => {
             crate::entry_value::reject(&input)?;
             Ok(input)
         }
@@ -201,8 +186,7 @@ fn expand_invariant(
     if !marker.is_statement() && !local_types.params.is_empty() {
         return Err(syn::Error::new_spanned(
             local_types,
-            "a loop invariant cannot leave a type to a local; only `proof_assert!`, `assume!`, \
-             `block_requires!` and `block_ensures!` can",
+            "a loop invariant cannot leave a type to a local; only `proof_assert!` and `assume!` can",
         ));
     }
     let mut params: Vec<FnArg> = Vec::new();

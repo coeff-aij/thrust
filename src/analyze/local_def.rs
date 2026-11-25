@@ -140,7 +140,6 @@ pub struct Analyzer<'tcx, 'ctx> {
     /// to substitute HIR types during translation in [`crate::analyze::annot_fn`]
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     drop_points: HashMap<BasicBlock, analyze::basic_block::DropPoints>,
-    block_contracts: Vec<analyze::block_contract::BlockContract>,
     /// The variables formulas name in the windows of two-phase borrows, found before the body is
     /// rewritten.
     window_reads: analyze::two_phase_borrow::WindowReads<'tcx>,
@@ -2066,8 +2065,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    /// Translates the formula function of a written block precondition (`site`: a loop invariant
-    /// or a `block_requires!`) into a precondition refinement over `bty`'s parameters. Each
+    /// Translates the formula function of a written block precondition (`site`: a loop invariant) into a precondition refinement over `bty`'s parameters. Each
     /// formula parameter names a variable of the block and is mapped to the corresponding
     /// basic-block parameter.
     ///
@@ -2150,54 +2148,52 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         written_text: &str,
     ) -> rty::FunctionParamIdx {
         let name = analyze::annot_fn::lifted_param_source_name(ident);
-        if let WrittenPreconditionKind::LoopInvariant(_) = site.kind {
-            if let Some(param_name) = analyze::annot_fn::entry_value_param_name(ident) {
-                tracing::debug!("entry value: {param_name}");
-                let local = self
-                    .function_param_local_of_name(param_name)
-                    .unwrap_or_else(|| {
-                        self.tcx.dcx().span_fatal(
-                            ident.span,
-                            format!(
+        if let Some(param_name) = analyze::annot_fn::entry_value_param_name(ident) {
+            tracing::debug!("entry value: {param_name}");
+            let local = self
+                .function_param_local_of_name(param_name)
+                .unwrap_or_else(|| {
+                    self.tcx.dcx().span_fatal(
+                        ident.span,
+                        format!(
                             "loop invariant refers to `old!({param_name})`, but `{param_name}` \
                              is not a parameter of the function"
                         ),
-                        )
-                    });
-                self.check_invariant_param_ty(
-                    site.kind.what(),
-                    ident.span,
-                    rustc_span::Symbol::intern(&format!("old!({param_name})")),
-                    written_ty,
-                    written_text,
-                    local,
-                    format!("the function parameter `{param_name}`"),
-                );
-                let param_idx = crate::analyze::function_param_of_local(local);
-                return bty.param_of_outer_fn_param(param_idx).unwrap();
-            }
-            if self.is_fn_param_wrapper(input_ty) {
-                tracing::debug!("fn_param_local: {input_ty:?}");
-                let local = self.function_param_local_of_name(name).unwrap_or_else(|| {
+                    )
+                });
+            self.check_invariant_param_ty(
+                site.kind.what(),
+                ident.span,
+                rustc_span::Symbol::intern(&format!("old!({param_name})")),
+                written_ty,
+                written_text,
+                local,
+                format!("the function parameter `{param_name}`"),
+            );
+            let param_idx = crate::analyze::function_param_of_local(local);
+            return bty.param_of_outer_fn_param(param_idx).unwrap();
+        }
+        if self.is_fn_param_wrapper(input_ty) {
+            tracing::debug!("fn_param_local: {input_ty:?}");
+            let local = self.function_param_local_of_name(name).unwrap_or_else(|| {
                     self.tcx.dcx().fatal(format!(
                         "loop invariant refers to `{name}` via FnParam, but it is not a function parameter"
                     ))
                 });
-                let mir_ty::TyKind::Adt(_, fn_param_args) = written_ty.kind() else {
-                    panic!("`FnParam` parameter written as {written_ty:?}");
-                };
-                self.check_invariant_param_ty(
-                    site.kind.what(),
-                    ident.span,
-                    name.name,
-                    fn_param_args.type_at(0),
-                    written_text,
-                    local,
-                    format!("the function parameter `{name}`"),
-                );
-                let param_idx = crate::analyze::function_param_of_local(local);
-                return bty.param_of_outer_fn_param(param_idx).unwrap();
-            }
+            let mir_ty::TyKind::Adt(_, fn_param_args) = written_ty.kind() else {
+                panic!("`FnParam` parameter written as {written_ty:?}");
+            };
+            self.check_invariant_param_ty(
+                site.kind.what(),
+                ident.span,
+                name.name,
+                fn_param_args.type_at(0),
+                written_text,
+                local,
+                format!("the function parameter `{name}`"),
+            );
+            let param_idx = crate::analyze::function_param_of_local(local);
+            return bty.param_of_outer_fn_param(param_idx).unwrap();
         }
         tracing::debug!("local: {input_ty:?}");
         // The binding in scope at the marker, as the liveness of the names the formula reads
@@ -2216,38 +2212,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             format!("`{name}` {}", site.kind.position()),
         );
         bty.param_of_local(local).unwrap()
-    }
-
-    /// The written precondition of the block under the `block_requires!` of `contract`: the
-    /// marker call that ends its opening block.
-    fn block_requires_site(
-        &self,
-        contract: &analyze::block_contract::BlockContract,
-    ) -> WrittenPrecondition<'tcx> {
-        let terminator = self.body.basic_blocks[contract.opening].terminator();
-        let mir::TerminatorKind::Call { func, args, .. } = &terminator.kind else {
-            unreachable!("an opening block ends in the marker call");
-        };
-        let (_, formula_def_id, generic_args) =
-            analyze::basic_block::formula_marker_call(self.ctx, &self.body.local_decls, func, args)
-                .expect("an opening block ends in the marker call");
-        let generic_args = analyze::basic_block::resolve_closure_local_args(
-            self.ctx,
-            &self.body,
-            terminator.source_info.scope,
-            terminator.source_info.span,
-            formula_def_id,
-            generic_args,
-        );
-        WrittenPrecondition {
-            formula_def_id,
-            generic_args,
-            scope: terminator.source_info.scope,
-            kind: WrittenPreconditionKind::BlockRequires {
-                span: terminator.source_info.span,
-            },
-            from_enclosing_loop: false,
-        }
     }
 
     /// The body with each marker call of a formula over live variables (`ghost!`,
@@ -2430,18 +2394,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .iterate_to_fixpoint(self.tcx, body, None)
                 .into_results_cursor(body)
         });
-        self.block_contracts = analyze::block_contract::collect(self.ctx, &self.body);
-        let contract_body = (!self.block_contracts.is_empty()).then(|| {
-            analyze::block_contract::body_ending_at_closings(
-                ghost_read_body.clone().unwrap_or_else(|| self.body.clone()),
-                &self.block_contracts,
-            )
-        });
-        let mut contract_live = contract_body.as_ref().map(|body| {
-            MaybeLiveLocals
-                .iterate_to_fixpoint(self.tcx, body, None)
-                .into_results_cursor(body)
-        });
         let mut ever_init = EverInitializedPlaces::new(&self.body, move_data)
             .iterate_to_fixpoint(self.tcx, &self.body, None)
             .into_results_cursor(&self.body);
@@ -2474,20 +2426,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .map(|init| move_data.inits[init].path),
                 move_data,
             );
-            let under_contract = self
-                .block_contracts
-                .iter()
-                .any(|contract| contract.blocks.contains(&bb));
-            let carried = match (&mut contract_live, &mut ghost_live) {
-                (Some(contract_live), _) if under_contract => {
-                    contract_live.seek_to_block_start(bb);
-                    contract_live.get().clone()
-                }
-                (_, Some(ghost_live)) => {
+            let carried = match &mut ghost_live {
+                Some(ghost_live) => {
                     ghost_live.seek_to_block_start(bb);
                     ghost_live.get().clone()
                 }
-                _ => results.get().clone(),
+                None => results.get().clone(),
             };
             let mut live_locals: Vec<_> = carried
                 .iter()
@@ -2568,27 +2512,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 bty.conjoin_precondition(inv);
                 self.ctx
                     .register_basic_block_ty_with_precondition(self.analysis_key(), bb, bty);
-            } else if let Some(contract) = self
-                .block_contracts
-                .iter()
-                .find(|contract| contract.entry == bb)
-            {
-                // The code under a block contract starts from its `requires` alone, as a function
-                // body with a written contract does.
-                let mut bty = self
-                    .type_builder
-                    .build_basic_block(&self.body, live_locals, ret_ty);
-                let site = self.block_requires_site(contract);
-                analyze::basic_block::register_closure_local_types(
-                    self.ctx,
-                    site.formula_def_id,
-                    site.generic_args,
-                    self.owner_fn_id,
-                );
-                let requires = self.build_written_precondition(&site, &bty);
-                bty.conjoin_precondition(requires);
-                self.ctx
-                    .register_basic_block_ty_with_precondition(self.analysis_key(), bb, bty);
             } else if analyze::basic_block::needs_own_precondition(&self.body, bb) {
                 let bty = self
                     .type_builder
@@ -2607,13 +2530,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     .register_basic_block_ty_without_precondition(self.analysis_key(), bb, bty);
             };
             self.ctx.leave_template_site(previous);
-        }
-        for contract in &mut self.block_contracts {
-            contract.ends = analyze::block_contract::drops_in_code(
-                &self.body,
-                &self.drop_points,
-                &contract.blocks,
-            );
         }
     }
 
@@ -2665,7 +2581,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .basic_block_analyzer(self.analysis_key(), bb)
                 .body(self.body.clone())
                 .drop_points(drop_points)
-                .block_contracts(self.block_contracts.clone())
                 .window_reads(self.window_reads.clone())
                 .run(&rty, expected_fn_ty);
         }
@@ -2818,7 +2733,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             body,
             generic_args,
             drop_points,
-            block_contracts: Vec::new(),
             window_reads: Default::default(),
             type_builder,
         }
@@ -3020,7 +2934,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             analyze::two_phase_borrow::redirect_window_reads(self.tcx, &mut self.body);
         analyze::reconstruct_slice_indexing::reconstruct(self.tcx, &mut self.body);
         self.normalize_switch_int_discriminant_order();
-        analyze::block_contract::separate_entries(self.ctx, &mut self.body);
+        analyze::block_contract::replace_regions_by_calls(self.ctx, &mut self.body);
         let move_data = self.move_data();
         self.reassign_local_mutabilities(&move_data);
         self.refine_basic_blocks(&move_data);
@@ -3213,8 +3127,7 @@ fn refinement_instances(
     out
 }
 
-/// A written precondition of a block: the formula a loop invariant or a `block_requires!` marker
-/// call gives it, which kind of call it is, and the scope it is called in.
+/// A written precondition of a block: the formula a loop invariant gives it, which kind of call it is, and the scope it is called in.
 #[derive(Debug, Clone, Copy)]
 struct WrittenPrecondition<'tcx> {
     formula_def_id: LocalDefId,
@@ -3229,8 +3142,6 @@ struct WrittenPrecondition<'tcx> {
 enum WrittenPreconditionKind {
     /// Conjoined at a loop head, how the marker says.
     LoopInvariant(InvariantMarker),
-    /// The whole precondition of the code under a block contract; `span` is the marker call.
-    BlockRequires { span: rustc_span::Span },
 }
 
 impl WrittenPreconditionKind {
@@ -3238,7 +3149,6 @@ impl WrittenPreconditionKind {
     fn what(self) -> &'static str {
         match self {
             Self::LoopInvariant(_) => "loop invariant",
-            Self::BlockRequires { .. } => "block_requires!",
         }
     }
 
@@ -3246,7 +3156,6 @@ impl WrittenPreconditionKind {
     fn position(self) -> &'static str {
         match self {
             Self::LoopInvariant(_) => "at the loop header",
-            Self::BlockRequires { .. } => "at `block_requires!`",
         }
     }
 
@@ -3265,13 +3174,6 @@ impl WrittenPreconditionKind {
                     "loop invariant refers to `{name}`, which is not a live variable at the loop header{hint}"
                 ))
             }
-            Self::BlockRequires { span } => tcx.dcx().span_fatal(
-                span,
-                format!(
-                    "block_requires! refers to `{name}`, which the code under the \
-                     contract does not use"
-                ),
-            ),
         }
     }
 }
