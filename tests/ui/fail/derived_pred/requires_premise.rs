@@ -5,7 +5,7 @@
 // Unsat. A function's own precondition has `produces` in a premise, and a trusted function, which
 // Thrust does not analyze, calls it: as for a precondition left to inference, it must hold of every
 // argument there (the entry rule of D59), which `k == 0` alone refutes.
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait Iter {
     type Item;
@@ -13,7 +13,7 @@ trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: Self::Item) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
 }
 
@@ -23,7 +23,7 @@ struct Range {
     end: isize,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 

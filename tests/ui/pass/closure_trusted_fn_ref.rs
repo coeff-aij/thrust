@@ -1,10 +1,10 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 // The twin of `fail/closure_trusted_fn_ref.rs`: a capture by reference keeps its value.
-
+use thrust_models::Model;
 struct S;
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

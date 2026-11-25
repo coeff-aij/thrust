@@ -5,7 +5,7 @@
 // Unsat. `Wrap<T>` leaves the derived `produces` out, so each instance of the impl has one of its
 // own, and the inherited law `only_zero` is checked at the instance `Wrap<bool>` that `main` uses.
 // There `next` yields 1, which the law excludes, whatever relation is inferred.
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait Iter {
     #[thrust_macros::predicate(derived)]
@@ -15,7 +15,7 @@ trait Iter {
     #[thrust_macros::ensures(Self::produces(*a, x) ==> x == 0)]
     fn only_zero(a: &Self, x: isize) {}
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<isize>;
 }
 
@@ -25,12 +25,12 @@ struct Wrap<T> {
     n: isize,
 }
 
-impl<T: thrust_models::Model> thrust_models::Model for Wrap<T> {
+impl<T: Model> Model for Wrap<T> {
     type Ty = (T::Ty, isize);
 }
 
 #[thrust_macros::context]
-impl<T: thrust_models::Model> Iter for Wrap<T> {
+impl<T: Model> Iter for Wrap<T> {
     fn next(&mut self) -> Option<isize> {
         let k = self.n;
         self.n += 1;

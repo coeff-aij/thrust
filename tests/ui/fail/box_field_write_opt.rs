@@ -1,14 +1,14 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -C opt-level=1
 //@rustc-env: THRUST_OPTIMIZED_MIR=1
-
+use thrust_models::Model;
 // At `-C opt-level=1` the `deref_copy` of the `Box` behind `b` becomes a `copy`, through which
 // the field is written.
 struct Tri {
     a: u32,
 }
 
-impl thrust_models::Model for Tri {
+impl Model for Tri {
     type Ty = Self;
 }
 

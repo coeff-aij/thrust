@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait A {
     #[thrust_macros::predicate]
@@ -11,7 +11,7 @@ trait A {
 #[derive(PartialEq)]
 struct X(i64);
 
-impl thrust_models::Model for X {
+impl Model for X {
     type Ty = X;
 }
 

@@ -4,10 +4,10 @@
 // `h`'s trusted contract, which `main` relies on at `S`, holds only where the code `T` brings
 // meets its specification: a trait object `h` makes of its `T` has `T`'s vtable, and it runs
 // `S`'s ignored `m`.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

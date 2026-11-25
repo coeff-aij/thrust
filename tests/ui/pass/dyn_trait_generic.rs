@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // A function generic over `T: ?Sized + Shape` used at a sized type.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape {
     #[thrust_macros::ensures(result >= 3)]
@@ -12,7 +12,7 @@ trait Shape {
 
 struct Tri;
 
-impl thrust_models::Model for Tri {
+impl Model for Tri {
     type Ty = ();
 }
 

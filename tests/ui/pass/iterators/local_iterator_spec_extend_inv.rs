@@ -4,14 +4,14 @@
 
 // `Vec::extend` steps the iterator `into_iter` makes by `next`, which requires `inv`; this
 // `next` panics outside it.
-
+use thrust_models::{forall, Model, model::{Int, Seq}};
 #[derive(PartialEq)]
 struct Counter {
     cur: i64,
     end: i64,
 }
 
-impl thrust_models::Model for Counter {
+impl Model for Counter {
     type Ty = Self;
 }
 
@@ -43,7 +43,7 @@ impl IteratorSpec for Counter {
             && self.cur <= o.cur
             && o.cur <= o.end
             && visited.len() == o.cur - self.cur
-            && thrust_models::forall(|i: thrust_models::model::Int|
+            && forall(|i: Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.cur + i)
     }
 
@@ -56,9 +56,9 @@ impl IteratorSpec for Counter {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }

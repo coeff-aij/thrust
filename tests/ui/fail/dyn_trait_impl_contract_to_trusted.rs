@@ -5,14 +5,14 @@
 // The trait gives `call` no contract, so a call through the trait object requires nothing, and
 // `S::call` refines that: its own `requires` must hold of every argument, as code Thrust does not
 // analyze may call it through the trait object with any.
-
+use thrust_models::Model;
 trait Call {
     fn call(&self, x: &i64) -> bool;
 }
 
 struct S;
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = ();
 }
 

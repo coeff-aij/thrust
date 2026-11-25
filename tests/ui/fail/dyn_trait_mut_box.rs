@@ -4,7 +4,7 @@
 
 // After the call through `&mut dyn Counter` the lender's value is unknown, as after a call whose
 // contract leaves the final value free, so `c.n == 0` is not proved.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(result <= 100)]
@@ -15,7 +15,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

@@ -4,7 +4,7 @@
 
 // A method of an impl of a local trait with a contract of its own, which refines the trait's:
 // the call at `One` uses the impl's contract, the call through `T: Get` the trait's.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Get {
     #[thrust_macros::requires(true)]
@@ -14,7 +14,7 @@ trait Get {
 
 struct One;
 
-impl thrust_models::Model for One {
+impl Model for One {
     type Ty = ();
 }
 

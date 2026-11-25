@@ -1,6 +1,6 @@
 //@error-in-other-file: with fewer components than its fields
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::{Model, model::Int};
 // A `Model` whose `Ty` has fewer components than the struct has fields has nothing to project
 // a field from, so Thrust stops where the struct is compared.
 #[derive(PartialEq)]
@@ -9,8 +9,8 @@ struct S {
     b: i64,
 }
 
-impl thrust_models::Model for S {
-    type Ty = (thrust_models::model::Int,);
+impl Model for S {
+    type Ty = (Int,);
 }
 
 fn main() {

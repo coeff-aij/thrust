@@ -4,10 +4,10 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The twin of `fail/ignored_inlined_into_trusted.rs`: `S`'s `m` is analyzed.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

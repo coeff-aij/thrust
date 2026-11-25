@@ -5,7 +5,7 @@
 // A trait method whose `&mut self` is `#[thrust::open_inv]` does not ensure `C`'s invariant of
 // the final value, which later calls through the trait object would assume, so packing `C` is
 // rejected.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(result <= 100)]
@@ -16,7 +16,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 
