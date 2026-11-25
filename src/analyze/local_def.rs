@@ -1845,6 +1845,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             };
 
             let (formula_def_id, generic_args) = if marker == InvariantMarker::ForLoopHistory {
+                if !self.implements_iterator_spec(marker_args.type_at(0)) {
+                    continue;
+                }
                 let formula_def_id = self
                     .ctx
                     .def_ids()
@@ -1877,6 +1880,22 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
         self.extend_histories_to_inner_loops(&mut loop_invariants);
         loop_invariants
+    }
+
+    /// Whether the iterator type of a `for` loop implements `IteratorSpec` in the environment of
+    /// the function: only then does the loop get the structural invariant.
+    fn implements_iterator_spec(&self, iter_ty: mir_ty::Ty<'tcx>) -> bool {
+        use rustc_infer::infer::TyCtxtInferExt as _;
+        use rustc_trait_selection::infer::InferCtxtExt as _;
+
+        let Some(iterator_spec) = self.ctx.def_ids().iterator_spec() else {
+            return false;
+        };
+        let typing_env = mir_ty::TypingEnv::post_analysis(self.tcx, self.body.source.def_id());
+        let (infcx, param_env) = self.tcx.infer_ctxt().build_with_typing_env(typing_env);
+        infcx
+            .type_implements_trait(iterator_spec, [iter_ty], param_env)
+            .must_apply_modulo_regions()
     }
 
     /// Conjoins the history of each `for` loop at the heads of the loops nested in it too. A

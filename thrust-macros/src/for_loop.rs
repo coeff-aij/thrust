@@ -8,11 +8,10 @@
 //! `produced` the sequence of the items `next` has returned so far, and the invariant is conjoined
 //! with the structural `inv(iter)` and `produces(iter_old, produced, iter)` of `IteratorSpec`.
 //!
-//! With `THRUST_FOR_LOOP_HISTORY=1`, a loop with no invariant gets the same ghosts, and
-//! `inv(iter)` and `produces(iter_old, produced, iter)` are conjoined to the invariant Thrust
-//! infers, so that the inferred part can relate the loop's state to `produced`. Creusot gives a
-//! `for` loop these ghosts only when it carries an `#[invariant]` or `#[variant]` attribute; with
-//! this option Thrust gives them to every `for` loop.
+//! A loop with no invariant gets the same ghosts, and Thrust conjoins `inv(iter)` and
+//! `produces(iter_old, produced, iter)` to the invariant it infers where the iterator implements
+//! `IteratorSpec`, so that the inferred part can relate the loop's state to `produced`, as Creusot
+//! does for every loop. A body that starts with `no_structural_invariant!()` gets neither.
 //!
 //! The variables of an annotated loop get names of their own for each loop, and the invariant's
 //! `iter`, `iter_old` and `produced` are renamed to them, so the loop body sees its own variables
@@ -22,7 +21,7 @@
 //! with no invariant whose label a specification of its body references is desugared as an
 //! annotated one with no written invariant, so that `iter!('l)` names its iterator while Thrust
 //! infers its invariant; it has no `iter_old` or `produced` to name, and
-//! `THRUST_FOR_LOOP_HISTORY` gives it none.
+//! gets no history.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -33,19 +32,20 @@ use syn::spanned::Spanned as _;
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// The desugaring of `for_loop`, or `None` when its body starts with `invariant!` or
-/// `partial_invariant!` calls none of which has a parameter `iter`, whose type is the iterator's,
-/// or with no invariant, no reference to the loop's label in the specifications of its body and
-/// `THRUST_FOR_LOOP_HISTORY` not `1`. Every invariant of that leading run names the loop's ghosts.
+/// `partial_invariant!` calls none of which has a parameter `iter` whose type is the iterator's.
+/// A loop with no invariant is desugared with the ghost history, or, when a specification in its
+/// body references its label, as an annotated loop with no written invariant. Every invariant of
+/// the leading run names the loop's ghosts.
 pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let label_name = for_loop.label.as_ref().map(|label| label.name.to_string());
     let label_name = label_name.as_deref();
-    let stmts = &for_loop.body.stmts;
+    let (opted_out, stmts) = split_opt_out(&for_loop.body.stmts);
     let named_by_label =
         label_name.is_some_and(|label| crate::loop_label::is_referenced_in_body(stmts, label));
     match labelled_ghosts(for_loop) {
         LabelledGhosts::None => return None,
         LabelledGhosts::Iter if !named_by_label => {
-            return history_requested().then(|| desugar_with_inferred_invariant(for_loop));
+            return (!opted_out).then(|| desugar_with_inferred_invariant(for_loop));
         }
         LabelledGhosts::Iter | LabelledGhosts::All => {}
     }
@@ -217,9 +217,8 @@ pub enum LabelledGhosts {
 /// The ghosts of `for_loop` that a reference to its label can name.
 pub fn labelled_ghosts(for_loop: &syn::ExprForLoop) -> LabelledGhosts {
     let label = for_loop.label.as_ref().map(|label| label.name.to_string());
-    let leading: Vec<_> = for_loop
-        .body
-        .stmts
+    let leading: Vec<_> = split_opt_out(&for_loop.body.stmts)
+        .1
         .iter()
         .map_while(|stmt| invariant_params(stmt, label.as_deref()))
         .collect();
@@ -237,9 +236,22 @@ pub fn labelled_ghosts(for_loop: &syn::ExprForLoop) -> LabelledGhosts {
     }
 }
 
-/// Whether a loop with no invariant is to get the ghost history (`THRUST_FOR_LOOP_HISTORY=1`).
-fn history_requested() -> bool {
-    std::env::var("THRUST_FOR_LOOP_HISTORY").is_ok_and(|v| v == "1")
+/// Whether `stmts` starts with `no_structural_invariant!()`, and the statements after it.
+fn split_opt_out(stmts: &[syn::Stmt]) -> (bool, &[syn::Stmt]) {
+    let Some((syn::Stmt::Macro(first), rest)) = stmts.split_first() else {
+        return (false, stmts);
+    };
+    let is_marker = first
+        .mac
+        .path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "no_structural_invariant");
+    if is_marker {
+        (true, rest)
+    } else {
+        (false, stmts)
+    }
 }
 
 /// The iterator expression of a `for` head. A struct literal is parenthesized there, but not in

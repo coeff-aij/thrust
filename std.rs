@@ -1215,7 +1215,7 @@ mod thrust_models {
     #[thrust::def::for_loop_iter_old_marker]
     #[thrust::ignored]
     #[inline(never)]
-    pub fn __for_loop_iter_old<I: Model>(_iter: &I) -> Ghost<I> {
+    pub fn __for_loop_iter_old<I>(_iter: &I) -> Ghost<I> {
         Ghost(std::marker::PhantomData)
     }
 
@@ -1280,7 +1280,8 @@ mod thrust_models {
 
     /// At the head of the loop, conjoins `for_loop_history` over the loop's ghosts, which are
     /// named `__thrust_for_iter`, `__thrust_for_iter_old` and `__thrust_for_produced` in the scope
-    /// of the call, to the invariant Thrust infers there.
+    /// of the call, to the invariant Thrust infers there where the iterator implements
+    /// `IteratorSpec`.
     #[thrust::def::for_loop_history_marker]
     #[thrust::ignored]
     #[inline(never)]
@@ -1288,7 +1289,7 @@ mod thrust_models {
         _iter_old: Ghost<I>,
         _produced: Ghost<model::Seq<<I::Item as Model>::Ty>>,
     ) where
-        I: crate::IteratorSpec,
+        I: std::iter::Iterator,
         I::Item: Model,
     {
     }
