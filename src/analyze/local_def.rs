@@ -762,21 +762,44 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         rty::RefinedType::unrefined(fn_ty.into())
     }
 
-    /// Requires each ghost const argument ([`analyze::ghost_const`]), the last parameters of
+    /// Requires of each ghost const argument ([`analyze::ghost_const`]), the last parameters of
     /// `sig`, to be in the range of its type, which the value of a call's const argument is and a
-    /// caller's own ghost argument is by this requirement.
+    /// caller's own ghost argument is by this requirement; and, of an extern spec's, to be as its
+    /// call of the target has it ([`analyze::ghost_const::GhostTie`]), as the spec of a type
+    /// fixed by its call holds only there.
     fn require_ghost_const_ranges(&self, sig: mir_ty::FnSig<'tcx>, fn_ty: &mut rty::FunctionType) {
         let ghosts = analyze::ghost_const::ghost_consts(self.ctx, self.local_def_id.to_def_id());
         let first = sig.inputs().len() - ghosts.len();
         for (offset, ghost) in ghosts.iter().enumerate() {
-            if !ghost.ty.is_integral() {
-                continue;
-            }
             let value = chc::Term::var(rty::RefinedTypeVar::Value);
-            let range = analyze::basic_block::int_term_in_range(self.tcx, value, ghost.ty)
-                .equal_to(chc::Term::bool(true));
+            let mut premises = Vec::new();
+            if ghost.ty.is_integral() {
+                premises.push(
+                    analyze::basic_block::int_term_in_range(self.tcx, value.clone(), ghost.ty)
+                        .equal_to(chc::Term::bool(true)),
+                );
+            }
+            match ghost.tie {
+                analyze::ghost_const::GhostTie::Free => {}
+                analyze::ghost_const::GhostTie::SameAs(position) => {
+                    let other = rty::FunctionParamIdx::from_usize(first + position);
+                    premises.push(value.equal_to(chc::Term::var(rty::RefinedTypeVar::Free(other))));
+                }
+                analyze::ghost_const::GhostTie::Fixed(ct) => {
+                    let fixed = analyze::ghost_const::const_value_term(self.tcx, ghost.ty, ct)
+                        .unwrap_or_else(|| {
+                            self.tcx.dcx().fatal(
+                                "an extern spec passes a const parameter of its target as \
+                                 something other than a value or its own parameter",
+                            )
+                        });
+                    premises.push(value.equal_to(fixed));
+                }
+            }
             let idx = rty::FunctionParamIdx::from_usize(first + offset);
-            fn_ty.params[idx].extend_refinement(range.into());
+            for premise in premises {
+                fn_ty.params[idx].extend_refinement(premise.into());
+            }
         }
     }
 

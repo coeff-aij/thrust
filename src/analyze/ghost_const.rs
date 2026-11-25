@@ -21,6 +21,7 @@ use rustc_middle::ty::{self as mir_ty, TyCtxt};
 use rustc_span::def_id::DefId;
 
 use crate::analyze;
+use crate::chc;
 
 /// A const parameter taken as a ghost argument.
 #[derive(Debug, Clone, Copy)]
@@ -30,6 +31,21 @@ pub struct GhostConst<'tcx> {
     /// target that the spec's call fixes to a value, which no parameter of the spec names.
     pub param_index: Option<u32>,
     pub ty: mir_ty::Ty<'tcx>,
+    /// What an extern spec's call of its target ties this argument to.
+    pub tie: GhostTie<'tcx>,
+}
+
+/// How a ghost argument of an extern spec relates to the others, as its call of the target
+/// passes them: the target's body is checked for all values of its const parameters, so the
+/// spec's contract holds only where they are as the call has them.
+#[derive(Debug, Clone, Copy)]
+pub enum GhostTie<'tcx> {
+    /// The argument is free: a const parameter of the spec not passed before.
+    Free,
+    /// The call passes the spec's parameter again: equal to the ghost argument at this position.
+    SameAs(usize),
+    /// The call passes this constant.
+    Fixed(mir_ty::Const<'tcx>),
 }
 
 /// The ghost arguments of the function `def_id`, in the order of its generic parameters; empty
@@ -44,15 +60,24 @@ pub fn ghost_consts<'tcx>(ctx: &analyze::Analyzer<'tcx>, def_id: DefId) -> Vec<G
         let spec_body = tcx.optimized_mir(def_id);
         let (target, target_args) =
             analyze::local_def::extern_spec_fn_target_def_id_impl(&tcx, &local_def_id, spec_body);
-        return ghost_consts(ctx, target)
-            .into_iter()
-            .map(|ghost| GhostConst {
-                param_index: ghost.param_index.and_then(|index| {
-                    const_param_index(target_args[index as usize].expect_const())
-                }),
-                ty: ghost.ty,
-            })
-            .collect();
+        let mut ghosts = ghost_consts(ctx, target);
+        for position in 0..ghosts.len() {
+            let Some(index) = ghosts[position].param_index else {
+                continue;
+            };
+            let ct = target_args[index as usize].expect_const();
+            let param = const_param_index(ct);
+            let earlier = ghosts[..position]
+                .iter()
+                .position(|g| param.is_some() && g.param_index == param);
+            ghosts[position].tie = match (param, earlier) {
+                (Some(_), Some(first)) => GhostTie::SameAs(first),
+                (Some(_), None) => GhostTie::Free,
+                (None, _) => GhostTie::Fixed(ct),
+            };
+            ghosts[position].param_index = if earlier.is_some() { None } else { param };
+        }
+        return ghosts;
     }
     if tcx.is_closure_like(def_id)
         || !matches!(tcx.def_kind(def_id), DefKind::Fn | DefKind::AssocFn)
@@ -63,6 +88,24 @@ pub fn ghost_consts<'tcx>(ctx: &analyze::Analyzer<'tcx>, def_id: DefId) -> Vec<G
         return Vec::new();
     }
     const_params(tcx, def_id)
+}
+
+/// The value of the const `ct` of type `ty` as a term, if it is a value.
+pub fn const_value_term<'tcx, V>(
+    tcx: TyCtxt<'tcx>,
+    ty: mir_ty::Ty<'tcx>,
+    ct: mir_ty::Const<'tcx>,
+) -> Option<chc::Term<V>> {
+    let scalar = ct.try_to_value()?.valtree.try_to_scalar_int()?;
+    if ty.is_bool() {
+        return Some(chc::Term::bool(scalar.try_to_bool().ok()?));
+    }
+    let size = ty.primitive_size(tcx);
+    if ty.is_signed() {
+        Some(chc::Term::int(scalar.to_int(size)))
+    } else {
+        Some(chc::Term::int(scalar.to_uint(size)))
+    }
 }
 
 fn is_trait_impl_item(tcx: TyCtxt<'_>, def_id: DefId) -> bool {
@@ -81,6 +124,7 @@ fn const_params<'tcx>(tcx: TyCtxt<'tcx>, def_id: DefId) -> Vec<GhostConst<'tcx>>
             Some(GhostConst {
                 param_index: Some(idx as u32),
                 ty: tcx.type_of(param.def_id).instantiate_identity(),
+                tie: GhostTie::Free,
             })
         })
         .collect()
