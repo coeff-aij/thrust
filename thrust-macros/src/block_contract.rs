@@ -15,7 +15,9 @@
 //! generated from the same text; the block is verified as if it were extracted into it. Its
 //! parameters take the outer variables with their own types, which the type check of a call that
 //! never runs ensures. A parameter written `mut` may be changed by the body, and the function
-//! returns its final value after the result, so that `ensures` names the final value as `x`, the
+//! returns its final value after the result (a `&mut` parameter is the exception: it is passed as
+//! in a call, written through only when written `mut`, and a `&mut` parameter not written `mut`
+//! gets `!p == *p` in `ensures`, which the check of the body proves), so that `ensures` names the final value as `x`, the
 //! entry value as `old!(x)` and the result as `result`, as in a function with `&mut`. A `return`,
 //! `?` or `break` that leaves the block is an error that the analysis reports.
 //!
@@ -27,7 +29,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proc_macro2::TokenStream;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use syn::parse::{Parse, ParseStream};
 
 mod kw {
@@ -48,6 +50,14 @@ pub struct BlockContract {
 struct Param {
     pat: syn::PatIdent,
     ty: syn::Type,
+}
+
+impl Param {
+    /// Whether the type is written `&mut T`: such a parameter is passed as a call argument, its
+    /// final value kept by the caller, and is not returned in-out.
+    fn is_mut_ref(&self) -> bool {
+        matches!(&self.ty, syn::Type::Reference(reference) if reference.mutability.is_some())
+    }
 }
 
 impl Parse for Param {
@@ -153,6 +163,8 @@ impl BlockContract {
             #(#[::thrust_macros::requires(#requires)])*
             #(#[::thrust_macros::ensures(#ensures)])*
             #attrs
+            // a `mut` `&mut` parameter is written through only, which rustc takes for an unused `mut`
+            #[allow(unused_mut)]
             fn #name #generics (#(#params),*) #output #where_clause #body
         }
     }
@@ -173,10 +185,20 @@ impl BlockContract {
         };
         let in_out: Vec<&Param> = params
             .iter()
-            .filter(|param| param.pat.mutability.is_some())
+            .filter(|param| param.pat.mutability.is_some() && !param.is_mut_ref())
             .collect();
+        // A `&mut` parameter not written `mut` is not written through: its final value is its
+        // value at the block's start. The spans are the parameter's, which a failure points at.
+        let mut ensures = ensures.clone();
+        for param in params
+            .iter()
+            .filter(|param| param.pat.mutability.is_none() && param.is_mut_ref())
+        {
+            let name = &param.pat.ident;
+            ensures.push(quote_spanned!(name.span() => !#name == *#name));
+        }
         if in_out.is_empty() {
-            return (quote!(-> #result_ty), ensures.clone(), quote!(#body));
+            return (quote!(-> #result_ty), ensures, quote!(#body));
         }
         let types = in_out.iter().map(|param| &param.ty);
         let names: Vec<&syn::Ident> = in_out.iter().map(|param| &param.pat.ident).collect();
