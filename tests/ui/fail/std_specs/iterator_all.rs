@@ -14,6 +14,7 @@ include!("../../../../std_try.rs");
 
 mod std_transcriptions {
     use crate::thrust_models;
+    use thrust_models::{Model, ModelEq};
     use std::convert::Infallible;
     use std::ops::ControlFlow;
     use thrust_models::forall;
@@ -23,7 +24,7 @@ mod std_transcriptions {
     // library/core/src/option.rs, `impl<T: [const] PartialEq> const PartialEq for Option<T>`, `fn eq(&self, other: &Self) -> bool`
     pub fn option_eq<T>(x: &Option<T>, y: &Option<T>) -> bool
     where
-        T: thrust_models::Model + thrust_models::ModelEq + PartialEq,
+        T: Model + ModelEq + PartialEq,
     {
         match (x, y) {
             (Some(l), Some(r)) => *l == *r,
@@ -54,7 +55,7 @@ mod std_transcriptions {
     pub trait IteratorMethods<I, F>
     where
         I: crate::IteratorSpec,
-        I::Item: thrust_models::Model,
+        I::Item: Model,
         F: FnMut(I::Item) -> bool,
     {
         fn iterator_all(it: &mut I, f: F) -> bool;
@@ -67,7 +68,7 @@ mod std_transcriptions {
     impl<I, F> IteratorMethods<I, F> for StdBodies
     where
         I: crate::IteratorSpec,
-        I::Item: thrust_models::Model,
+        I::Item: Model,
         F: FnMut(I::Item) -> bool,
     {
         // library/core/src/slice/iter/macros.rs, `impl<'a, T> Iterator for $name<'a, T>`, `fn all<F>(&mut self, mut f: F) -> bool where Self: Sized, F: FnMut(Self::Item) -> bool,`
@@ -83,9 +84,9 @@ mod std_transcriptions {
                         && I::inv(*it)
                         && crate::_iter_spec_short_circuit_chain::<I, F>(*old!(it), old!(f), s, *it, fs, false)
                         && fs[s.len()] == f
-                        && forall(|s: Seq<<I::Item as thrust_models::Model>::Ty>, it1: <I as thrust_models::Model>::Ty,
-                                   fs: Seq<Closure<F>>, x: <I::Item as thrust_models::Model>::Ty,
-                                   it2: <I as thrust_models::Model>::Ty|
+                        && forall(|s: Seq<<I::Item as Model>::Ty>, it1: <I as Model>::Ty,
+                                   fs: Seq<Closure<F>>, x: <I::Item as Model>::Ty,
+                                   it2: <I as Model>::Ty|
                             (crate::_iter_spec_short_circuit_chain::<I, F>(*old!(it), old!(f), s, it1, fs, false)
                                 && I::produces(it1, Seq::singleton(x), it2))
                                 ==> thrust_macros::pre!(fs[s.len()](x)))
@@ -113,9 +114,9 @@ mod std_transcriptions {
                         && I::inv(*it)
                         && crate::_iter_spec_short_circuit_chain::<I, F>(*old!(it), old!(f), s, *it, fs, true)
                         && fs[s.len()] == f
-                        && forall(|s: Seq<<I::Item as thrust_models::Model>::Ty>, it1: <I as thrust_models::Model>::Ty,
-                                   fs: Seq<Closure<F>>, x: <I::Item as thrust_models::Model>::Ty,
-                                   it2: <I as thrust_models::Model>::Ty|
+                        && forall(|s: Seq<<I::Item as Model>::Ty>, it1: <I as Model>::Ty,
+                                   fs: Seq<Closure<F>>, x: <I::Item as Model>::Ty,
+                                   it2: <I as Model>::Ty|
                             (crate::_iter_spec_short_circuit_chain::<I, F>(*old!(it), old!(f), s, it1, fs, true)
                                 && I::produces(it1, Seq::singleton(x), it2))
                                 ==> thrust_macros::pre!(fs[s.len()](x)))

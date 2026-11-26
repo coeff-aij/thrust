@@ -3,13 +3,13 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The twin of `fail/dyn_trait_model_supertrait.rs`: a trait without a `Model` supertrait.
-
+use thrust_models::Model;
 #[derive(PartialEq)]
 struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

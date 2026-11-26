@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
-
+use thrust_models::Model;
 // A `match` in an `ensures` binds the fields of tuple-like and struct-like variants.
 enum Shape {
     Circle(i64),
@@ -8,7 +8,7 @@ enum Shape {
     Empty,
 }
 
-impl thrust_models::Model for Shape {
+impl Model for Shape {
     type Ty = Self;
 }
 

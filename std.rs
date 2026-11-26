@@ -1126,17 +1126,20 @@ mod thrust_models {
     #[inline(never)]
     pub fn __assume_marker<F>(_f: F) {}
 
+    /// Opens the block of `block_contract!`, which `_f`, the function the block is
+    /// extracted into, stands for.
     #[doc(hidden)]
-    #[thrust::def::block_requires_marker]
+    #[thrust::def::block_region_open_marker]
     #[thrust::ignored]
     #[inline(never)]
-    pub fn __block_requires_marker<F>(_f: F) {}
+    pub fn __block_region_open_marker<F>(_f: F) {}
 
+    /// Closes the block `__block_region_open_marker` opened.
     #[doc(hidden)]
-    #[thrust::def::block_ensures_marker]
+    #[thrust::def::block_region_close_marker]
     #[thrust::ignored]
     #[inline(never)]
-    pub fn __block_ensures_marker<F>(_f: F) {}
+    pub fn __block_region_close_marker<F>(_f: F) {}
 
     /// Proof-only data, introduced by `thrust_macros::ghost!`. In the logic it is its
     /// content, so a specification refers to a `Ghost<T>` as if it were a `T`.
@@ -1203,8 +1206,9 @@ mod thrust_models {
     // The ghost history `thrust_macros::context` gives a `for` loop whose body starts with no
     // invariant (`thrust-macros/src/for_loop.rs`): `iter_old`, the iterator before the loop, and
     // `produced`, the items `next` has returned so far. Creusot's `desugar_for` makes them only for
-    // a loop with an `#[invariant]` or `#[variant]` attribute; Thrust's mode makes them for every
-    // `for` loop when it is enabled.
+    // a loop with an `#[invariant]` or `#[variant]` attribute; Thrust makes them for every `for`
+    // loop and removes them from the MIR of a loop whose iterator has no `IteratorSpec`
+    // (`erase_for_loop_ghosts_without_iterator_spec`), so that it is analyzed as without them.
     // The desugaring cannot write the iterator's type, so a `ghost!` cannot make them: each is made
     // by a marker generic in it, whose arguments give Thrust the type, and which Thrust types as a
     // `ghost!` whose term is the formula function after it, at the marker's generic arguments. The
@@ -1215,7 +1219,7 @@ mod thrust_models {
     #[thrust::def::for_loop_iter_old_marker]
     #[thrust::ignored]
     #[inline(never)]
-    pub fn __for_loop_iter_old<I: Model>(_iter: &I) -> Ghost<I> {
+    pub fn __for_loop_iter_old<I>(_iter: &I) -> Ghost<I> {
         Ghost(std::marker::PhantomData)
     }
 
@@ -1229,17 +1233,23 @@ mod thrust_models {
         log_eq_args(&__thrust_ghost_value, &__thrust_for_iter).log_eq()
     }
 
+    /// The type of `produced`, the ghost sequence of the items a `for` loop's iterator `I` has
+    /// returned: its model is the sequence of the items' models, which `I::Item: Model` gives, so
+    /// that a loop over an iterator whose items have no model still type-checks.
+    pub struct ForLoopProduced<I: ?Sized>(std::marker::PhantomData<I>);
+
+    impl<I: std::iter::Iterator + ?Sized> Model for ForLoopProduced<I>
+    where
+        I::Item: Model,
+    {
+        type Ty = model::Seq<<I::Item as Model>::Ty>;
+    }
+
     #[doc(hidden)]
     #[thrust::def::for_loop_produced_marker]
     #[thrust::ignored]
     #[inline(never)]
-    pub fn __for_loop_produced<I>(
-        _iter: &I,
-    ) -> Ghost<model::Seq<<I::Item as Model>::Ty>>
-    where
-        I: std::iter::Iterator,
-        I::Item: Model,
-    {
+    pub fn __for_loop_produced<I>(_iter: &I) -> Ghost<ForLoopProduced<I>> {
         Ghost(std::marker::PhantomData)
     }
 
@@ -1247,7 +1257,7 @@ mod thrust_models {
     #[thrust::formula_fn]
     #[thrust::def::for_loop_produced]
     pub fn for_loop_produced<I>(
-        __thrust_ghost_value: <model::Seq<<I::Item as Model>::Ty> as Model>::Ty,
+        __thrust_ghost_value: <Ghost<ForLoopProduced<I>> as Model>::Ty,
     ) -> bool
     where
         I: std::iter::Iterator,
@@ -1260,37 +1270,39 @@ mod thrust_models {
     #[thrust::def::for_loop_produced_push_marker]
     #[thrust::ignored]
     #[inline(never)]
-    pub fn __for_loop_produced_push<T: Model>(
-        _produced: Ghost<model::Seq<<T as Model>::Ty>>,
-        _item: &T,
-    ) -> Ghost<model::Seq<<T as Model>::Ty>> {
+    pub fn __for_loop_produced_push<I: std::iter::Iterator>(
+        _produced: Ghost<ForLoopProduced<I>>,
+        _item: &I::Item,
+    ) -> Ghost<ForLoopProduced<I>> {
         Ghost(std::marker::PhantomData)
     }
 
     #[allow(unused_variables)]
     #[thrust::formula_fn]
     #[thrust::def::for_loop_produced_push]
-    pub fn for_loop_produced_push<T: Model>(
-        __thrust_ghost_value: <model::Seq<<T as Model>::Ty> as Model>::Ty,
-        __thrust_for_produced: <Ghost<model::Seq<<T as Model>::Ty>> as Model>::Ty,
-        __thrust_for_item: <T as Model>::Ty,
-    ) -> bool {
+    pub fn for_loop_produced_push<I>(
+        __thrust_ghost_value: <Ghost<ForLoopProduced<I>> as Model>::Ty,
+        __thrust_for_produced: <Ghost<ForLoopProduced<I>> as Model>::Ty,
+        __thrust_for_item: <I::Item as Model>::Ty,
+    ) -> bool
+    where
+        I: std::iter::Iterator,
+        I::Item: Model,
+    {
         log_eq_args(&__thrust_ghost_value, &__thrust_for_produced.push(__thrust_for_item)).log_eq()
     }
 
     /// At the head of the loop, conjoins `for_loop_history` over the loop's ghosts, which are
     /// named `__thrust_for_iter`, `__thrust_for_iter_old` and `__thrust_for_produced` in the scope
-    /// of the call, to the invariant Thrust infers there.
+    /// of the call, to the invariant Thrust infers there where the iterator implements
+    /// `IteratorSpec`.
     #[thrust::def::for_loop_history_marker]
     #[thrust::ignored]
     #[inline(never)]
     pub fn __for_loop_history_marker<I>(
         _iter_old: Ghost<I>,
-        _produced: Ghost<model::Seq<<I::Item as Model>::Ty>>,
-    ) where
-        I: crate::IteratorSpec,
-        I::Item: Model,
-    {
+        _produced: Ghost<ForLoopProduced<I>>,
+    ) {
     }
 
     #[allow(unused_variables)]
@@ -1299,9 +1311,7 @@ mod thrust_models {
     pub fn for_loop_history<I>(
         __thrust_for_iter: <I as Model>::Ty,
         __thrust_for_iter_old: <Ghost<I> as Model>::Ty,
-        __thrust_for_produced: <Ghost<
-            model::Seq<<I::Item as Model>::Ty>,
-        > as Model>::Ty,
+        __thrust_for_produced: <Ghost<ForLoopProduced<I>> as Model>::Ty,
     ) -> bool
     where
         I: crate::IteratorSpec,

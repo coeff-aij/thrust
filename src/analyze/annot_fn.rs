@@ -406,6 +406,10 @@ pub struct AnnotFnTranslator<'a, 'tcx> {
     env: HashMap<HirId, chc::Term<rty::FunctionParamIdx>>,
     /// [`FormulaFn::pre_receivers`], shared with the translators of quantifier bodies.
     pre_receivers: Rc<RefCell<Vec<mir_ty::Ty<'tcx>>>>,
+    /// The generic parameter indices of the const parameters taken as ghost arguments by the
+    /// function this formula is the `requires` or `ensures` of: the formula's parameters are
+    /// followed by them, in this order.
+    ghost_consts: Vec<Option<u32>>,
 }
 
 impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
@@ -439,9 +443,32 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             type_builder,
             env: HashMap::default(),
             pre_receivers: Rc::default(),
+            ghost_consts: Vec::new(),
         };
         translator.build_env_from_params();
         translator
+    }
+
+    /// Makes this the translation of the `requires` or `ensures` of `contract_of`, whose formula
+    /// parameters its ghost const arguments follow.
+    pub fn for_contract(mut self, contract_of: DefId) -> Self {
+        self.ghost_consts = analyze::ghost_const::ghost_consts(self.analyzer, contract_of)
+            .iter()
+            .map(|ghost| ghost.param_index)
+            .collect();
+        self
+    }
+
+    /// The ghost argument that stands for the const parameter `param_did`.
+    fn ghost_const_term(&self, param_did: DefId) -> Option<chc::Term<rty::FunctionParamIdx>> {
+        let index = self
+            .tcx
+            .generics_of(self.local_def_id)
+            .param_def_id_to_index(self.tcx, param_did)?;
+        let position = self.ghost_consts.iter().position(|&i| i == Some(index))?;
+        Some(chc::Term::var(rty::FunctionParamIdx::from(
+            self.body.params.len() + position,
+        )))
     }
 
     pub fn with_def_id_cache(mut self, def_ids: DefIdCache<'tcx>) -> Self {
@@ -2876,6 +2903,16 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                     rustc_hir::def::DefKind::Const | rustc_hir::def::DefKind::AssocConst,
                     const_did,
                 ) => FormulaOrTerm::Term(self.const_term(const_did, hir)),
+                rustc_hir::def::Res::Def(rustc_hir::def::DefKind::ConstParam, param_did) => {
+                    let Some(term) = self.ghost_const_term(param_did) else {
+                        self.tcx.dcx().span_fatal(
+                            hir.span,
+                            "a const generic parameter can be named only in the `requires` or \
+                             `ensures` of a function or an inherent method",
+                        )
+                    };
+                    FormulaOrTerm::Term(term)
+                }
                 _ => unimplemented!("unsupported path in formula: {:?}", qpath),
             },
             ExprKind::Tup(exprs) => {

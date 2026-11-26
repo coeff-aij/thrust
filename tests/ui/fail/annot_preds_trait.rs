@@ -1,13 +1,13 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 // A is represented as Tuple<Int> in SMT-LIB2 format.
 #[derive(PartialEq)]
 struct A {
     x: i64,
 }
 
-impl thrust_models::Model for A {
+impl Model for A {
     type Ty = Self;
 }
 

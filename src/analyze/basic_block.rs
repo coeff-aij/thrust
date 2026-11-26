@@ -29,7 +29,6 @@ mod drop_point;
 mod trait_object;
 mod visitor;
 
-use crate::analyze::block_contract::{BlockContract, Change};
 pub use drop_point::{DropPoints, MoveState, MovedOut};
 
 /// Whether a basic block needs a precondition of its own, rather than
@@ -83,10 +82,6 @@ pub enum FormulaMarker {
     Assert,
     /// `assume!`: the formula, assumed unchecked.
     Assume,
-    /// `block_requires!`: the precondition of the code up to the next `block_ensures!`.
-    BlockRequires,
-    /// `block_ensures!`: the postcondition of the code from the last `block_requires!`.
-    BlockEnsures,
 }
 
 impl FormulaMarker {
@@ -95,10 +90,7 @@ impl FormulaMarker {
     pub fn first_named_param(self) -> usize {
         match self {
             FormulaMarker::Ghost | FormulaMarker::Choose => 1,
-            FormulaMarker::Assert
-            | FormulaMarker::Assume
-            | FormulaMarker::BlockRequires
-            | FormulaMarker::BlockEnsures => 0,
+            FormulaMarker::Assert | FormulaMarker::Assume => 0,
         }
     }
 }
@@ -127,10 +119,6 @@ pub fn formula_marker_call<'tcx>(
         FormulaMarker::Assert
     } else if Some(def_id) == ctx.def_ids().assume_marker() {
         FormulaMarker::Assume
-    } else if Some(def_id) == ctx.def_ids().block_requires_marker() {
-        FormulaMarker::BlockRequires
-    } else if Some(def_id) == ctx.def_ids().block_ensures_marker() {
-        FormulaMarker::BlockEnsures
     } else {
         return None;
     };
@@ -146,7 +134,7 @@ pub fn formula_marker_call<'tcx>(
 }
 
 /// The prefix of the name of a type parameter a formula function declares for a closure type its
-/// statement (`proof_assert!`, `assume!`, `block_requires!`, `block_ensures!`) leaves to a local: a `_` in a written parameter type, or a type
+/// statement (`proof_assert!`, `assume!`) leaves to a local: a `_` in a written parameter type, or a type
 /// parameter declared before the closure (`thrust-macros/src/formula_fn_lifting.rs`).
 const ELIDED_CLOSURE_LOCAL_PREFIX: &str = "__ThrustClosureOf_";
 
@@ -155,7 +143,7 @@ pub fn is_closure_local_param(param: &mir_ty::GenericParamDef) -> bool {
 }
 
 /// `generic_args` of the formula function `formula_def_id` of a statement (`proof_assert!`,
-/// `assume!`, `block_requires!`, `block_ensures!`) at `scope`, with each type argument the formula leaves to a local taken from that local's type:
+/// `assume!`) at `scope`, with each type argument the formula leaves to a local taken from that local's type:
 /// a closure's type cannot be written, so the marker call gives a placeholder there, and the
 /// written type of each parameter is matched against the type of the local it names, as rustc
 /// infers the `_` of a Creusot or Verus assertion written in the body.
@@ -630,7 +618,7 @@ fn bit_vec_to_int<'tcx, V>(bv: chc::Term<V>, ty: mir_ty::Ty<'tcx>) -> chc::Term<
 }
 
 /// Whether the integer `term` lies in the range of the integer type `ty`.
-fn int_term_in_range<'tcx, V: Clone>(
+pub(super) fn int_term_in_range<'tcx, V: Clone>(
     tcx: TyCtxt<'tcx>,
     term: chc::Term<V>,
     ty: mir_ty::Ty<'tcx>,
@@ -801,7 +789,8 @@ pub struct Analyzer<'tcx, 'ctx> {
     local_def_id: LocalDefId,
     analysis_key: analyze::AnalysisKey<'tcx>,
     drop_points: DropPoints,
-    block_contracts: Vec<BlockContract>,
+    /// The variables formulas name in the windows of two-phase borrows.
+    window_reads: analyze::two_phase_borrow::WindowReads<'tcx>,
     basic_block: BasicBlock,
     body: Cow<'tcx, Body<'tcx>>,
 
@@ -1134,7 +1123,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         };
         match ty.kind() {
             // A function item is a closure without captures.
-            mir_ty::TyKind::FnDef(..) => {
+            mir_ty::TyKind::FnDef(def_id, args) => {
+                self.reject_ghost_fn_item(*def_id, args);
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
             mir_ty::TyKind::Closure(_, args) if args.as_closure().upvar_tys().is_empty() => {
@@ -1269,7 +1259,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             (mir_ty::TyKind::Closure(_, args), _) if args.as_closure().upvar_tys().is_empty() => {
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
-            (mir_ty::TyKind::FnDef(..), _) => {
+            (mir_ty::TyKind::FnDef(def_id, args), _) => {
+                self.reject_ghost_fn_item(*def_id, args);
                 PlaceType::with_ty_and_term(rty::Type::unit(), chc::Term::tuple(vec![]))
             }
             (mir_ty::TyKind::Tuple(tys), ConstValue::ZeroSized) => {
@@ -1344,11 +1335,71 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         }
     }
 
-    fn unknown_value_ty(&self, ty: mir_ty::Ty<'tcx>) -> PlaceType {
-        let ty = self.type_builder.build(ty).vacuous().ty;
+    /// Any value of `mir_ty`, in its range when it is an integer.
+    fn unknown_value_ty(&self, value_ty: mir_ty::Ty<'tcx>) -> PlaceType {
+        let is_integral = value_ty.is_integral();
+        let ty = self.type_builder.build(value_ty).vacuous().ty;
         let mut builder = PlaceTypeBuilder::default();
         let value = builder.push_existential(ty.to_sort());
-        builder.build(ty, chc::Term::var(value.into()))
+        let term = chc::Term::var(value.into());
+        if is_integral {
+            let in_range = int_term_in_range(self.tcx, term.clone(), value_ty);
+            builder.push_formula(in_range.equal_to(chc::Term::bool(true)));
+        }
+        builder.build(ty, term)
+    }
+
+    /// A function item that takes ghost const arguments ([`analyze::ghost_const`]) has one more
+    /// parameter than the closure type it would be used as, so it cannot be a value yet.
+    fn reject_ghost_fn_item(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) {
+        if analyze::ghost_const::ghost_consts(self.ctx(), def_id).is_empty() {
+            return;
+        }
+        if analyze::selection::is_extracted_block(self.tcx, def_id) {
+            self.tcx.dcx().fatal(format!(
+                "`block_contract!` in `{}` is not supported yet: the function has a const generic \
+                 parameter, which the extracted function of the block would take as an implicit \
+                 argument",
+                self.tcx.def_path_str(self.type_builder.owner_fn_id()),
+            ));
+        }
+        self.tcx.dcx().fatal(format!(
+            "`{}` takes its const generic parameters as implicit arguments, so it cannot be \
+             used as a value in `{}` yet; call it, or wrap the call in a closure",
+            self.tcx.def_path_str_with_args(def_id, args),
+            self.tcx.def_path_str(self.type_builder.owner_fn_id()),
+        ));
+    }
+
+    /// [`Self::reject_ghost_fn_item`] for the function items the generic arguments of a call
+    /// name, which the callee may call as closures.
+    fn reject_ghost_fn_items_in(&self, generic_args: mir_ty::GenericArgsRef<'tcx>) {
+        for ty in generic_args
+            .iter()
+            .flat_map(|arg| arg.walk())
+            .filter_map(|arg| arg.as_type())
+        {
+            if let mir_ty::TyKind::FnDef(def_id, args) = ty.kind() {
+                self.reject_ghost_fn_item(*def_id, args);
+            }
+        }
+    }
+
+    /// A const parameter of the function being analyzed: its ghost argument when it takes one,
+    /// otherwise any value of its type, as the body is checked for every instance.
+    fn const_param_ty(&self, ty: mir_ty::Ty<'tcx>, ct: mir_ty::Const<'tcx>) -> PlaceType {
+        let mir_ty::ConstKind::Param(param) = ct.kind() else {
+            unreachable!("a const parameter");
+        };
+        let ghost = analyze::ghost_const::ghost_local(
+            self.ctx(),
+            self.local_def_id.to_def_id(),
+            param.index,
+        );
+        match ghost {
+            Some(local) => self.place_type(&mir::Place::from(local)),
+            None => self.unknown_value_ty(ty),
+        }
     }
 
     fn const_ty(&self, const_: &mir::Const<'tcx>) -> PlaceType {
@@ -1368,6 +1419,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     Err(mir::interpret::ErrorHandled::TooGeneric(_)) => self.unknown_value_ty(*ty),
                     Err(err) => panic!("failed to evaluate constant {unevaluated:?}: {err:?}"),
                 }
+            }
+            // A const parameter is any value of its type, as the body is checked for every
+            // instance.
+            mir::Const::Ty(ty, ct) if matches!(ct.kind(), mir_ty::ConstKind::Param(_)) => {
+                self.const_param_ty(*ty, *ct)
             }
             mir::Const::Ty(ty, _) => {
                 let scalar_int = const_
@@ -1727,6 +1783,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             ) => {
                 let func_ty = match operand.const_fn_def() {
                     Some((def_id, args)) => {
+                        self.reject_ghost_fn_item(def_id, args);
                         self.record_called_fn(def_id, args);
                         self.callable_ty(def_id, args)
                     }
@@ -1890,11 +1947,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         bb: BasicBlock,
         outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
     ) {
-        let starts_block_contract = self
-            .block_contracts
-            .iter()
-            .any(|contract| contract.entry == bb);
-        if !needs_own_precondition(&self.body, bb) && !starts_block_contract {
+        if !needs_own_precondition(&self.body, bb) {
             self.install_inherited_bb_ty(bb, outer_fn_param_vars);
             return;
         }
@@ -2713,6 +2766,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         I: IntoIterator<Item = Operand<'tcx>>,
     {
         // TODO: handle const_fn_def on Env side
+        if let Some((_, generic_args)) = func.const_fn_def() {
+            // Before any translation of such a function item's type, which has one more
+            // parameter than its use expects.
+            self.reject_ghost_fn_items_in(generic_args);
+        }
         let func_ty = if let Some((def_id, args)) = func.const_fn_def() {
             self.record_called_fn(def_id, args);
             let ty = self.callable_ty(def_id, args);
@@ -2724,17 +2782,41 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             self.operand_type(func.clone()).ty
         };
         let operands: Vec<_> = args.into_iter().collect();
-        let expected_args: IndexVec<_, _> = operands
+        let mut expected_args: IndexVec<_, _> = operands
             .iter()
             .map(|op| self.operand_refined_type(op.clone()))
             .collect();
         if let Some((def_id, generic_args)) = func.const_fn_def() {
             self.hand_over_closures(def_id, generic_args, &operands, &expected_args);
+            self.push_ghost_const_args(def_id, generic_args, &mut expected_args);
         }
         let rty::Type::Function(func_ty) = func_ty else {
             panic!("unexpected def type: {:?}", func_ty);
         };
         (func_ty, expected_args)
+    }
+
+    /// Appends to `expected_args` the const arguments of a call of `def_id` at `generic_args` for
+    /// the const parameters `def_id` takes as ghost arguments ([`analyze::ghost_const`]): a value,
+    /// or the caller's own ghost argument for the parameter the call passes on.
+    fn push_ghost_const_args(
+        &mut self,
+        def_id: DefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        expected_args: &mut IndexVec<rty::FunctionParamIdx, rty::RefinedType<Var>>,
+    ) {
+        for ghost in analyze::ghost_const::ghost_consts(self.ctx(), def_id) {
+            let index = ghost
+                .param_index
+                .expect("a callee's ghost argument is a parameter");
+            let ct = generic_args[index as usize].expect_const();
+            let operand = Operand::Constant(Box::new(mir::ConstOperand {
+                span: rustc_span::DUMMY_SP,
+                user_ty: None,
+                const_: mir::Const::Ty(ghost.ty, ct),
+            }));
+            expected_args.push(self.operand_refined_type(operand));
+        }
     }
 
     fn type_box(&mut self, value: Operand<'tcx>, expected: &rty::RefinedType<Var>) {
@@ -2823,7 +2905,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     if !self.is_defined(place.local) {
                         continue;
                     }
-                    Operand::Copy(*place)
+                    Operand::Copy(
+                        self.window_reads.read_by_formula(
+                            self.tcx,
+                            &self.body,
+                            self.body.basic_blocks[self.basic_block]
+                                .terminator()
+                                .source_info
+                                .span,
+                            *place,
+                        ),
+                    )
                 }
                 mir::VarDebugInfoContents::Const(constant) => {
                     Operand::Constant(Box::new(*constant))
@@ -2858,8 +2950,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let what = match marker {
             FormulaMarker::Assert => "proof_assert!",
             FormulaMarker::Assume => "assume!",
-            FormulaMarker::BlockEnsures => "block_ensures!",
-            FormulaMarker::Ghost | FormulaMarker::Choose | FormulaMarker::BlockRequires => {
+            FormulaMarker::Ghost | FormulaMarker::Choose => {
                 unreachable!("not a statement checked or assumed where it is written")
             }
         };
@@ -2876,7 +2967,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             outer_fn_param_vars,
         );
         let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
-        if matches!(marker, FormulaMarker::Assert | FormulaMarker::BlockEnsures) {
+        if marker == FormulaMarker::Assert {
             self.check_formula(
                 formula_fn
                     .witnessed_formula()
@@ -3017,151 +3108,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.env.immut_bind_tmp(arg)
             })
             .collect()
-    }
-
-    /// Goes past the code under `contract`, from its opening block to the block after it, as
-    /// past a call to a function with that contract: each local the code may change takes a
-    /// fresh value, a `&mut` written only through it keeping its final value, the `ensures`
-    /// formula is assumed of the values, and the other locals keep theirs. A local the code
-    /// leaves unchanged and drops is dropped here, with the parts moved out of it before.
-    fn pass_over_block_contract(
-        &mut self,
-        contract: &BlockContract,
-        outer_fn_param_vars: &BTreeMap<rty::FunctionParamIdx, Var>,
-    ) {
-        let closing = self.body.basic_blocks[contract.closing]
-            .terminator()
-            .clone();
-        let TerminatorKind::Call { func, args, .. } = &closing.kind else {
-            unreachable!("a closing block ends in the marker call");
-        };
-        let (_, formula_def_id, generic_args) =
-            formula_marker_call(self.ctx, &self.local_decls, func, args)
-                .expect("a closing block ends in the marker call");
-        let generic_args = resolve_closure_local_args(
-            self.ctx,
-            &self.body,
-            closing.source_info.scope,
-            closing.source_info.span,
-            formula_def_id,
-            generic_args,
-        );
-        register_closure_local_types(
-            self.ctx,
-            formula_def_id,
-            generic_args,
-            self.type_builder.owner_fn_id(),
-        );
-        let formula_fn = self
-            .ctx
-            .formula_fn_with_args(
-                formula_def_id,
-                generic_args,
-                self.type_builder.owner_fn_id(),
-            )
-            .expect("block_ensures! formula function is not registered");
-        let named: Vec<Local> = formula_fn
-            .param_idents()
-            .iter()
-            .filter_map(|ident| {
-                let name = analyze::annot_fn::lifted_param_source_name(
-                    ident.expect("formula parameters must be named"),
-                );
-                bindings_in_scope(self.tcx, &self.body, name, closing.source_info.scope)
-                    .into_iter()
-                    .find_map(|vdi| match &vdi.value {
-                        mir::VarDebugInfoContents::Place(place) if place.projection.is_empty() => {
-                            Some(place.local)
-                        }
-                        _ => None,
-                    })
-            })
-            .collect();
-        let exit_ty = self
-            .ctx
-            .basic_block_ty(self.analysis_key, contract.exit)
-            .clone();
-        let live_after = |local: Local| exit_ty.param_of_local(local).is_some();
-
-        for (&local, &change) in &contract.changed {
-            let defined = self.is_defined(local);
-            if !(defined || live_after(local) || named.contains(&local)) {
-                continue;
-            }
-            let decl_ty = self.local_decls[local].ty;
-            if defined && !self.is_mut_local(local) && !decl_ty.is_mutable_ptr() {
-                // A local bound immutably holds one value, which a move or a drop leaves as it
-                // is; any other change makes `reassign_local_mutabilities` bind it mutably.
-                assert_eq!(change, Change::Moved, "an immutable local is changed");
-                continue;
-            }
-            let old = defined.then(|| self.env.local_type(local));
-            let mut ty = self.type_builder.build(decl_ty).vacuous().ty;
-            match &old {
-                Some(old) if self.is_mut_local(local) => {
-                    let old_elem = &old.ty.as_pointer().expect("a mutable local is boxed").elem;
-                    ty.inherit_function_types(&old_elem.ty);
-                }
-                Some(old) => ty.inherit_function_types(&old.ty),
-                None if decl_ty.walk().any(|arg| {
-                    arg.as_type().is_some_and(|ty| {
-                        matches!(
-                            ty.kind(),
-                            mir_ty::TyKind::Closure(..)
-                                | mir_ty::TyKind::FnDef(..)
-                                | mir_ty::TyKind::FnPtr(..)
-                        )
-                    })
-                }) =>
-                {
-                    self.tcx.dcx().span_fatal(
-                        closing.source_info.span,
-                        format!(
-                            "the code under this block contract gives `{local:?}` a value that \
-                             holds a function, which is not supported"
-                        ),
-                    )
-                }
-                None => {}
-            }
-            self.bind_local(local, rty::RefinedType::unrefined(ty));
-            let keeps_final = change == Change::ThroughDeref && decl_ty.is_mutable_ptr();
-            if let (Some(old), true) = (old, keeps_final) {
-                let boxed = self.is_mut_local(local);
-                let final_of = |term: chc::Term<PlaceTypeVar>| {
-                    if boxed {
-                        term.box_current().mut_final()
-                    } else {
-                        term.mut_final()
-                    }
-                };
-                let new = self.env.local_type(local);
-                let mut builder = PlaceTypeBuilder::default();
-                let (_, old_term) = builder.subsume(old);
-                let (_, new_term) = builder.subsume(new);
-                builder.push_formula(final_of(new_term).equal_to(final_of(old_term)));
-                self.env.assume(builder.build_assumption());
-            }
-        }
-
-        let vars = self.formula_vars(
-            "block_ensures!",
-            formula_def_id.to_def_id(),
-            generic_args,
-            &formula_fn,
-            closing.source_info,
-            outer_fn_param_vars,
-        );
-        let formula = formula_fn.formula().clone().map_var(|idx| vars[idx]);
-        self.env.assume(formula.map_var(PlaceTypeVar::Var));
-
-        for (local, moved_out) in &contract.ends {
-            if live_after(*local) || contract.changed.get(local) == Some(&Change::Whole) {
-                continue;
-            }
-            self.drop_local(*local, moved_out.clone());
-        }
-        self.type_goto(contract.exit, outer_fn_param_vars);
     }
 
     /// Stops unless `written_input_ty`, the type of the formula function's parameter that names
@@ -3905,21 +3851,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 unimplemented!()
             }
 
-            if let Some((FormulaMarker::BlockRequires, ..)) =
+            if let Some((marker @ (FormulaMarker::Assert | FormulaMarker::Assume), def_id, args)) =
                 formula_marker_call(self.ctx, &self.local_decls, func, args)
-            {
-                // Checked as the precondition of the first block under the contract.
-                self.bind_local(destination, rty::RefinedType::unrefined(rty::Type::unit()));
-                return;
-            }
-
-            if let Some((
-                marker @ (FormulaMarker::Assert
-                | FormulaMarker::Assume
-                | FormulaMarker::BlockEnsures),
-                def_id,
-                args,
-            )) = formula_marker_call(self.ctx, &self.local_decls, func, args)
             {
                 let args = resolve_closure_local_args(
                     self.ctx,
@@ -4071,25 +4004,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 );
             }
             TerminatorKind::Call { target, .. } => {
-                let block_contract = |a: &Self, at: fn(&BlockContract) -> BasicBlock| {
-                    a.block_contracts
-                        .iter()
-                        .find(|contract| at(contract) == a.basic_block)
-                        .cloned()
-                };
-                // The code under a block contract ends at its closing marker.
-                if block_contract(self, |contract| contract.closing).is_some() {
-                    return;
-                }
                 if let Some(target) = target {
                     for (local, moved_out) in self.drop_points.after_terminator(target) {
                         tracing::info!(?local, "implicitly dropped after call");
                         self.drop_local(local, moved_out);
                     }
                     self.type_goto(*target, outer_fn_param_vars);
-                }
-                if let Some(contract) = block_contract(self, |contract| contract.opening) {
-                    self.pass_over_block_contract(&contract, outer_fn_param_vars);
                 }
             }
             TerminatorKind::Drop { place, target, .. } => {
@@ -4361,7 +4281,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             local_def_id,
             analysis_key,
             drop_points,
-            block_contracts: Vec::new(),
+            window_reads: Default::default(),
             basic_block,
             body,
             type_builder,
@@ -4377,8 +4297,11 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self
     }
 
-    pub fn block_contracts(&mut self, block_contracts: Vec<BlockContract>) -> &mut Self {
-        self.block_contracts = block_contracts;
+    pub fn window_reads(
+        &mut self,
+        window_reads: analyze::two_phase_borrow::WindowReads<'tcx>,
+    ) -> &mut Self {
+        self.window_reads = window_reads;
         self
     }
 

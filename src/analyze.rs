@@ -27,7 +27,9 @@ use crate::rty;
 pub(crate) mod annot;
 mod annot_fn;
 mod basic_block;
+mod block_callees;
 mod block_contract;
+mod block_region;
 mod closure_hist_inv;
 mod crate_;
 mod derive;
@@ -35,6 +37,7 @@ pub(crate) mod derived_pred;
 mod did_cache;
 mod extern_spec;
 mod fn_mut_reuse;
+mod ghost_const;
 mod invariant_args;
 mod lemma;
 mod local_def;
@@ -114,6 +117,7 @@ pub fn mir_borrowck_skip_formula_fn(
         return Ok(tcx.arena.alloc(dummy_result));
     }
 
+    analyze::block_contract::check_regions_use_only_parameters(tcx, local_def_id);
     (rustc_interface::DEFAULT_QUERY_PROVIDERS
         .queries
         .mir_borrowck)(tcx, local_def_id)
@@ -410,6 +414,9 @@ struct GenericDefTy<'tcx> {
 struct InstantiationKey<'tcx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     caller_def_id: DefId,
+    /// For a formula function translated as a contract, the function whose ghost const arguments
+    /// it binds ([`ghost_const`]); `None` otherwise.
+    contract_of: Option<DefId>,
 }
 
 /// Identifies one instance of a predicate with a Rust body: the predicate, its generic
@@ -1888,6 +1895,7 @@ impl<'tcx> Analyzer<'tcx> {
         let key = InstantiationKey {
             generic_args,
             caller_def_id,
+            contract_of: None,
         };
         let mut def_ty = match self.defs.get(&def_id)? {
             DefTy::Concrete(rty, _) => rty.clone(),
@@ -1897,6 +1905,7 @@ impl<'tcx> Analyzer<'tcx> {
                 let key = InstantiationKey {
                     generic_args: spec_args,
                     caller_def_id,
+                    contract_of: None,
                 };
                 spec.cache.borrow().get(&key).cloned()
             })?,
@@ -2318,20 +2327,52 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
     ) -> Option<annot_fn::FormulaFn<'tcx>> {
+        self.formula_fn_translated(local_def_id, generic_args, owner_fn_id, None)
+    }
+
+    /// [`Self::formula_fn_with_args`] of the `requires` or `ensures` carried by `contract_of`,
+    /// which may name the const parameters of the function it is the contract of
+    /// ([`ghost_const`]).
+    fn contract_formula_fn_with_args(
+        &self,
+        local_def_id: LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
+        contract_of: LocalDefId,
+    ) -> Option<annot_fn::FormulaFn<'tcx>> {
+        self.formula_fn_translated(
+            local_def_id,
+            generic_args,
+            owner_fn_id,
+            Some(contract_of.to_def_id()),
+        )
+    }
+
+    fn formula_fn_translated(
+        &self,
+        local_def_id: LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
+        contract_of: Option<DefId>,
+    ) -> Option<annot_fn::FormulaFn<'tcx>> {
         let deferred_formula_fn = self.formula_fns.get(&local_def_id)?;
 
         let key = InstantiationKey {
             generic_args,
             caller_def_id: owner_fn_id,
+            contract_of,
         };
         let deferred_formula_fn_cache = Rc::clone(&deferred_formula_fn.cache);
         if let Some(formula_fn) = deferred_formula_fn_cache.borrow().get(&key) {
             return Some(formula_fn.clone());
         }
 
-        let translator =
+        let mut translator =
             annot_fn::AnnotFnTranslator::new(self, local_def_id, generic_args, owner_fn_id)
                 .with_def_id_cache(self.def_ids());
+        if let Some(contract_of) = contract_of {
+            translator = translator.for_contract(contract_of);
+        }
         let formula_fn = translator.into_formula_fn();
         deferred_formula_fn_cache
             .borrow_mut()
@@ -2450,6 +2491,7 @@ impl<'tcx> Analyzer<'tcx> {
         let key = InstantiationKey {
             generic_args,
             caller_def_id,
+            contract_of: None,
         };
         let body_unanalyzed = !deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
             || (is_generic && !self.per_instance_too.contains(&def_id));
@@ -3660,8 +3702,12 @@ impl<'tcx> Analyzer<'tcx> {
         } else {
             generic_args
         };
-        let Some(formula_fn) = self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
-        else {
+        let Some(formula_fn) = self.contract_formula_fn_with_args(
+            formula_def_id,
+            generic_args,
+            owner_fn_id,
+            local_def_id,
+        ) else {
             panic!(
                 "require annotation {:?} is not a formula function",
                 formula_def_id
@@ -3692,8 +3738,12 @@ impl<'tcx> Analyzer<'tcx> {
         } else {
             generic_args
         };
-        let Some(formula_fn) = self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
-        else {
+        let Some(formula_fn) = self.contract_formula_fn_with_args(
+            formula_def_id,
+            generic_args,
+            owner_fn_id,
+            local_def_id,
+        ) else {
             panic!(
                 "ensure annotation {:?} is not a formula function",
                 formula_def_id
