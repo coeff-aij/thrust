@@ -2383,7 +2383,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     fn record_called_fn(&self, def_id: DefId, args: mir_ty::GenericArgsRef<'tcx>) {
         let callee = match self.resolve_callable(def_id, args) {
             ResolvedCallable::Concrete(resolved_def_id, _) => resolved_def_id,
-            ResolvedCallable::Generic(_) | ResolvedCallable::Unresolved => def_id,
+            ResolvedCallable::Generic(..) | ResolvedCallable::Unresolved => def_id,
         };
         self.ctx.called_fns().record(self.local_def_id, callee);
     }
