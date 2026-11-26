@@ -83,7 +83,9 @@ stays with the developer and is not delegated to the review:
     release pull request merges, so that `main` equals `develop`'s head after the merge. A fix or
     a rework comes back later as a new pull request into `develop`.
   - After the merge, `main` is tagged `release-<YYYY-MM-DD>.<n>` (`n` counts that day's releases from 1) and the run is recorded as the next
-    baseline. `main` is not run again for a comparison.
+    baseline in a comment on the release pull request: the commit, the solver build, the
+    settings, the wall time, the totals and each failure with its result when rerun alone. The
+    next release compares with that comment; `main` is not run again for a comparison.
 
 Without Docker (claude.ai/code), the CoAR runs go to the person who merges; say in the pull
 request which of them did not run.
