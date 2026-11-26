@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Tr {
     #[thrust_macros::requires(true)]
@@ -11,9 +11,9 @@ trait Tr {
 
 struct W<T>(T);
 
-impl<T> thrust_models::Model for W<T>
+impl<T> Model for W<T>
 where
-    T: thrust_models::Model,
+    T: Model,
 {
     type Ty = Self;
 }

@@ -1,11 +1,11 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 // The derived `eq` of `Wrap`, which Thrust does not analyze, runs `C::eq`, which assumes the
 // invariant of a field nobody checked.
 struct C {
     n: u32,
 }
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 #[thrust_macros::context]
@@ -24,7 +24,7 @@ impl PartialEq for C {
 struct Wrap {
     c: C,
 }
-impl thrust_models::Model for Wrap {
+impl Model for Wrap {
     type Ty = Self;
 }
 fn main() {

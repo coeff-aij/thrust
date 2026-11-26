@@ -1,10 +1,10 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 struct W<C>(C);
 
-impl<C> thrust_models::Model for W<C> {
+impl<C> Model for W<C> {
     type Ty = Self;
 }
 

@@ -3,7 +3,7 @@
 
 // Rejected, not Unsat. An extern specification of a foreign function assumes `produces` in a
 // premise: no body of the crate proves it.
-
+use thrust_models::forall;
 #[thrust_macros::context]
 trait Iter {
     type Item;
@@ -11,7 +11,7 @@ trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: Self::Item) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
 }
 

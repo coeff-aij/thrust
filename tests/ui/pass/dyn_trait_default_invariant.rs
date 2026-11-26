@@ -6,7 +6,7 @@
 // contract there ensures the invariant of `&mut self`'s final value, which later calls through
 // the trait object assume. `get`, which the trait gives no contract, can be called through the
 // trait object only by code Thrust does not analyze, under the invariant, and changes nothing.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     fn get(&self) -> u32;
@@ -22,7 +22,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

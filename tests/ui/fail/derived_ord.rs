@@ -5,13 +5,13 @@
 // A type whose `PartialOrd` is derived and that has no `PartialOrdSpec` impl is ordered by its
 // fields' orders, lexicographically, and a fieldless enum by its discriminants; `<`, `cmp` and
 // `max` are specified through that order.
-
+use thrust_models::Model;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Align {
     pow2: u8,
 }
 
-impl thrust_models::Model for Align {
+impl Model for Align {
     type Ty = Self;
 }
 

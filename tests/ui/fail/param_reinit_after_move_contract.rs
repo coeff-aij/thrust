@@ -3,12 +3,12 @@
 
 // In an `ensures`, a parameter denotes its argument, also after the body moves it out and assigns
 // it again before a loop.
-
+use thrust_models::Model;
 struct S {
     a: i64,
 }
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

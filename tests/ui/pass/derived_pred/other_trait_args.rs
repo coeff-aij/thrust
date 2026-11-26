@@ -4,7 +4,7 @@
 
 // The impl of `Tr<bool>` concludes `p`, derived at `Tr<isize>` for the same type. Accepted, as
 // `client_requires`.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Tr<X> {
     #[thrust_macros::predicate(derived)]
@@ -19,7 +19,7 @@ struct S {
     a: isize,
 }
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = S;
 }
 

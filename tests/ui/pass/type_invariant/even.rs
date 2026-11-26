@@ -1,13 +1,13 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // A type invariant (std.rs's `Invariant`, Creusot's): every function taking an `Even`, or a
 // reference to one, assumes it at entry; every function returning one, or taking a `&mut` to one,
 // proves it at its exits; `open_inv` and `open_inv_result` leave a parameter's or a result's out.
 struct Even(i64);
 
-impl thrust_models::Model for Even {
+impl Model for Even {
     type Ty = Self;
 }
 

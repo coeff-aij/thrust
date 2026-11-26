@@ -4,10 +4,10 @@
 
 // The twin of `fail/ignored_reached_from_uncalled_fn.rs`: `S`'s `eq` is checked against the trait's
 // spec, which `g` relies on through `<&S as PartialEq>::eq`.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

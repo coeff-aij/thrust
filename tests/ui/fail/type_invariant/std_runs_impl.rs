@@ -1,11 +1,11 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 // std's `Option::<C>::clone`, which Thrust does not analyze, runs `C::clone`, which assumes the
 // invariant of a `C` nobody checked.
 struct C {
     n: u32,
 }
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 #[thrust_macros::context]

@@ -189,6 +189,8 @@ pub struct Input<'a> {
     pub assumptions: &'a [crate::analyze::AssumeSite],
     /// What the analysis did with the body of each function.
     pub body_checks: &'a HashMap<LocalDefId, crate::analyze::BodyCheck>,
+    /// The functions each body calls.
+    pub called_fns: &'a HashMap<LocalDefId, std::collections::HashSet<DefId>>,
     /// The parts of the system solved on their own (`THRUST_SPLIT`); the system is then that of
     /// the parts refuted.
     pub parts: &'a [Part],
@@ -462,6 +464,7 @@ pub fn emit(tcx: TyCtxt<'_>, config: &Config, input: &Input<'_>) -> Vec<Refuted>
         invariant_annotations: input.invariant_annotations,
         assumptions: input.assumptions,
         body_checks: input.body_checks,
+        called_fns: input.called_fns,
         parts: input.parts,
     };
     // An answer is over the symbols of the query it answers: the whole system's, or a part's,
