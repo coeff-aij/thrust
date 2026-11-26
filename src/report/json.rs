@@ -63,6 +63,8 @@ enum Line<'a> {
         /// out when there is none.
         #[serde(skip_serializing_if = "Vec::is_empty")]
         assumes: Vec<Range>,
+        /// The functions its body calls, by path then span.
+        calls: Vec<Call>,
     },
     Site {
         r#fn: &'a str,
@@ -119,6 +121,13 @@ struct Columns {
 struct FnSpan {
     r#fn: String,
     span: Range,
+}
+
+/// A function a body calls, with its definition's span unless it is outside the crate.
+#[derive(Serialize)]
+struct Call {
+    r#fn: String,
+    span: Option<Range>,
 }
 
 /// A premise of a constraint, with the span it was made at when the clause tells it (an unknown
@@ -383,6 +392,14 @@ impl Json<'_, '_> {
                     .assumptions
                     .iter()
                     .map(|a| range(self.tcx, a.span))
+                    .collect(),
+                calls: f
+                    .calls
+                    .iter()
+                    .map(|c| Call {
+                        r#fn: c.name.clone(),
+                        span: c.span.map(|s| range(self.tcx, s)),
+                    })
                     .collect(),
             })?;
         }

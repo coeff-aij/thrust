@@ -2,18 +2,18 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // Rejected. `#[thrust_macros::predicate(derived)]` on an impl's item rather than the trait's.
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: isize) -> bool;
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<isize>;
 }
 
 #[derive(PartialEq)]
 struct R { s: isize }
-impl thrust_models::Model for R { type Ty = R; }
+impl Model for R { type Ty = R; }
 
 #[thrust_macros::context]
 impl Iter for R {

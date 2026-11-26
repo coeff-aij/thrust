@@ -4,7 +4,7 @@
 
 // A method without a trait contract has no type at a call through `dyn`: nothing relates the
 // impls the call may reach.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape {
     #[thrust_macros::ensures(result >= 3)]
@@ -15,7 +15,7 @@ trait Shape {
 
 struct Tri;
 
-impl thrust_models::Model for Tri {
+impl Model for Tri {
     type Ty = ();
 }
 

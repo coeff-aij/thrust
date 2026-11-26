@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::{exists, Model};
 #[thrust_macros::context]
 trait A {
     #[thrust_macros::requires(Self::p(*self))]
@@ -19,20 +19,20 @@ struct Fz<I> {
     iter: Option<I>,
 }
 
-impl<I: thrust_models::Model> thrust_models::Model for Fz<I> {
-    type Ty = Fz<<I as thrust_models::Model>::Ty>;
+impl<I: Model> Model for Fz<I> {
+    type Ty = Fz<<I as Model>::Ty>;
 }
 
 #[thrust_macros::context]
 impl<I> A for Fz<I>
 where
-    I: A + thrust_models::Model,
+    I: A + Model,
 {
     #[thrust_macros::predicate]
     fn p(self) -> bool {
         // self.iter == None || exists(|i| self.iter == Some(i) && I::p(i))
         self.iter == None
-            || thrust_models::exists(|i: <I as thrust_models::Model>::Ty|
+            || exists(|i: <I as Model>::Ty|
                 self.iter == Some(i) && I::p(i))
     }
 

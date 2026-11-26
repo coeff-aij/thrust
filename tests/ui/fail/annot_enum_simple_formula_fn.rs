@@ -1,12 +1,12 @@
 //@error-in-other-file: Unsat
-
+use thrust_models::Model;
 #[derive(PartialEq)]
 pub enum X {
     A(i64),
     B(bool),
 }
 
-impl thrust_models::Model for X {
+impl Model for X {
     type Ty = X;
 }
 

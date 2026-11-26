@@ -1,6 +1,6 @@
 //@check-pass
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // A generic function whose signature does not mention its type parameter, with a contract that
 // names the parameter's logic function: at `via::<Lin>` the contract reads `Lin`'s `score`.
 #[thrust_macros::context]
@@ -11,7 +11,7 @@ trait Score {
     fn eval(x: i32) -> i32;
 }
 struct Lin;
-impl thrust_models::Model for Lin { type Ty = (); }
+impl Model for Lin { type Ty = (); }
 #[thrust_macros::context]
 impl Score for Lin {
     #[thrust_macros::logic]

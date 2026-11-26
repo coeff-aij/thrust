@@ -1,13 +1,13 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::{Model, model::Closure};
 struct Holder<F> {
     func: F,
 }
 
-impl<F> thrust_models::Model for Holder<F> {
-    type Ty = Holder<thrust_models::model::Closure<F>>;
+impl<F> Model for Holder<F> {
+    type Ty = Holder<Closure<F>>;
 }
 
 // The `Fn` bound sits on the impl block rather than on the method, so a call

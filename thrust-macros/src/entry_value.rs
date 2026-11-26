@@ -1,7 +1,7 @@
-//! `old!(x)` in a loop invariant: the value the parameter `x` of the enclosing function had on
+//! `old!(x)` in a loop invariant or a `proof_assert!`: the value the parameter `x` of the enclosing function had on
 //! entry, as `old(x)` in Prusti, and in Verus for `&mut` parameters. The invariant declares it as a parameter
 //! `old!(x): T`, with the type of the function's parameter, and its formula reads it as
-//! `old!(x)`; it may name `x` as well, the variable's value at the loop head.
+//! `old!(x)`; it may name `x` as well, the variable's value at the loop head or at the statement.
 //!
 //! Both are renamed to the parameter `__thrust_old_x` of the lifted formula function (with
 //! `old!(self)` spelled `__thrust_old_self`), which the analyzer binds to the entry value of the
@@ -21,13 +21,13 @@ pub fn rename_in_invariant(tokens: TokenStream) -> syn::Result<TokenStream> {
     rename(tokens)
 }
 
-/// An error at the first `old!` in `tokens`, the closure of a statement form, which has no entry
-/// values to name.
+/// An error at the first `old!` in `tokens`, the closure of a statement form other than
+/// `proof_assert!`, which has no entry values to name.
 pub fn reject(tokens: &TokenStream) -> syn::Result<()> {
     match references(tokens)?.first() {
         Some(param) => Err(syn::Error::new(
             param.span(),
-            "`old!` names a parameter's entry value only in `invariant!` and `partial_invariant!`",
+            "`old!` names a parameter's entry value only in `invariant!`, `partial_invariant!` and `proof_assert!`",
         )),
         None => Ok(()),
     }

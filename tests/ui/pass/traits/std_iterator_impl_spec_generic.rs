@@ -5,23 +5,23 @@
 // A specification on a method of a generic `impl Trait for Ty<T>`: the wrapper it moves to
 // is an inherent impl with the same generics and where clause, which is where the extra
 // bound the companions need (`<T as Model>::Ty: PartialEq`) has to be written.
-
+use thrust_models::{Model, model::Int};
 struct Wrap<T> {
     value: T,
     hits: i64,
 }
 
-impl<T> thrust_models::Model for Wrap<T>
+impl<T> Model for Wrap<T>
 where
-    T: thrust_models::Model,
+    T: Model,
 {
-    type Ty = (<T as thrust_models::Model>::Ty, thrust_models::model::Int);
+    type Ty = (<T as Model>::Ty, Int);
 }
 
 #[thrust_macros::context]
 impl<T> Iterator for Wrap<T>
 where
-    T: thrust_models::Model + Copy,
+    T: Model + Copy,
 {
     type Item = T;
 

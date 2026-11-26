@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::{FnParam, Model};
 use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Ghost;
@@ -11,7 +11,7 @@ struct Run {
     accs: Ghost<Seq<Int>>,
 }
 
-impl thrust_models::Model for Run {
+impl Model for Run {
     type Ty = (Seq<Int>, Seq<Int>);
 }
 
@@ -38,7 +38,7 @@ fn fold_upto<F: Fn(i64, i64) -> i64>(r: &mut Run, n: i64, init: i64, f: F) -> i6
     let mut i = 0;
     while i < n {
         thrust_macros::invariant!(
-            |rr: &mut Run, r: thrust_models::FnParam<&mut Run>, f: F, acc: i64, i: i64, n: i64|
+            |rr: &mut Run, r: FnParam<&mut Run>, f: F, acc: i64, i: i64, n: i64|
             0 <= i && i <= n
                 && !rr == !r.at_entry()
                 && (*rr).0.len() == i

@@ -4,18 +4,18 @@
 // `W<T>`'s `collect`, verified once over `B`, calls itself at `B = Vec<T>`, where it takes
 // std.rs's `collect` contract; its body would have to be checked against that contract inside its
 // own analysis, so Thrust stops.
-
+use thrust_models::{Model, model::Seq};
 #[derive(PartialEq)]
-struct W<T: thrust_models::Model> {
+struct W<T: Model> {
     n: i64,
     t: std::marker::PhantomData<T>,
 }
 
-impl<T: thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Model> Model for W<T> {
     type Ty = W<T>;
 }
 
-impl<T: Default + thrust_models::Model> Iterator for W<T> {
+impl<T: Default + Model> Iterator for W<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> {
@@ -37,7 +37,7 @@ impl<T: Default + thrust_models::Model> Iterator for W<T> {
 }
 
 #[thrust_macros::context]
-impl<T: Default + thrust_models::Model> IteratorSpec for W<T> {
+impl<T: Default + Model> IteratorSpec for W<T> {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         0 <= self.n && self.n <= 3
@@ -57,9 +57,9 @@ impl<T: Default + thrust_models::Model> IteratorSpec for W<T> {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<T as thrust_models::Model>::Ty>,
+        ab: Seq<<T as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<T as thrust_models::Model>::Ty>,
+        bc: Seq<<T as Model>::Ty>,
         c: &Self,
     ) {
     }

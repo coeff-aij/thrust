@@ -4,14 +4,14 @@
 
 // An extern spec of a derived `Default::default` is checked against the derived body, which
 // builds each `Option` field by `Option`'s `default`, `None`.
-
+use thrust_models::Model;
 #[derive(Clone, Copy, PartialEq, Default)]
 struct Repr {
     align: Option<u32>,
     pack: Option<u32>,
 }
 
-impl thrust_models::Model for Repr {
+impl Model for Repr {
     type Ty = Self;
 }
 

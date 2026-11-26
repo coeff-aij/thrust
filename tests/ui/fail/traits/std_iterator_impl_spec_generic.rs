@@ -3,23 +3,23 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The pass twin counting two hits per call, which the body does not do.
-
+use thrust_models::{Model, model::Int};
 struct Wrap<T> {
     value: T,
     hits: i64,
 }
 
-impl<T> thrust_models::Model for Wrap<T>
+impl<T> Model for Wrap<T>
 where
-    T: thrust_models::Model,
+    T: Model,
 {
-    type Ty = (<T as thrust_models::Model>::Ty, thrust_models::model::Int);
+    type Ty = (<T as Model>::Ty, Int);
 }
 
 #[thrust_macros::context]
 impl<T> Iterator for Wrap<T>
 where
-    T: thrust_models::Model + Copy,
+    T: Model + Copy,
 {
     type Item = T;
 
