@@ -145,6 +145,19 @@ pub fn weight_at_nonneg<I: Idx + thrust_models::Model>(ts: Ghost<Seq<Int>>, s: G
     }
 }
 
+/// A list whose first `k` entries are those of a shorter list weighs the same over them: the sums
+/// before and after appending an entry agree on the entries both hold.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(k <= old.len() && k <= new.len())]
+#[thrust_macros::requires(forall(|j: Int| !(0 <= j && j < k) || new[j] == old[j]))]
+#[thrust_macros::ensures(weight_at::<I>(ts, new, k) == weight_at::<I>(ts, old, k))]
+pub fn weight_at_common_prefix<I: Idx + thrust_models::Model>(ts: Ghost<Seq<Int>>, old: Ghost<IndexVec<u32, I>>, new: Ghost<IndexVec<u32, I>>, k: usize) {
+    if k > 0 {
+        weight_at_common_prefix(ts, old, new, k - 1);
+    }
+}
+
 /// `weight_at_le` for `k` distinct entries.
 #[thrust_macros::lemma]
 #[thrust_macros::requires(distinct::<I>(s, k))]
