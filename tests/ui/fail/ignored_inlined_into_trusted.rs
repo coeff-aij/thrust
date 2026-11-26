@@ -4,10 +4,10 @@
 
 // At `-C opt-level=3` rustc would inline the verified `g` into the trusted `t`; Thrust reads MIR
 // without inlining, so `g::<S>` stays verified code and its call of `S`'s ignored `m` stops.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

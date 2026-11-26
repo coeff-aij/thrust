@@ -4,7 +4,7 @@
 
 // The twin of `fail/dyn_trait_default_calls_contractless.rs`: the method the default body calls
 // through `Self` has a contract on the trait.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Tr {
     #[thrust_macros::ensures(result >= 1)]
@@ -20,7 +20,7 @@ trait Tr {
 
 struct C;
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = ();
 }
 

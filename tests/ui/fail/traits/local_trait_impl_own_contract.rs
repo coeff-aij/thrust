@@ -4,7 +4,7 @@
 
 // The pass twin with an impl contract, and a body, returning -1, which the trait's contract
 // does not allow; both calls still hold under the contract each of them uses.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Get {
     #[thrust_macros::requires(true)]
@@ -14,7 +14,7 @@ trait Get {
 
 struct One;
 
-impl thrust_models::Model for One {
+impl Model for One {
     type Ty = ();
 }
 

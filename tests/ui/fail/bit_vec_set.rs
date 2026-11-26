@@ -1,13 +1,13 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::Model;
 use thrust_models::model::BitVec;
 
 struct BitSet64 {
     bits: u64,
 }
 
-impl thrust_models::Model for BitSet64 {
+impl Model for BitSet64 {
     type Ty = BitVec<64, false>;
 }
 

@@ -1,6 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+use thrust_models::Model;
 use thrust_models::model::{Closure, Int, Mut};
 use thrust_models::{exists, forall};
 
@@ -36,9 +37,9 @@ trait Iterator {
 #[thrust::trusted]
 #[thrust_macros::context]
 #[thrust_macros::ensures(I::reaches(*x, *x))]
-fn reaches_refl<I: Iterator + thrust_models::Model>(x: &I)
+fn reaches_refl<I: Iterator + Model>(x: &I)
 where
-    <I as Iterator>::Item: thrust_models::Model,
+    <I as Iterator>::Item: Model,
 {
 }
 
@@ -47,12 +48,12 @@ struct Map<I, F> {
     func: F,
 }
 
-impl<I: thrust_models::Model, F> thrust_models::Model for Map<I, F> {
-    type Ty = Map<<I as thrust_models::Model>::Ty, Closure<F>>;
+impl<I: Model, F> Model for Map<I, F> {
+    type Ty = Map<<I as Model>::Ty, Closure<F>>;
 }
 
 #[thrust_macros::context]
-impl<I: Iterator<Item = i64> + thrust_models::Model, F: Fn(i64) -> i64> Iterator for Map<I, F>
+impl<I: Iterator<Item = i64> + Model, F: Fn(i64) -> i64> Iterator for Map<I, F>
 {
     type Item = i64;
 
@@ -74,9 +75,9 @@ impl<I: Iterator<Item = i64> + thrust_models::Model, F: Fn(i64) -> i64> Iterator
         // `define-fun`s the monomorphised version got, and the intermediate states
         // are bound at `a0` instead of field by field at `Int`.
         I::invariant(self.iter)
-            && forall(|zm: <I as thrust_models::Model>::Ty|
+            && forall(|zm: <I as Model>::Ty|
                 forall(|ze: Int|
-                    forall(|zn: <I as thrust_models::Model>::Ty|
+                    forall(|zn: <I as Model>::Ty|
                         !(I::reaches(self.iter, zm) && I::step(zm, ze, zn))
                             || thrust_macros::pre!((self.func)(ze)))))
     }

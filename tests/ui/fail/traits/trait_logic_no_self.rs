@@ -1,6 +1,6 @@
 //@error-in-other-file: Unsat
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // As the pass twin, with `eval` returning `x + 1`: at the impl, `Self::score` is the impl's
 // `x`, which `eval` does not meet.
 #[thrust_macros::context]
@@ -13,7 +13,7 @@ trait Score {
 }
 
 struct Lin;
-impl thrust_models::Model for Lin {
+impl Model for Lin {
     type Ty = ();
 }
 

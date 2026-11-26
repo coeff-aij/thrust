@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The Hash::hash spec must not make the code after the call unreachable.
-
+use thrust_models::Model;
 use std::hash::{Hash, Hasher};
 
 #[derive(Hash)]
@@ -12,7 +12,7 @@ struct Pair {
     b: bool,
 }
 
-impl thrust_models::Model for Pair {
+impl Model for Pair {
     type Ty = Pair;
 }
 
@@ -20,7 +20,7 @@ struct CountingHasher {
     writes: i64,
 }
 
-impl thrust_models::Model for CountingHasher {
+impl Model for CountingHasher {
     type Ty = CountingHasher;
 }
 

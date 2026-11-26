@@ -345,9 +345,10 @@ pub(super) fn collect_sorts(system: &chc::System) -> BTreeSet<chc::Sort> {
     for clause in &system.clauses {
         sorts.extend(clause.vars.clone());
         atom_sorts(&clause.vars, &clause.head, &mut sorts);
-        for a in clause.body.iter_atoms() {
+        for a in &clause.body.atoms {
             atom_sorts(&clause.vars, a, &mut sorts);
         }
+        formula_sorts(&clause.vars, &clause.body.formula, &mut sorts);
     }
 
     for sort in sorts.clone() {

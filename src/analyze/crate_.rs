@@ -100,6 +100,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 keys.swap_remove(local_def_id);
                 continue;
             }
+            self.ctx.collect_lemma_variant(*local_def_id);
             let analyzer = self.ctx.local_def_analyzer(*local_def_id);
             if analyzer.is_annotated_as_extern_spec_fn() {
                 let target_def_id = analyzer.extern_spec_fn_target_def_id();
@@ -263,11 +264,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let contract_generic = !self.tcx.is_closure_like(local_def_id.to_def_id())
             && self.ctx.contract_names_type_param(local_def_id);
         let has_constrained_type_param = !self.constrained_type_params(local_def_id).is_empty();
+        let has_const_param = self.has_const_param(local_def_id);
         let is_law_impl = self.is_law_impl(local_def_id);
-        let per_instance = self.ctx.per_instance_generics();
-        let per_instance_too = per_instance && !per_instance_generics_requested();
         let outside_selection = self.is_outside_selection(local_def_id);
+        let per_instance_requested = self.ctx.per_instance_generics();
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
+        // A function a `block_contract!` block is extracted into has one call, its region: its
+        // untyped and block-declared generic parameters stand for the types the outer variables
+        // have, so it is analyzed at that instance and never over its type parameters.
+        let is_extracted_block =
+            analyze::selection::is_extracted_block(self.tcx, analyzer.owner_fn_id);
+        let per_instance = per_instance_requested || is_extracted_block;
+        let per_instance_too =
+            per_instance && !per_instance_generics_requested() && !is_extracted_block;
 
         // An impl's definition of a trait law has the law's contract, when the law has one. The
         // injected std.rs is checked where it is compiled on its own: building the contract here
@@ -367,8 +376,19 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let owner_fn_id_args = analyzer.owner_fn_id_args;
         use mir_ty::TypeVisitableExt as _;
         let trait_method = self.tcx.trait_of_assoc(owner_fn_id).is_some();
+        // The extern spec of a local function that takes ghost const arguments is the contract of
+        // its generic body, whether or not the spec has a const parameter of its own: a const
+        // argument its call fixes is a premise there (`GhostTie::Fixed`).
+        let targets_ghost_consts = analyzer.targets_ghost_consts();
+        let has_const_param = has_const_param || targets_ghost_consts;
         if analyzer.is_annotated_as_extern_spec_fn()
-            && is_narrower_local_spec(self.tcx, local_def_id, owner_fn_id, owner_fn_id_args)
+            && is_narrower_local_spec(
+                self.tcx,
+                local_def_id,
+                owner_fn_id,
+                owner_fn_id_args,
+                targets_ghost_consts,
+            )
         {
             // The spec covers the local target only at some of its instances, so it is not the
             // contract of the target's generic body: the body is analyzed at each covered
@@ -390,14 +410,21 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 self.ctx
                     .register_deferred_def(owner_fn_id, local_def_id, owner_fn_id_args);
             }
-        } else if sig.has_param() || trait_method || contract_generic || has_constrained_type_param
+        } else if sig.has_param()
+            || trait_method
+            || contract_generic
+            || has_constrained_type_param
+            || has_const_param
         {
             // A function is generic when its contract names a type parameter its signature does
             // not mention: a trait method's `Self::score(x)`, or `T::score(x)` of
             // `fn via<T: Score>`, resolves at each instance to the impl's own logic function.
             // Closures keep their treatment. So is a function with a trait-bounded type
             // parameter, its own or its parent's (`impl<T: K> W<T>`), since its body depends on
-            // the impl the parameter is instantiated with.
+            // the impl the parameter is instantiated with. So is a function with a const
+            // parameter, its own or its parent's, even when its signature does not mention it:
+            // as a concrete def its body would not be analyzed (a generic function is no walk
+            // root), and a call would take the contract with nothing checking the body against it.
             if trusted_derive {
                 let expected = analyzer.expected_ty();
                 self.ctx
@@ -443,6 +470,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
             }
         } else if analyzer.is_annotated_as_extern_spec_fn()
+            && !owner_fn_id.is_local()
             && owner_fn_id_args.is_some_and(has_type_or_const_args)
         {
             // An extern spec without type parameters of a generic function of another crate
@@ -923,6 +951,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             && !analyze::fn_mut_bounded_params(self.tcx, local_def_id.to_def_id()).is_empty()
     }
 
+    /// Whether `local_def_id` has a const parameter, its own or an enclosing item's.
+    fn has_const_param(&self, local_def_id: LocalDefId) -> bool {
+        let generics = self.tcx.generics_of(local_def_id);
+        (0..generics.count()).any(|idx| {
+            matches!(
+                generics.param_at(idx, self.tcx).kind,
+                mir_ty::GenericParamDefKind::Const { .. }
+            )
+        })
+    }
+
     /// Indices of the type parameters bound by a trait other than `Sized`, including bounds
     /// inherited from the parent impl or trait.
     fn constrained_type_params(&self, local_def_id: LocalDefId) -> HashSet<u32> {
@@ -1333,14 +1372,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// Fixes the precondition of each crate function with an inferred contract that code Thrust
     /// does not analyze can run ([`analyze::unanalyzed_entry`]): a function or method entered
     /// so is checked under its precondition holding of every argument, unless the entering
-    /// contract names it with `pre!`, and a closure must have been handed over, with its
-    /// obligation, by the analyzed call that leads into the code that runs it. The closures are
-    /// checked on a second walk, after the bodies the first one's entries analyze at new
-    /// instances have recorded their hand-overs.
+    /// contract names it with `pre!`. A closure is not fixed: the entering contract states its
+    /// `pre!`, which the analyzed call discharges.
     fn fix_entered_preconditions(&mut self) {
         let entries = self.unanalyzed_entries();
-        for (callee, from, ty) in &entries.escaping {
-            self.stop_escaping_callable(*callee, *from, *ty);
+        for (callee, from, ty) in &entries.escaping_fn_ptrs {
+            self.stop_escaping_fn_ptr(*callee, *from, *ty);
         }
         let mut fixed = HashSet::new();
         for (callee, from) in &entries.items {
@@ -1370,75 +1407,22 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let clauses = analyze::Analyzer::accepts_every_argument(&fn_ty, receiver);
             self.ctx.extend_clauses(clauses);
         }
-        let entries = self.unanalyzed_entries();
-        if let Some(miscounted) = entries.miscounted.first() {
-            self.stop_miscounted_handover(miscounted);
-        }
-        for (closure, from) in entries.unhanded_closures {
-            let def_id = closure.def_id();
-            if self.ctx.has_written_requires(def_id) {
-                continue;
-            }
-            self.tcx.dcx().span_fatal(
-                self.tcx.def_span(def_id),
-                format!(
-                    "`{from}`, which Thrust does not analyze, can run the closure `{closure}`, \
-                     whose precondition is inferred, without an analyzed call handing it over \
-                     to it with its obligation: give the closure a `requires` with \
-                     `thrust_macros::closure!`, or state its `pre!` in the `requires` of the call \
-                     that hands it over (for a closure an iterator adapter holds, in the \
-                     adapter's `inv`, which that `requires` requires)"
-                ),
-            );
-        }
     }
 
-    /// Stops at a call that hands values of a closure type to code Thrust does not analyze, at
-    /// an instance of its caller where its analysis does not state the obligation of each.
-    fn stop_miscounted_handover(&self, miscounted: &analyze::unanalyzed_entry::Miscounted<'tcx>) {
-        let held = match miscounted.held {
-            Some(1) => "1 value".to_string(),
-            Some(held) => format!("{held} values"),
-            None => "values, held some way Thrust cannot count,".to_string(),
-        };
-        self.tcx.dcx().span_fatal(
-            miscounted.count.span,
-            format!(
-                "at `{}`, this call hands `{}`, which Thrust does not analyze, {held} of the \
-                 closure type `{}`, and states the obligation of {}: a `pre!` stated of one \
-                 value does not cover another value of its type",
-                miscounted.owner,
-                self.tcx.def_path_str(miscounted.count.callee),
-                miscounted.closure,
-                miscounted.count.accounted,
-            ),
-        );
-    }
-
-    /// Stops at a closure of the crate with an inferred precondition, or a function pointer,
-    /// that the analyzed `callee` hands to `from`, which Thrust does not analyze, by returning
-    /// it or storing it behind a `&mut`: no hand-over states its obligation. A closure with a
-    /// written `requires`, or one of a trusted body, is trusted to be called as it says.
-    fn stop_escaping_callable(
+    /// Stops at a function pointer that the analyzed `callee` hands to `from`, which Thrust does
+    /// not analyze, by returning it or storing it behind a `&mut`: the walk does not see the
+    /// function it points to called, so nothing requires its precondition there.
+    fn stop_escaping_fn_ptr(
         &self,
         callee: mir_ty::Instance<'tcx>,
         from: mir_ty::Instance<'tcx>,
         ty: mir_ty::Ty<'tcx>,
     ) {
-        let remedy = match *ty.kind() {
-            mir_ty::TyKind::Closure(def_id, _) => {
-                if !self.is_analyzed(def_id) || self.ctx.has_written_requires(def_id) {
-                    return;
-                }
-                "give the closure a `requires` with `thrust_macros::closure!`"
-            }
-            _ => "keep the function pointer in verified code",
-        };
         self.tcx.dcx().span_fatal(
             self.tcx.def_span(callee.def_id()),
             format!(
                 "`{callee}` gives `{ty}` to `{from}`, which Thrust does not analyze, and nothing \
-                 requires its precondition there: {remedy}"
+                 requires its precondition there: keep the function pointer in verified code"
             ),
         );
     }
@@ -1587,15 +1571,19 @@ fn has_type_or_const_args(args: mir_ty::GenericArgsRef<'_>) -> bool {
 }
 
 /// Whether `local_def_id` is an extern spec of a function of this crate, `target`, that covers
-/// only some of its instances: it calls the target at an argument that is not one of the
-/// spec's type parameters, or bounds an associated type the target leaves free (`R:
-/// IntoSliceIdx<I, [T], Output = usize>` where the target has `R: IntoSliceIdx<I, [T]>`). The
-/// spec `requires`/`ensures` generate for a function repeats its bounds, so it covers all of it.
+/// only some of its instances: it calls the target at a type argument that is not one of the
+/// spec's type parameters, or at a const argument when the target takes no ghost const
+/// arguments (a trait method, an impl of one, a closure; for a function that takes them, a fixed
+/// const argument is a premise of the contract instead), or bounds an associated type the target
+/// leaves free (`R: IntoSliceIdx<I, [T], Output = usize>` where the target has `R:
+/// IntoSliceIdx<I, [T]>`). The spec `requires`/`ensures` generate for a function repeats its
+/// bounds, so it covers all of it.
 fn is_narrower_local_spec<'tcx>(
     tcx: TyCtxt<'tcx>,
     local_def_id: LocalDefId,
     target: rustc_span::def_id::DefId,
     target_args: Option<mir_ty::GenericArgsRef<'tcx>>,
+    target_takes_ghost_consts: bool,
 ) -> bool {
     let Some(target_args) = target_args else {
         return false;
@@ -1605,7 +1593,11 @@ fn is_narrower_local_spec<'tcx>(
     }
     let fixes_an_arg = target_args
         .types()
-        .any(|ty| !matches!(ty.kind(), mir_ty::TyKind::Param(_)));
+        .any(|ty| !matches!(ty.kind(), mir_ty::TyKind::Param(_)))
+        || (!target_takes_ghost_consts
+            && target_args
+                .consts()
+                .any(|ct| !matches!(ct.kind(), mir_ty::ConstKind::Param(_))));
     if fixes_an_arg {
         return true;
     }

@@ -1,8 +1,8 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_FOR_LOOP_HISTORY=1 THRUST_SOLVER_TIMEOUT_SECS=120
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120
 
-// With `THRUST_FOR_LOOP_HISTORY=1`, the outer `for` loop, which has no invariant and whose
+// The outer `for` loop, which has no invariant and whose
 // iterator the first inner loop's invariant names as `iter!('rows)`, keeps no history, while the
 // second inner loop, with no invariant, gets one; the two loops' ghosts do not collide.
 // Fail twin: at the inner head the outer range has stepped, so its `start` is not `0`.

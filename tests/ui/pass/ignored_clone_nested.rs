@@ -4,10 +4,10 @@
 
 // The twin of `fail/ignored_clone_nested.rs`: a `clone` that is not ignored is checked against
 // the trait's spec, which the tuple's and `W`'s `clone` rely on.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -19,7 +19,7 @@ impl Clone for S {
 
 struct W<T>(T);
 
-impl<T: thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Model> Model for W<T> {
     type Ty = W<T::Ty>;
 }
 
