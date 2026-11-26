@@ -2934,7 +2934,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let _guard = span.enter();
         let split = matches!(analyze::split_jobs(), Ok(Some(_)));
         let marked = analyze::splits_goals(self.tcx, self.local_def_id);
-        if marked && !split {
+        let hoisted_block =
+            analyze::selection::is_extracted_block(self.tcx, self.local_def_id.to_def_id());
+        if marked && !split && !hoisted_block {
             self.tcx.dcx().span_warn(
                 self.tcx.def_span(self.local_def_id),
                 "`#[thrust::split_goals]` takes effect only with `THRUST_SPLIT` set",
