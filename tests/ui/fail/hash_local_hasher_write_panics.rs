@@ -1,12 +1,12 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 use std::hash::{Hash, Hasher};
 
 struct PanickingHasher;
 
-impl thrust_models::Model for PanickingHasher {
+impl Model for PanickingHasher {
     type Ty = PanickingHasher;
 }
 

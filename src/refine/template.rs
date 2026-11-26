@@ -15,7 +15,8 @@ use crate::refine;
 use crate::rty;
 
 /// The model of a contiguous sequence of `elem_ty`: the native sequence that `thrust_models`
-/// gives to `Vec<T>`, `[T]` and `[T; N]` alike.
+/// gives to `Vec<T>`, `[T]` and `[T; N]` alike. The type of `[T; N]` also fixes the length
+/// ([`array_model_type`]).
 ///
 /// A concrete element type never needs this: `<Vec<i64> as Model>::Ty` normalizes to
 /// `model::Seq<model::Int>`, which `model_adt` maps to the same type. A generic element type
@@ -24,7 +25,20 @@ use crate::rty;
 /// normalization. The element's model is then the element type as `build` sees it, a type
 /// parameter, and the sequence over it is spelled out here.
 fn seq_model_type<V>(elem_ty: rty::Type<V>) -> rty::Type<V> {
-    rty::Type::Seq(Box::new(rty::RefinedType::unrefined(elem_ty)))
+    rty::Type::Seq {
+        elem: Box::new(rty::RefinedType::unrefined(elem_ty)),
+        fixed_len: None,
+    }
+}
+
+/// The model of an array `[T; len]` of `elem_ty`: the sequence of [`seq_model_type`] whose values
+/// all have the length `len`, as Creusot's type invariant of `[T; N]` states; `len` is `None` for
+/// a length that is a generic parameter.
+pub fn array_model_type<V>(elem_ty: rty::Type<V>, len: Option<u64>) -> rty::Type<V> {
+    rty::Type::Seq {
+        elem: Box::new(rty::RefinedType::unrefined(elem_ty)),
+        fixed_len: len,
+    }
 }
 
 /// The model of an iterator over a contiguous sequence: the `(base, cursor)` pair, where the
@@ -194,6 +208,12 @@ trait TyMode<'tcx> {
     type Var: chc::Var;
     /// The type of a function pointer with the signature `sig`.
     fn fn_ptr(&mut self, b: &TypeBuilder<'tcx>, sig: mir_ty::FnSig<'tcx>) -> rty::Type<Self::Var>;
+    /// The type of the closure type `ty`, when it is not built from its captures in this mode.
+    fn closure(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> Option<rty::Type<Self::Var>>;
     /// The type of a type argument `ty` of an enum.
     fn enum_arg(
         &mut self,
@@ -226,12 +246,66 @@ impl<'tcx> TyMode<'tcx> for Unrefined {
         rty::FunctionType::new(params, ret.vacuous()).into()
     }
 
+    /// An `Fn` or `FnOnce` closure has its captures with the function pointers among them opaque
+    /// ([`OpaqueFnPtrs`]). Such a type is where the closure's value is seen from outside its
+    /// body, as through a type argument: the body's `pre!` and `post!` say what the value does,
+    /// and what the captured pointers do was checked where the value was built, against the
+    /// types the body takes them at, which no call of the closure changes. An unrefined pointer
+    /// type there would instead state the contract `true` of the pointer the closure holds. An
+    /// `FnMut` body may store into its captures what it does not check against those types, so
+    /// an `FnMut` closure keeps its captures unrefined.
+    fn closure(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> Option<rty::Type<rty::Closed>> {
+        let mir_ty::TyKind::Closure(_, args) = ty.kind() else {
+            return None;
+        };
+        if args.as_closure().kind() == mir_ty::ClosureKind::FnMut {
+            return None;
+        }
+        Some(b.build_ty_in(&mut OpaqueFnPtrs, ty))
+    }
+
     fn enum_arg(
         &mut self,
         b: &TypeBuilder<'tcx>,
         ty: mir_ty::Ty<'tcx>,
     ) -> rty::RefinedType<rty::Closed> {
         b.build(ty)
+    }
+}
+
+/// An unrefined type whose function pointers are opaque: they relate to no function type, so
+/// they neither state nor require a contract.
+struct OpaqueFnPtrs;
+
+impl<'tcx> TyMode<'tcx> for OpaqueFnPtrs {
+    type Var = rty::Closed;
+
+    fn fn_ptr(
+        &mut self,
+        _b: &TypeBuilder<'tcx>,
+        _sig: mir_ty::FnSig<'tcx>,
+    ) -> rty::Type<rty::Closed> {
+        rty::Type::opaque()
+    }
+
+    fn closure(
+        &mut self,
+        _b: &TypeBuilder<'tcx>,
+        _ty: mir_ty::Ty<'tcx>,
+    ) -> Option<rty::Type<rty::Closed>> {
+        None
+    }
+
+    fn enum_arg(
+        &mut self,
+        b: &TypeBuilder<'tcx>,
+        ty: mir_ty::Ty<'tcx>,
+    ) -> rty::RefinedType<rty::Closed> {
+        rty::RefinedType::unrefined(b.build_ty_in(self, ty))
     }
 }
 
@@ -887,9 +961,7 @@ impl<'tcx> TypeBuilder<'tcx> {
 
         if Some(adt.did()) == self.def_ids.seq_model() {
             let elem_ty = self.build_ty_in(m, args.type_at(0));
-            return Some(rty::Type::Seq(Box::new(rty::RefinedType::unrefined(
-                elem_ty,
-            ))));
+            return Some(seq_model_type(elem_ty));
         }
 
         if Some(adt.did()) == self.def_ids.array_model() {
@@ -1060,8 +1132,11 @@ impl<'tcx> TypeBuilder<'tcx> {
     /// Builds `ty`, taking from `m` the parts where an unrefined type and a template differ.
     fn build_ty_in<M: TyMode<'tcx>>(&self, m: &mut M, ty: mir_ty::Ty<'tcx>) -> rty::Type<M::Var> {
         // An integer keeps its width, which its model `Int` or `UInt` does not have. A `char` is
-        // the `u32` of its code point.
-        if ty.is_integral() || ty.is_char() {
+        // its code point.
+        if ty.is_char() {
+            return rty::Type::char();
+        }
+        if ty.is_integral() {
             let width = ty.primitive_size(self.tcx).bits() as u32;
             return if ty.is_signed() {
                 rty::Type::int_of_width(width)
@@ -1073,7 +1148,30 @@ impl<'tcx> TypeBuilder<'tcx> {
         if ty.is_trait() {
             return rty::Type::opaque();
         }
-        let ty = self.resolve_model_ty(ty);
+        // A closure type at the top of `ty`, or the element of an array (its arm below recurses
+        // on the element first), reaches here: `resolve_model_ty` below folds every other closure
+        // inside a type into `Closure<upvars>` before the arms recurse.
+        if let mir_ty::TyKind::Closure(..) = ty.kind() {
+            if let Some(ty) = m.closure(self, ty) {
+                return ty;
+            }
+        }
+        // An array keeps its length, which its model `Seq` does not have.
+        if let mir_ty::TyKind::Array(elem_ty, len) = ty.kind() {
+            let elem_ty = self.build_ty_in(m, *elem_ty);
+            return array_model_type(elem_ty, len.try_to_target_usize(self.tcx));
+        }
+        // So does an array behind a reference or in a box, whose model would replace the array by
+        // the array's.
+        let refers_to_array = match ty.kind() {
+            mir_ty::TyKind::Ref(_, elem, _) => elem.is_array(),
+            _ => ty.is_box() && ty.boxed_ty().is_some_and(|elem| elem.is_array()),
+        };
+        let ty = if refers_to_array {
+            ty
+        } else {
+            self.resolve_model_ty(ty)
+        };
         match ty.kind() {
             mir_ty::TyKind::Bool => rty::Type::bool(),
             mir_ty::TyKind::Str => rty::Type::string(),
@@ -1098,7 +1196,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                 let sig = sig_tys.with(*hdr).skip_binder();
                 m.fn_ptr(self, sig)
             }
-            mir_ty::TyKind::Slice(elem_ty) | mir_ty::TyKind::Array(elem_ty, _) => {
+            mir_ty::TyKind::Slice(elem_ty) => {
                 let elem_ty = self.build_ty_in(m, *elem_ty);
                 seq_model_type(elem_ty)
             }
@@ -1177,6 +1275,8 @@ impl<'tcx> TypeBuilder<'tcx> {
 
                 self.translate_alias_type(ty).vacuous()
             }
+            // The model of a `char` is itself (`impl Model for char`).
+            mir_ty::TyKind::Char => rty::Type::char(),
             kind => unimplemented!("unsupported type: {:?}", kind),
         }
     }
@@ -1584,6 +1684,14 @@ where
     fn fn_ptr(&mut self, b: &TypeBuilder<'tcx>, sig: mir_ty::FnSig<'tcx>) -> rty::Type<S::Var> {
         let ty = b.for_function_template(self.registry, sig).build();
         rty::Type::function(ty)
+    }
+
+    fn closure(
+        &mut self,
+        _b: &TypeBuilder<'tcx>,
+        _ty: mir_ty::Ty<'tcx>,
+    ) -> Option<rty::Type<S::Var>> {
+        None
     }
 
     fn enum_arg(

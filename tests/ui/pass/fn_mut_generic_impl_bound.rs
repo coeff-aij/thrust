@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::{Model, model::Closure};
 // `W`'s `apply` is `FnMut`-bounded through its impl's parameter and verified at each concrete
 // closure (D34); `conc`'s closure is such an instance. `gen` reaches `apply` only through `Ap`,
 // and `caller2` runs it at `W` holding `dec`: that dispatched instance is analyzed, where `dec`'s
@@ -17,8 +17,8 @@ struct W<F> {
     f: F,
 }
 
-impl<F> thrust_models::Model for W<F> {
-    type Ty = W<thrust_models::model::Closure<F>>;
+impl<F> Model for W<F> {
+    type Ty = W<Closure<F>>;
 }
 
 impl<F: FnMut(i32) -> i32> Ap for W<F> {

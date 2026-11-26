@@ -4,13 +4,13 @@
 
 // The pass twin with an override that drops every item: the call in `main` takes std.rs's
 // `collect` contract at `Vec<i64>`, which the override's body does not meet.
-
+use thrust_models::{forall, Model, model::{Int, Seq}};
 #[derive(PartialEq)]
 struct Up {
     n: i64,
 }
 
-impl thrust_models::Model for Up {
+impl Model for Up {
     type Ty = Up;
 }
 
@@ -44,7 +44,7 @@ impl IteratorSpec for Up {
         self.n <= o.n
             && o.n <= 3
             && visited.len() == o.n - self.n
-            && thrust_models::forall(|i: thrust_models::model::Int|
+            && forall(|i: Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.n + i)
     }
 
@@ -57,9 +57,9 @@ impl IteratorSpec for Up {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<thrust_models::model::Int>,
+        ab: Seq<Int>,
         b: &Self,
-        bc: thrust_models::model::Seq<thrust_models::model::Int>,
+        bc: Seq<Int>,
         c: &Self,
     ) {
     }

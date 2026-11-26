@@ -8,10 +8,11 @@
 //! `produced` the sequence of the items `next` has returned so far, and the invariant is conjoined
 //! with the structural `inv(iter)` and `produces(iter_old, produced, iter)` of `IteratorSpec`.
 //!
-//! With `THRUST_FOR_LOOP_HISTORY=1`, a loop with no invariant gets the same ghosts, and
-//! `inv(iter)` and `produces(iter_old, produced, iter)` are conjoined to the invariant Thrust
-//! infers, so that the inferred part can relate the loop's state to `produced`, as Creusot does
-//! for every loop.
+//! A loop with no invariant gets the same ghosts, and Thrust conjoins `inv(iter)` and
+//! `produces(iter_old, produced, iter)` to the invariant it infers where the iterator implements
+//! `IteratorSpec`, so that the inferred part can relate the loop's state to `produced`, as Creusot
+//! does for every loop; Thrust removes the ghosts from the MIR of a loop whose iterator has no
+//! `IteratorSpec` (`erase_for_loop_ghosts_without_iterator_spec`). A body that starts with `no_structural_invariant!()` gets neither.
 //!
 //! The variables of an annotated loop get names of their own for each loop, and the invariant's
 //! `iter`, `iter_old` and `produced` are renamed to them, so the loop body sees its own variables
@@ -21,30 +22,47 @@
 //! with no invariant whose label a specification of its body references is desugared as an
 //! annotated one with no written invariant, so that `iter!('l)` names its iterator while Thrust
 //! infers its invariant; it has no `iter_old` or `produced` to name, and
-//! `THRUST_FOR_LOOP_HISTORY` gives it none.
+//! gets no history.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use proc_macro2::{Ident, TokenStream, TokenTree};
 use quote::format_ident;
+use syn::ext::IdentExt as _;
 use syn::spanned::Spanned as _;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
 /// The desugaring of `for_loop`, or `None` when its body starts with `invariant!` or
-/// `partial_invariant!` calls none of which has a parameter `iter`, whose type is the iterator's,
-/// or with no invariant, no reference to the loop's label in the specifications of its body and
-/// `THRUST_FOR_LOOP_HISTORY` not `1`. Every invariant of that leading run names the loop's ghosts.
+/// `partial_invariant!` calls none of which has a parameter `iter` whose type is the iterator's.
+/// A loop with no invariant is desugared with the ghost history, or, when a specification in its
+/// body references its label, as an annotated loop with no written invariant. Every invariant of
+/// the leading run names the loop's ghosts.
 pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
+    let (opted_out, rest) = split_opt_out(&for_loop.body.stmts);
+    let desugared = desugar_loop(for_loop, opted_out, rest);
+    if desugared.is_none() && opted_out {
+        let mut plain = for_loop.clone();
+        plain.body.stmts = rest.to_vec();
+        return Some(syn::Expr::ForLoop(plain));
+    }
+    desugared
+}
+
+fn desugar_loop(
+    for_loop: &syn::ExprForLoop,
+    opted_out: bool,
+    stmts: &[syn::Stmt],
+) -> Option<syn::Expr> {
     let label_name = for_loop.label.as_ref().map(|label| label.name.to_string());
     let label_name = label_name.as_deref();
-    let stmts = &for_loop.body.stmts;
     let named_by_label =
         label_name.is_some_and(|label| crate::loop_label::is_referenced_in_body(stmts, label));
     match labelled_ghosts(for_loop) {
         LabelledGhosts::None => return None,
         LabelledGhosts::Iter if !named_by_label => {
-            return history_requested().then(|| desugar_with_inferred_invariant(for_loop));
+            return (!opted_out && !std_is_not_injected())
+                .then(|| desugar_with_inferred_invariant(for_loop));
         }
         LabelledGhosts::Iter | LabelledGhosts::All => {}
     }
@@ -118,6 +136,19 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
     let produced_checks = type_checks(&params, "produced", &produced);
     let next_produced = format_ident!("__thrust_for_next_produced_{}", n);
     let live = format_ident!("__thrust_for_live_{}", n);
+    let history_invariant = if opted_out {
+        TokenStream::new()
+    } else {
+        quote::quote!(
+            thrust_macros::invariant!(
+                |#iter: #iter_ty,
+                 #iter_old: crate::thrust_models::Ghost<#iter_ty>,
+                 #produced: crate::thrust_models::Ghost<#seq>|
+                <#iter_ty as crate::IteratorSpec>::inv(#iter)
+                    && <#iter_ty as crate::IteratorSpec>::produces(#iter_old, #produced, #iter)
+            );
+        )
+    };
     Some(syn::parse_quote!(
         match ::core::iter::IntoIterator::into_iter(#expr) {
             mut #iter => {
@@ -128,13 +159,7 @@ pub fn desugar(for_loop: &syn::ExprForLoop) -> Option<syn::Expr> {
                 #produced_checks
                 #label loop {
                     #(#invariants)*
-                    thrust_macros::invariant!(
-                        |#iter: #iter_ty,
-                         #iter_old: crate::thrust_models::Ghost<#iter_ty>,
-                         #produced: crate::thrust_models::Ghost<#seq>|
-                        <#iter_ty as crate::IteratorSpec>::inv(#iter)
-                            && <#iter_ty as crate::IteratorSpec>::produces(#iter_old, #produced, #iter)
-                    );
+                    #history_invariant
                     match ::core::iter::Iterator::next(&mut #iter) {
                         ::core::option::Option::Some(#item) => {
                             let #next_produced = thrust_macros::ghost!(
@@ -175,10 +200,17 @@ fn desugar_with_inferred_invariant(for_loop: &syn::ExprForLoop) -> syn::Expr {
     } = for_loop;
     let expr = head_expr(expr);
     let stmts = &body.stmts;
-    let iter = format_ident!("__thrust_for_iter");
-    let iter_old = format_ident!("__thrust_for_iter_old");
-    let produced = format_ident!("__thrust_for_produced");
-    let item = format_ident!("__thrust_for_item");
+    if names_a_ghost(quote::quote!(#pat #body)) {
+        return syn::parse_quote!({
+            compile_error!(
+                "a `for` loop cannot name `__thrust_for_iter`, `__thrust_for_iter_old`, `__thrust_for_produced` or `__thrust_for_item`"
+            );
+        });
+    }
+    let iter = ghost_ident("__thrust_for_iter");
+    let iter_old = ghost_ident("__thrust_for_iter_old");
+    let produced = ghost_ident("__thrust_for_produced");
+    let item = ghost_ident("__thrust_for_item");
     syn::parse_quote!(
         match ::core::iter::IntoIterator::into_iter(#expr) {
             mut #iter => {
@@ -216,9 +248,8 @@ pub enum LabelledGhosts {
 /// The ghosts of `for_loop` that a reference to its label can name.
 pub fn labelled_ghosts(for_loop: &syn::ExprForLoop) -> LabelledGhosts {
     let label = for_loop.label.as_ref().map(|label| label.name.to_string());
-    let leading: Vec<_> = for_loop
-        .body
-        .stmts
+    let leading: Vec<_> = split_opt_out(&for_loop.body.stmts)
+        .1
         .iter()
         .map_while(|stmt| invariant_params(stmt, label.as_deref()))
         .collect();
@@ -236,9 +267,50 @@ pub fn labelled_ghosts(for_loop: &syn::ExprForLoop) -> LabelledGhosts {
     }
 }
 
-/// Whether a loop with no invariant is to get the ghost history (`THRUST_FOR_LOOP_HISTORY=1`).
-fn history_requested() -> bool {
-    std::env::var("THRUST_FOR_LOOP_HISTORY").is_ok_and(|v| v == "1")
+/// The ghosts of an inferred loop are read by formulas through their names, which hygiene would
+/// change, so they are plain identifiers; a loop that names one of them is rejected instead, as
+/// it would change the loop's state or read a ghost that need not exist.
+const GHOST_NAMES: [&str; 4] = [
+    "__thrust_for_iter",
+    "__thrust_for_iter_old",
+    "__thrust_for_produced",
+    "__thrust_for_item",
+];
+
+fn names_a_ghost(tokens: TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        TokenTree::Ident(ident) => GHOST_NAMES.iter().any(|name| ident.unraw() == name),
+        TokenTree::Group(group) => names_a_ghost(group.stream()),
+        _ => false,
+    })
+}
+
+fn ghost_ident(name: &str) -> Ident {
+    Ident::new(name, proc_macro2::Span::call_site())
+}
+
+/// Whether Thrust runs without injecting `std.rs` (`THRUST_NO_INJECT_STD=1`), which declares the
+/// ghosts of an inferred loop: such a loop is left as written.
+fn std_is_not_injected() -> bool {
+    std::env::var("THRUST_NO_INJECT_STD").is_ok_and(|v| v == "1")
+}
+
+/// Whether `stmts` starts with `no_structural_invariant!()`, and the statements after it.
+fn split_opt_out(stmts: &[syn::Stmt]) -> (bool, &[syn::Stmt]) {
+    let Some((syn::Stmt::Macro(first), rest)) = stmts.split_first() else {
+        return (false, stmts);
+    };
+    let is_marker = first
+        .mac
+        .path
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "no_structural_invariant");
+    if is_marker {
+        (true, rest)
+    } else {
+        (false, stmts)
+    }
 }
 
 /// The iterator expression of a `for` head. A struct literal is parenthesized there, but not in
@@ -341,4 +413,48 @@ fn invariant_params(stmt: &syn::Stmt, label: Option<&str>) -> Option<Vec<(syn::I
             })
             .collect(),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::desugar;
+    use quote::ToTokens as _;
+
+    fn expansion(source: &str) -> String {
+        let for_loop: syn::ExprForLoop = syn::parse_str(source).unwrap();
+        let desugared = desugar(&for_loop).expect("the loop is desugared");
+        desugared.to_token_stream().to_string().replace(' ', "")
+    }
+
+    #[test]
+    fn inferred_loop_has_the_history_marker() {
+        let out = expansion("for x in it { f(x); }");
+        assert!(out.contains("__for_loop_history_marker"));
+    }
+
+    #[test]
+    fn opted_out_inferred_loop_has_no_ghosts() {
+        let out = expansion("for x in it { thrust_macros::no_structural_invariant!(); f(x); }");
+        assert!(!out.contains("__for_loop_history_marker"));
+        assert!(!out.contains("__thrust_for_produced"));
+        assert!(!out.contains("no_structural_invariant"));
+    }
+
+    const ANNOTATED: &str = "for x in it { INVARIANT thrust_macros::invariant!(|iter: Range<i64>, produced: Ghost<Seq<Int>>| produced.len() >= 0); f(x); }";
+
+    #[test]
+    fn annotated_loop_conjoins_the_structural_invariant() {
+        let out = expansion(&ANNOTATED.replace("INVARIANT", ""));
+        assert!(out.contains("IteratorSpec>::produces"));
+    }
+
+    #[test]
+    fn opted_out_annotated_loop_keeps_its_ghosts_without_the_structural_invariant() {
+        let out = expansion(
+            &ANNOTATED.replace("INVARIANT", "thrust_macros::no_structural_invariant!();"),
+        );
+        assert!(out.contains("__thrust_for_produced_"));
+        assert!(!out.contains("IteratorSpec>::produces"));
+        assert!(!out.contains("no_structural_invariant"));
+    }
 }

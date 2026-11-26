@@ -4,9 +4,9 @@
 //! A local the program does not name (a temporary of the MIR) is named `__tmp_mir_<fn>_<n>`, after
 //! the function and its index in the MIR.
 //!
-//! The analysis rewrites statements in place (`Nop`s, places) and never renumbers blocks or
-//! statements, so a block and a statement index recorded during it locate the same code in
-//! `optimized_mir`.
+//! The analysis rewrites statements in place (`Nop`s, places) and adds blocks after the last one
+//! of `optimized_mir`, so a block and a statement index recorded during it locate the same code
+//! in `optimized_mir`, and a block past its last has no code there.
 
 use std::collections::{HashMap, HashSet};
 
@@ -260,7 +260,11 @@ impl<'tcx> DefBody<'tcx> {
         let Some(events) = self.moves.get(&local) else {
             return false;
         };
-        let at = stmt.unwrap_or(self.body.basic_blocks[bb].statements.len());
+        // A block the analysis added (to index a slice) is no block of `optimized_mir`.
+        let Some(data) = self.body.basic_blocks.get(bb) else {
+            return false;
+        };
+        let at = stmt.unwrap_or(data.statements.len());
         let before = events
             .iter()
             .filter(|(l, _)| l.block == bb && l.statement_index < at);
