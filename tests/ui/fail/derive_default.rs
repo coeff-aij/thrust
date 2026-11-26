@@ -4,7 +4,7 @@
 
 // The Default::default spec says nothing about the value, so nothing about
 // the fields can be concluded.
-
+use thrust_models::Model;
 #[derive(Default, PartialEq)]
 struct Settings {
     level: u8,
@@ -12,7 +12,7 @@ struct Settings {
     name: Option<i64>,
 }
 
-impl thrust_models::Model for Settings {
+impl Model for Settings {
     type Ty = Settings;
 }
 

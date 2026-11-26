@@ -2,15 +2,15 @@
 
 // A contract on a destructor is rejected also when written without `thrust_macros`, by the
 // attribute the macros expand to.
-
+use thrust_models::Model;
 struct Guard(i32);
 
-impl thrust_models::Model for Guard {
+impl Model for Guard {
     type Ty = Self;
 }
 
 #[thrust::formula_fn]
-fn guard_pre(_g: <&mut Guard as thrust_models::Model>::Ty) -> bool {
+fn guard_pre(_g: <&mut Guard as Model>::Ty) -> bool {
     true
 }
 

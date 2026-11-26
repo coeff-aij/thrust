@@ -1,9 +1,9 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
-
+use thrust_models::Model;
 // The same contract used through a generic caller, instantiated at `&str` there.
 #[derive(Clone, Copy)]
 struct W<T>(T);
-impl<T> thrust_models::Model for W<T> {
+impl<T> Model for W<T> {
     type Ty = W<T>;
 }
 

@@ -3,15 +3,15 @@
 
 // The pass twin with the postcondition off by one, which the body does not satisfy.
 // `main` asserts what the broken postcondition promises, so the body is the only failure.
-
+use thrust_models::{Model, model::Int};
 struct Range {
     start: i64,
     end: i64,
 }
 
 // Range is represented as Tuple<Int, Int>, so `(*self).0` is `self.start`.
-impl thrust_models::Model for Range {
-    type Ty = (thrust_models::model::Int, thrust_models::model::Int);
+impl Model for Range {
+    type Ty = (Int, Int);
 }
 
 #[thrust_macros::context]

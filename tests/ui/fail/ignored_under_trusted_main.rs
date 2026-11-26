@@ -3,10 +3,10 @@
 
 // A trusted `main` is a root of the ignored check: it runs the verified `g` at `S`, which runs
 // `S`'s ignored `m`.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

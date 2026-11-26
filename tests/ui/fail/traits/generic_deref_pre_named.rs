@@ -4,13 +4,13 @@
 
 // The pass twin with a `deref` that requires a positive field, which `claim`'s postcondition at
 // `Wrapper(0)` would then tell `main` of it.
-
+use thrust_models::Model;
 use std::ops::Deref;
 
 #[derive(Clone, Copy)]
 struct Wrapper(u64);
 
-impl thrust_models::Model for Wrapper {
+impl Model for Wrapper {
     type Ty = (u64,);
 }
 

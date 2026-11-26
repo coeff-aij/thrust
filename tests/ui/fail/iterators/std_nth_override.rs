@@ -5,13 +5,13 @@
 // `Skip` over an iterator with its own `IteratorSpec`: std's `Skip::next` calls the iterator's
 // `nth`, which is checked against `Iterator::nth`'s contract.
 // Fail twin: an `nth` that ignores `n`, under which `skip(2)` hands out 0 first.
-
+use thrust_models::{forall, Model, model::{Int, Seq}};
 #[derive(PartialEq)]
 struct Up {
     n: i64,
 }
 
-impl thrust_models::Model for Up {
+impl Model for Up {
     type Ty = Up;
 }
 
@@ -45,7 +45,7 @@ impl IteratorSpec for Up {
         self.n <= o.n
             && o.n <= 10
             && visited.len() == o.n - self.n
-            && thrust_models::forall(|i: thrust_models::model::Int|
+            && forall(|i: Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.n + i)
     }
 
@@ -58,9 +58,9 @@ impl IteratorSpec for Up {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<thrust_models::model::Int>,
+        ab: Seq<Int>,
         b: &Self,
-        bc: thrust_models::model::Seq<thrust_models::model::Int>,
+        bc: Seq<Int>,
         c: &Self,
     ) {
     }
