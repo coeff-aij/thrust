@@ -4,7 +4,7 @@
 
 // `Iterator::next` is specified for types implementing `IteratorSpec`; `Once<T>` does not, so
 // its own `next` is analyzed.
-
+use thrust_models::Model;
 struct Once<T>(T, bool);
 
 impl<T: Copy> Iterator for Once<T> {
@@ -20,7 +20,7 @@ impl<T: Copy> Iterator for Once<T> {
     }
 }
 
-fn first<T: thrust_models::Model + Copy + PartialEq>(x: T)
+fn first<T: Model + Copy + PartialEq>(x: T)
 {
     let mut it = Once(x, true);
     match it.next() {

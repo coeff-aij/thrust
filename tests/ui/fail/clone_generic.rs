@@ -1,14 +1,14 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 #[derive(Clone, PartialEq)]
 struct Pair {
     items: Vec<i32>,
     tag: i32,
 }
 
-impl thrust_models::Model for Pair {
+impl Model for Pair {
     type Ty = Pair;
 }
 

@@ -4,12 +4,12 @@
 // A wrong `ensures` about a parameter moved out and assigned again before a loop whose invariant
 // replaces the inferred precondition. The invariant does not carry the parameter's current value,
 // so the right `ensures` (`s.a + 1`) is not verified either.
-
+use thrust_models::Model;
 struct S {
     a: i64,
 }
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

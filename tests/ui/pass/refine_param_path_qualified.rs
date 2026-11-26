@@ -1,11 +1,11 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 //@check-pass
-
+use thrust_models::Model;
 pub enum Pair<T> {
     Mk(T, T),
 }
 
-impl<T> thrust_models::Model for Pair<T> {
+impl<T> Model for Pair<T> {
     type Ty = Self;
 }
 

@@ -106,8 +106,9 @@ pub struct DropPointsBuilder<'mir, 'tcx> {
 /// The parts of `local`, dropped after the statement or terminator at `location`, that its drop
 /// must not resolve: the whole local if this very statement moves it out, and otherwise any part
 /// that may have been moved out (`uninit`) and may hold a `&mut`, whose pair went with the move.
-/// A part that is a reference is never one, since a moved `&mut` becomes a reborrow and the
-/// source still resolves to it.
+/// A part that is a reference is one only in a sequence: elsewhere a moved `&mut` becomes a
+/// reborrow and the source still resolves to it, but one moved out of a sequence by a slice
+/// pattern is read off it (`is_moved_out_of_sequence`), so the sequence must not resolve it.
 fn moved_out_parts<'tcx>(
     moves: &MoveState<'_, '_, 'tcx>,
     body: &Body<'tcx>,
@@ -130,7 +131,12 @@ fn moved_out_parts<'tcx>(
     while let Some(mpi) = pending.pop() {
         let path = &move_data.move_paths[mpi];
         let ty = path.place.ty(body, moves.tcx).ty;
-        let moved = !ty.is_ref()
+        let is_sequence_part = path
+            .place
+            .projection
+            .iter()
+            .any(super::is_slice_pattern_elem);
+        let moved = (!ty.is_ref() || is_sequence_part)
             && uninit.contains(mpi)
             && analyze::may_hold_mut_ref(moves.tcx, moves.typing_env, ty);
         if !moved {

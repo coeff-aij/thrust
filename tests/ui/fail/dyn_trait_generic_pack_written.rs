@@ -6,7 +6,7 @@
 // passes a valid `C`; `spoil`, whose receiver is `open_inv` and which is not in the vtable,
 // breaks `C`'s invariant inside `pack`, so only the requirement of packing at `T = C` refutes
 // it (`bump` would return 1000).
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(result <= 100)]
@@ -22,7 +22,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

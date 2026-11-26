@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::Model;
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
 #[thrust::trusted]
@@ -32,7 +32,7 @@ struct Counter {
     value: i32,
 }
 
-impl thrust_models::Model for Counter {
+impl Model for Counter {
     type Ty = Counter;
 }
 

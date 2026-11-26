@@ -4,7 +4,7 @@
 
 // Fail twin of `pass/traits/simple_loop_call_two.rs`: the call at `Neg` passes 1, which violates
 // `target`'s precondition `T::p(x)` once `T::p` is `Neg`'s `x < 0`.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait A {
     #[thrust_macros::requires(Self::p(x))]
@@ -31,7 +31,7 @@ fn target<T: A>(a: &T, x: i64) -> i64 {
 #[derive(PartialEq)]
 struct Pos;
 
-impl thrust_models::Model for Pos {
+impl Model for Pos {
     type Ty = Pos;
 }
 
@@ -50,7 +50,7 @@ impl A for Pos {
 #[derive(PartialEq)]
 struct Neg;
 
-impl thrust_models::Model for Neg {
+impl Model for Neg {
     type Ty = Neg;
 }
 

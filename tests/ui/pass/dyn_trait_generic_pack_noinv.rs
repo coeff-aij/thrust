@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // Packing at a type parameter in a crate without an invariant, where no type has one.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape {
     #[thrust_macros::ensures(result >= 3)]
@@ -12,7 +12,7 @@ trait Shape {
 
 struct Square;
 
-impl thrust_models::Model for Square {
+impl Model for Square {
     type Ty = ();
 }
 

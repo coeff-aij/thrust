@@ -4,7 +4,7 @@
 
 // The twin of `fail/drop_impl_generic_destructor.rs`: the destructor's assertion holds of every
 // value it may run on.
-
+use thrust_models::Model;
 struct G<T> {
     n: i32,
     t: T,
@@ -19,7 +19,7 @@ impl<T> Drop for G<T> {
     }
 }
 
-impl<T> thrust_models::Model for G<T> {
+impl<T> Model for G<T> {
     type Ty = Self;
 }
 

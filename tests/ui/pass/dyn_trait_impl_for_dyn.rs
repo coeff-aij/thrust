@@ -4,7 +4,7 @@
 
 // An impl for a trait object (`impl Describe for dyn Shape`) is an ordinary impl, checked at
 // `Self = dyn Shape`; a call to it is a static call, not one through the vtable.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape {
     #[thrust_macros::ensures(result >= 3)]
@@ -25,7 +25,7 @@ impl Describe for dyn Shape {
 
 struct Tri;
 
-impl thrust_models::Model for Tri {
+impl Model for Tri {
     type Ty = ();
 }
 
