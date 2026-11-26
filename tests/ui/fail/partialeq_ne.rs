@@ -1,13 +1,13 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::Model;
 #[derive(PartialEq)]
 enum E {
     A(i64),
     B,
 }
 
-impl thrust_models::Model for E {
+impl Model for E {
     type Ty = E;
 }
 

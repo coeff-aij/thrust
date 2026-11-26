@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+use thrust_models::Model;
 use thrust_models::forall;
 
 #[thrust_macros::context]
@@ -26,7 +27,7 @@ struct Range {
     end: i64,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 

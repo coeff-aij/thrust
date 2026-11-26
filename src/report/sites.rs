@@ -383,7 +383,7 @@ fn nested_refinements<'a, T>(
         rty::Type::Pointer(p) => vec![&*p.elem],
         rty::Type::Tuple(t) => t.elems.iter().collect(),
         rty::Type::Array(a) => vec![&*a.index, &*a.elem],
-        rty::Type::Seq(e) => vec![&**e],
+        rty::Type::Seq { elem, .. } => vec![&**elem],
         rty::Type::Enum(e) => e.args.iter().collect(),
         _ => Vec::new(),
     };

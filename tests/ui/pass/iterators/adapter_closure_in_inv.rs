@@ -6,7 +6,7 @@
 // `requires` is `inv`; `inv` states the closure's `pre!` of every item left, so the call
 // discharges the closure's obligation, as Creusot's `Filter` keeps the closure's precondition in
 // its type invariant (creusot-std/src/std/iter/filter.rs).
-
+use thrust_models::{forall, Model, model::{Closure, Seq}};
 use thrust_models::model::Int;
 
 pub struct Keep<P> {
@@ -15,8 +15,8 @@ pub struct Keep<P> {
     pred: P,
 }
 
-impl<P> thrust_models::Model for Keep<P> {
-    type Ty = (i64, i64, thrust_models::model::Closure<P>);
+impl<P> Model for Keep<P> {
+    type Ty = (i64, i64, Closure<P>);
 }
 
 impl<P: Fn(&i64) -> bool> Iterator for Keep<P> {
@@ -39,7 +39,7 @@ impl<P: Fn(&i64) -> bool> IteratorSpec for Keep<P> {
     #[thrust_macros::predicate]
     fn inv(self) -> bool {
         self.0 <= self.1
-            && thrust_models::forall(|x: Int| !(self.0 <= x && x < self.1) || thrust_macros::pre!(self.2(&x)))
+            && forall(|x: Int| !(self.0 <= x && x < self.1) || thrust_macros::pre!(self.2(&x)))
     }
 
     #[thrust_macros::predicate]
@@ -56,9 +56,9 @@ impl<P: Fn(&i64) -> bool> IteratorSpec for Keep<P> {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }

@@ -4,7 +4,7 @@
 // Rejected, not Unsat. A raw SMT-LIB2 predicate names the derived predicate's symbol, as a dumped
 // query shows it; a raw body is not read, so with a derived predicate in the crate it is taken to
 // depend on it, and a trusted contract that mentions it is rejected.
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait Iter {
     type Item;
@@ -12,7 +12,7 @@ trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: Self::Item) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
 }
 
@@ -21,7 +21,7 @@ struct Small {
     n: isize,
 }
 
-impl thrust_models::Model for Small {
+impl Model for Small {
     type Ty = Small;
 }
 

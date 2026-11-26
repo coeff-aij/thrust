@@ -1,12 +1,12 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::Model;
 struct C {
     n: usize,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = C;
 }
 

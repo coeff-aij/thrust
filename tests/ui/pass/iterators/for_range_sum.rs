@@ -5,7 +5,7 @@
 // A `for` over a range whose written invariant names the ghost `produced`, the items `next`
 // returned so far, and `iter_old`, the range before the loop. `#[thrust_macros::context]` desugars
 // the loop and conjoins `produces(iter_old, produced, iter)` to the invariant.
-
+use thrust_models::FnParam;
 use thrust_models::model::{Int, Seq};
 use thrust_models::Ghost;
 
@@ -15,7 +15,7 @@ use thrust_models::Ghost;
 fn sum(n: i64) -> i64 {
     let mut s = 0;
     for i in 0..n {
-        thrust_macros::invariant!(|iter: core::ops::Range<i64>, iter_old: Ghost<core::ops::Range<i64>>, produced: Ghost<Seq<Int>>, s: i64, n: thrust_models::FnParam<i64>|
+        thrust_macros::invariant!(|iter: core::ops::Range<i64>, iter_old: Ghost<core::ops::Range<i64>>, produced: Ghost<Seq<Int>>, s: i64, n: FnParam<i64>|
             0 <= n.at_entry() && iter_old.start == 0 && iter_old.end == n.at_entry()
                 && 2 * s == produced.len() * (produced.len() - 1));
         s += i;

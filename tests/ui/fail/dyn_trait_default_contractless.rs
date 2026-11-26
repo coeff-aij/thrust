@@ -4,7 +4,7 @@
 
 // A default body's inferred type describes the default only, not an impl that overrides it, so a
 // method without a written contract is rejected at a call through `dyn`.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Shape {
     fn sides(&self) -> u32 {
@@ -14,7 +14,7 @@ trait Shape {
 
 struct Sq;
 
-impl thrust_models::Model for Sq {
+impl Model for Sq {
     type Ty = ();
 }
 

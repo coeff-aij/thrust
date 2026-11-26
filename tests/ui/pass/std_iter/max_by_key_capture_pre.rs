@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+use thrust_models::Model;
 // The key's precondition reads what the closure captures, so it holds in the states the closure
 // reaches from the one passed, not in every state. The `F: FnMut` bound makes the closure `FnMut`,
 // which holds `dl` behind a `&mut`.
@@ -9,7 +10,7 @@ struct D {
     b: i64,
 }
 
-impl thrust_models::Model for D {
+impl Model for D {
     type Ty = D;
 }
 

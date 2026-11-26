@@ -4,10 +4,10 @@
 
 // The twin of `fail/ignored_trait_impl_dispatched.rs`: an `eq` that is not ignored is checked
 // against the trait's spec, which `g`'s reused contract then relies on at `S`.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -19,7 +19,7 @@ impl PartialEq for S {
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
-fn g<T: PartialEq + thrust_models::Model>(a: &T) -> bool {
+fn g<T: PartialEq + Model>(a: &T) -> bool {
     a == a
 }
 

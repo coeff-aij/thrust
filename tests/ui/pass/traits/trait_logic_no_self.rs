@@ -1,6 +1,6 @@
 //@check-pass
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // A trait logic function without a `self` parameter, named by the trait method's contract: at the
 // impl, `Self::score` is the impl's own, so `eval` returning `x` meets `result == Self::score(x)`,
 // and a caller at `Lin` learns `score`'s value.
@@ -14,7 +14,7 @@ trait Score {
 }
 
 struct Lin;
-impl thrust_models::Model for Lin {
+impl Model for Lin {
     type Ty = ();
 }
 

@@ -1,6 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
+use thrust_models::{Model, model::Mut};
 use thrust_models::forall;
 
 #[thrust_macros::context]
@@ -25,17 +26,17 @@ pub struct Id<I> {
     iter: I,
 }
 
-impl<I: thrust_models::Model> thrust_models::Model for Id<I> {
-    type Ty = Id<<I as thrust_models::Model>::Ty>;
+impl<I: Model> Model for Id<I> {
+    type Ty = Id<<I as Model>::Ty>;
 }
 
 #[thrust_macros::context]
 impl<I> Iterator for Id<I>
 where
-    I: Iterator + thrust_models::Model,
-    <I as Iterator>::Item: thrust_models::Model,
-    <<I as Iterator>::Item as thrust_models::Model>::Ty:
-        thrust_models::Model<Ty = <<I as Iterator>::Item as thrust_models::Model>::Ty>,
+    I: Iterator + Model,
+    <I as Iterator>::Item: Model,
+    <<I as Iterator>::Item as Model>::Ty:
+        Model<Ty = <<I as Iterator>::Item as Model>::Ty>,
 {
     type Item = I::Item;
 
@@ -48,7 +49,7 @@ where
     #[thrust_macros::predicate]
     fn completed(&mut self) -> bool {
         // self.iter.completed()
-        I::completed(thrust_models::model::Mut::new((*self).iter, (!self).iter))
+        I::completed(Mut::new((*self).iter, (!self).iter))
     }
 
     #[thrust_macros::predicate]

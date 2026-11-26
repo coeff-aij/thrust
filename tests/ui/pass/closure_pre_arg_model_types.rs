@@ -6,7 +6,7 @@
 // any integer type, a value for a shared reference to it, a ghost value for its content, and a
 // value of a type parameter for that parameter, also where the closure is passed on behind a
 // reference (`G = &H`).
-
+use thrust_models::Model;
 use thrust_models::model::Int;
 use thrust_models::Ghost;
 
@@ -14,7 +14,7 @@ struct S {
     g: Ghost<Int>,
 }
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = S;
 }
 

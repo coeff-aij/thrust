@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_INT_RANGE=conversions THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // The twin of the fail file: the ghost term's payload is in range, so its obligation holds.
 use thrust_models::model::UIntN;
 use thrust_models::Ghost;
@@ -11,7 +11,7 @@ pub enum E {
     B,
 }
 
-impl thrust_models::Model for E {
+impl Model for E {
     type Ty = Self;
 }
 

@@ -3,12 +3,12 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 // A `post!` of a std trait method that std.rs does not specify (`Deref::deref`), at a local type
 // whose impl method has no contract, takes what a call takes: the type inferred for the impl's body.
-
+use thrust_models::Model;
 use std::ops::Deref;
 
 struct W(i32);
 
-impl thrust_models::Model for W {
+impl Model for W {
     type Ty = Self;
 }
 
