@@ -629,40 +629,44 @@ enum TypeFactPredKind {
 
 impl EnumDefs {
     /// The predicate of `kind` for the enum type `ty`, registered on first use with the body
-    /// `body` builds (`None`: no predicate, as when the body is `None`). The body is built before
-    /// the registry is borrowed mutably, since it reads the enums' definitions.
+    /// `body` builds (`None`: no predicate, as when the body is `None`). The predicate is named
+    /// before the body is built, which may apply it where the type holds itself, and the registry
+    /// is not borrowed while the body is built, since that reads the enums' definitions and may
+    /// register the predicates of the enums in the payloads.
     fn register_type_fact_pred(
         defs: &Rc<RefCell<EnumDefs>>,
         kind: TypeFactPredKind,
         ty: &rty::EnumType<rty::Closed>,
         body: &dyn Fn() -> Option<chc::Formula>,
     ) -> Option<chc::UserDefinedPred> {
-        if !type_facts_by_predicate() {
-            return None;
-        }
         let ty = ty.clone().strip_refinement();
         if let Some(pred) = defs.borrow().type_fact_preds.get(&(kind, ty.clone())) {
             return pred.clone();
         }
+        let pred = {
+            let mut defs = defs.borrow_mut();
+            let (prefix, shown) = match kind {
+                TypeFactPredKind::PayloadFacts => ("payload_facts", "payload facts"),
+                TypeFactPredKind::DomainGuard => ("domain_guard", "domain"),
+            };
+            let index = defs
+                .type_fact_preds
+                .keys()
+                .filter(|(k, _)| *k == kind)
+                .count();
+            let pred = chc::UserDefinedPred::new(format!("{prefix}_{index}"))
+                .named(format!("{shown} of {}", ty.symbol));
+            defs.type_fact_preds
+                .insert((kind, ty.clone()), Some(pred.clone()));
+            pred
+        };
         let body = body();
         let mut defs = defs.borrow_mut();
         let Some(body) = body else {
             defs.type_fact_preds.insert((kind, ty), None);
             return None;
         };
-        let (prefix, shown) = match kind {
-            TypeFactPredKind::PayloadFacts => ("payload_facts", "payload facts"),
-            TypeFactPredKind::DomainGuard => ("domain_guard", "domain"),
-        };
-        let index = defs
-            .type_fact_preds
-            .keys()
-            .filter(|(k, _)| *k == kind)
-            .count();
-        let pred = chc::UserDefinedPred::new(format!("{prefix}_{index}"))
-            .named(format!("{shown} of {}", ty.symbol));
-        let sort = rty::Type::Enum(ty.clone()).to_sort();
-        defs.type_fact_preds.insert((kind, ty), Some(pred.clone()));
+        let sort = rty::Type::Enum(ty).to_sort();
         defs.pending_type_fact_preds
             .push((pred.clone(), sort, body));
         Some(pred)
@@ -672,6 +676,10 @@ impl EnumDefs {
 impl refine::EnumDefProvider for Rc<RefCell<EnumDefs>> {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> rty::EnumDatatypeDef {
         self.borrow().find_by_name(name).unwrap().clone()
+    }
+
+    fn type_facts_by_predicate(&self) -> bool {
+        type_facts_by_predicate()
     }
 
     fn register_payload_facts_pred(
@@ -690,10 +698,6 @@ impl refine::EnumDefProvider for Rc<RefCell<EnumDefs>> {
         guard: &dyn Fn() -> Option<chc::Formula>,
     ) -> Option<chc::UserDefinedPred> {
         EnumDefs::register_type_fact_pred(self, TypeFactPredKind::DomainGuard, ty, guard)
-    }
-
-    fn has_enum_def(&self, name: &chc::DatatypeSymbol) -> bool {
-        self.borrow().find_by_name(name).is_some()
     }
 }
 

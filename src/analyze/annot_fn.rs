@@ -13,7 +13,6 @@ use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeFoldable};
 
 use crate::analyze::{self, did_cache::DefIdCache};
 use crate::chc;
-use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{self, TypeBuilder};
 use crate::rty;
 
@@ -2544,30 +2543,18 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
-            domains.push((var, ranges_over_nothing, param_rty.ty, term.clone(), param));
+            domains.push((var, ranges_over_nothing, param_rty.ty, term.clone()));
             inner_translator.env.insert(hir_id, term);
             vars.push((var, sort));
         }
         let body_formula = inner_translator.to_formula(closure.value);
         let range = domains
             .into_iter()
-            .filter_map(|(var, ranges_over_nothing, ty, term, param)| {
+            .filter_map(|(var, ranges_over_nothing, ty, term)| {
                 if ranges_over_nothing {
                     return Some(chc::Formula::bottom());
                 }
                 self.quantified_var_domain(&ty, term, &FieldReads::of(&body_formula, var))
-                    .unwrap_or_else(|enum_ty| {
-                        self.tcx.dcx().span_fatal(
-                            param.pat.span,
-                            format!(
-                                "thrust: the `char`s of a variable of type `{}` cannot \
-                                 all be given their code points: `{}` recurs in its own \
-                                 payload or is nested too deep",
-                                self.pat_ty(param.pat),
-                                enum_ty.display()
-                            ),
-                        )
-                    })
             })
             .reduce(chc::Formula::and);
         (vars, range, body_formula)
@@ -2575,14 +2562,13 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// The domain a quantified variable `var` of type `ty` ranges over: the facts of its type
     /// ([`rty::binder_domain`]). A variable of an enum type that the body `reads` only through some
-    /// payload fields gets the facts of those fields only, which gives the same formula. `Err` names
-    /// an enum holding a `char` that the domain cannot follow.
+    /// payload fields gets the facts of those fields only, which gives the same formula.
     fn quantified_var_domain(
         &self,
         ty: &rty::Type<rty::Closed>,
         var: chc::Term<rty::FunctionParamIdx>,
         reads: &FieldReads,
-    ) -> Result<Option<chc::Formula<rty::FunctionParamIdx>>, rty::Type<rty::Closed>> {
+    ) -> Option<chc::Formula<rty::FunctionParamIdx>> {
         let defs = &self.analyzer.enum_defs;
         match (ty, reads) {
             (rty::Type::Enum(_), FieldReads::Fields(fields)) => rty::binder_domain(

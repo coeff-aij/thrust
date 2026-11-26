@@ -3527,24 +3527,74 @@ impl System {
         found
     }
 
-    fn user_defined_preds_in_dependency_order(&self) -> Vec<&UserDefinedPredDef> {
+    /// The definitions in groups, each group after the definitions its members call: a
+    /// definition alone, or definitions that call one another (`define-funs-rec`), as the
+    /// payload-facts predicates of enums that hold one another do. A definition is taken in the
+    /// order of definition once every definition it calls is taken; a group only when no
+    /// definition alone can be.
+    fn user_defined_preds_in_dependency_order(&self) -> Vec<Vec<&UserDefinedPredDef>> {
         let mut remaining: Vec<_> = self.user_defined_pred_defs.iter().collect();
         let mut ordered = Vec::with_capacity(remaining.len());
         while !remaining.is_empty() {
+            let calls_taken = |def: &UserDefinedPredDef, group: &[&UserDefinedPred]| {
+                def.callees().into_iter().all(|callee| {
+                    group.contains(&callee)
+                        || !remaining
+                            .iter()
+                            .any(|dependency| dependency.symbol == *callee)
+                })
+            };
             let next = remaining
                 .iter()
-                .position(|def| {
-                    def.callees().into_iter().all(|callee| {
-                        *callee == def.symbol
-                            || !remaining
-                                .iter()
-                                .any(|dependency| dependency.symbol == *callee)
-                    })
+                .position(|def| calls_taken(def, &[&def.symbol]));
+            if let Some(next) = next {
+                ordered.push(vec![remaining.remove(next)]);
+                continue;
+            }
+            let group = remaining
+                .iter()
+                .map(|def| Self::calling_one_another(&remaining, def))
+                .find(|group| {
+                    let symbols: Vec<_> = group.iter().map(|def| &def.symbol).collect();
+                    group.iter().all(|def| calls_taken(def, &symbols))
                 })
-                .expect("mutually recursive definitions are not supported");
-            ordered.push(remaining.remove(next));
+                .expect("a group of definitions calling one another calls only those taken");
+            remaining.retain(|def| !group.iter().any(|member| std::ptr::eq(*member, *def)));
+            ordered.push(group);
         }
         ordered
+    }
+
+    /// The definitions of `defs` that `def` calls and that call `def`, directly or through
+    /// others of `defs`, `def` among them, in the order of `defs`.
+    fn calling_one_another<'a>(
+        defs: &[&'a UserDefinedPredDef],
+        def: &UserDefinedPredDef,
+    ) -> Vec<&'a UserDefinedPredDef> {
+        let reaches = |from: &UserDefinedPredDef, to: &UserDefinedPred| {
+            let mut pending = vec![&from.symbol];
+            let mut seen = HashSet::new();
+            while let Some(symbol) = pending.pop() {
+                if !seen.insert(symbol) {
+                    continue;
+                }
+                for d in defs.iter().filter(|d| &d.symbol == symbol) {
+                    for callee in d.callees() {
+                        if callee == to {
+                            return true;
+                        }
+                        pending.push(callee);
+                    }
+                }
+            }
+            false
+        };
+        defs.iter()
+            .copied()
+            .filter(|d| {
+                std::ptr::eq(*d, def) || (reaches(def, &d.symbol) && reaches(d, &def.symbol))
+            })
+            .collect()
     }
 
     pub fn new_pred_var(&mut self, sig: PredSig, debug_info: DebugInfo) -> PredVarId {
@@ -4940,6 +4990,67 @@ mod tests {
         assert!(declared < used);
         assert!(!smt.contains(" Tuple<a0-Int>"));
         assert!(!smt.contains("(Tuple<a0-Int>"));
+    }
+
+    /// A system defining, in this order, `f` calling `g`, `g` calling `f`, `h` calling nothing and
+    /// `k` calling `f`, each over one integer.
+    fn mutually_recursive_system() -> System {
+        let mut system = System::default();
+        let calls = |callee: &str| {
+            Formula::Atom(Atom::new(
+                UserDefinedPred::new(callee.into()).into(),
+                vec![Term::var(TermVarIdx::from(0usize))],
+            ))
+        };
+        for (name, body) in [
+            ("f", calls("g")),
+            ("g", calls("f")),
+            ("h", Formula::top()),
+            ("k", calls("f")),
+        ] {
+            system.push_pred_define_formula(
+                UserDefinedPred::new(name.into()),
+                IndexVec::from_raw(vec![Sort::int()]),
+                body,
+            );
+        }
+        system
+    }
+
+    #[test]
+    fn groups_definitions_calling_one_another_after_what_they_call() {
+        let system = mutually_recursive_system();
+        let groups: Vec<Vec<String>> = system
+            .user_defined_preds_in_dependency_order()
+            .into_iter()
+            .map(|group| group.iter().map(|def| def.symbol.to_string()).collect())
+            .collect();
+        assert_eq!(groups, vec![vec!["h"], vec!["f", "g"], vec!["k"]]);
+    }
+
+    #[test]
+    fn a_definition_calls_one_another_only_with_what_calls_it_back() {
+        let system = mutually_recursive_system();
+        let defs: Vec<_> = system.user_defined_pred_defs.iter().collect();
+        let names = |group: Vec<&UserDefinedPredDef>| -> Vec<String> {
+            group.iter().map(|def| def.symbol.to_string()).collect()
+        };
+        assert_eq!(
+            names(System::calling_one_another(&defs, defs[0])),
+            ["f", "g"]
+        );
+        assert_eq!(names(System::calling_one_another(&defs, defs[3])), ["k"]);
+    }
+
+    #[test]
+    fn prints_definitions_calling_one_another_as_one_define_funs_rec() {
+        let smt = mutually_recursive_system().smtlib2(PCSAT).to_string();
+        let h = smt.find("(define-fun h ").expect("h defined alone");
+        let group = smt
+            .find("(define-funs-rec ((f ((v0 Int)) Bool) (g ((v0 Int)) Bool)) ((g v0) (f v0)))")
+            .expect("f and g defined together");
+        let k = smt.find("(define-fun k ").expect("k defined alone");
+        assert!(h < group && group < k);
     }
 
     #[test]

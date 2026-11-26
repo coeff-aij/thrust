@@ -805,12 +805,6 @@ pub struct UserDefinedPredDef<'ctx, 'a> {
 
 impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let params = List::closed(
-            self.inner
-                .sig
-                .iter()
-                .map(|(name, sort)| format!("({} {})", name, self.ctx.fmt_sort(sort))),
-        );
         if let chc::UserDefinedPredBody::Derived = &self.inner.body {
             // An unknown, declared before every forall predicate (see `System`'s output), so
             // that to a dependency-aware solver it depends on none.
@@ -822,20 +816,36 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
             );
             return write!(f, "(declare-fun {} {sorts} Bool)", self.inner.symbol);
         }
-        let ret_sort = match &self.inner.body {
-            chc::UserDefinedPredBody::Term(sort, _) => self.ctx.fmt_sort(sort).to_string(),
-            _ => "Bool".to_string(),
-        };
         let command = if self.inner.is_recursive() {
             "define-fun-rec"
         } else {
             "define-fun"
         };
-        write!(
-            f,
-            "({command} {name} {params} {ret_sort} ",
-            name = self.inner.symbol,
-        )?;
+        write!(f, "({command} ")?;
+        self.fmt_signature(f)?;
+        write!(f, " ")?;
+        self.fmt_body(f)?;
+        write!(f, ")")
+    }
+}
+
+impl<'ctx, 'a> UserDefinedPredDef<'ctx, 'a> {
+    /// The name, the parameters and the result sort.
+    fn fmt_signature(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let params = List::closed(
+            self.inner
+                .sig
+                .iter()
+                .map(|(name, sort)| format!("({} {})", name, self.ctx.fmt_sort(sort))),
+        );
+        let ret_sort = match &self.inner.body {
+            chc::UserDefinedPredBody::Term(sort, _) => self.ctx.fmt_sort(sort).to_string(),
+            _ => "Bool".to_string(),
+        };
+        write!(f, "{} {params} {ret_sort}", self.inner.symbol)
+    }
+
+    fn fmt_body(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let var_sorts: IndexVec<chc::TermVarIdx, chc::Sort> = self
             .inner
             .sig
@@ -843,9 +853,9 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
             .map(|(_, sort)| sort.clone())
             .collect();
         match &self.inner.body {
-            chc::UserDefinedPredBody::Raw(body) => write!(f, "{}", self.raw_body(body))?,
+            chc::UserDefinedPredBody::Raw(body) => write!(f, "{}", self.raw_body(body)),
             chc::UserDefinedPredBody::Formula(formula) => {
-                write!(f, "{}", Formula::new(self.ctx, &var_sorts, formula))?;
+                write!(f, "{}", Formula::new(self.ctx, &var_sorts, formula))
             }
             chc::UserDefinedPredBody::Term(_, term) => {
                 let term = Term::new(self.ctx, &var_sorts, term);
@@ -854,13 +864,43 @@ impl<'ctx, 'a> std::fmt::Display for UserDefinedPredDef<'ctx, 'a> {
                         f,
                         "(! {term} :decreases {})",
                         Term::new(self.ctx, &var_sorts, decreases)
-                    )?,
-                    None => write!(f, "{term}")?,
+                    ),
+                    None => write!(f, "{term}"),
                 }
             }
-            chc::UserDefinedPredBody::Derived => unreachable!("declared above"),
+            chc::UserDefinedPredBody::Derived => unreachable!("declared, not defined"),
         }
-        write!(f, ")")
+    }
+}
+
+/// Definitions that call one another, as one `define-funs-rec`: the signatures, then the bodies in
+/// the same order.
+struct MutuallyRecursiveDefs<'ctx, 'a> {
+    ctx: &'ctx FormatContext,
+    defs: &'a [&'a chc::UserDefinedPredDef],
+}
+
+impl<'ctx, 'a> std::fmt::Display for MutuallyRecursiveDefs<'ctx, 'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let defs: Vec<_> = self
+            .defs
+            .iter()
+            .map(|def| UserDefinedPredDef::new(self.ctx, def))
+            .collect();
+        write!(f, "(define-funs-rec (")?;
+        for (i, def) in defs.iter().enumerate() {
+            write!(f, "{}(", if i == 0 { "" } else { " " })?;
+            def.fmt_signature(f)?;
+            write!(f, ")")?;
+        }
+        write!(f, ") (")?;
+        for (i, def) in defs.iter().enumerate() {
+            if i > 0 {
+                write!(f, " ")?;
+            }
+            def.fmt_body(f)?;
+        }
+        write!(f, "))")
     }
 }
 
@@ -1199,16 +1239,23 @@ impl<'a> std::fmt::Display for System<'a> {
             self.fmt_pred_var_decl(f, p, &dependencies, &opaque, comments)?;
         }
 
-        for user_defined_pred_def in self.inner.user_defined_preds_in_dependency_order() {
-            if user_defined_pred_def.is_derived() || opaque.contains(&&user_defined_pred_def.symbol)
-            {
-                continue;
+        for group in self.inner.user_defined_preds_in_dependency_order() {
+            let group: Vec<_> = group
+                .into_iter()
+                .filter(|def| !def.is_derived() && !opaque.contains(&&def.symbol))
+                .collect();
+            match group.as_slice() {
+                [] => {}
+                [def] => writeln!(f, "{}\n", UserDefinedPredDef::new(&self.ctx, def))?,
+                defs => writeln!(
+                    f,
+                    "{}\n",
+                    MutuallyRecursiveDefs {
+                        ctx: &self.ctx,
+                        defs
+                    }
+                )?,
             }
-            writeln!(
-                f,
-                "{}\n",
-                UserDefinedPredDef::new(&self.ctx, user_defined_pred_def)
-            )?;
         }
 
         writeln!(f)?;

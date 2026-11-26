@@ -127,7 +127,9 @@ pub struct Capabilities {
     /// stated by one defined predicate per enum type (`payload_facts_<n>`, `domain_guard_<n>`),
     /// whose definitions take the selector form. With the default `z3` they stay in place, in the
     /// existential form for payloads: on the selector form of an assumed payload fact its Spacer
-    /// answers `unknown`.
+    /// answers `unknown`. With every solver, an enum met again inside its own payload in a guard or
+    /// a law's premise is the atom of its domain-guard predicate, which applies itself there
+    /// (`define-fun-rec`, `define-funs-rec`).
     pub type_facts_by_predicate: bool,
 }
 
