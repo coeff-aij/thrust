@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::FnParam;
 #[thrust_macros::context]
 trait A {
     #[thrust_macros::requires(Self::p(*self, x))]
@@ -21,7 +21,7 @@ fn target<T: A>(a: &mut T, x: i64) -> i64 {
     let mut i = 0;
     while i < 3 {
         thrust_macros::invariant!(
-            |b: &mut T, v: i64, a: thrust_models::FnParam<&mut T>|
+            |b: &mut T, v: i64, a: FnParam<&mut T>|
             T::p(*b, v) && !b == !a.at_entry()
         );
         v = b.f(v);

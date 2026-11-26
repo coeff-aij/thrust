@@ -4,7 +4,7 @@
 
 // As `dyn_trait_invariant_escape`, with a contract of the impl's own on `get`, which does not
 // ensure `C`'s invariant either (its borrow outlives the call), so packing `C` is rejected.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(true)]
@@ -18,7 +18,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

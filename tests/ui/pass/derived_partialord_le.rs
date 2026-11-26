@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-
+use thrust_models::Model;
 // `<=` compares through the derived `partial_cmp`, as `<` does.
 #[derive(PartialEq, PartialOrd)]
 struct P {
@@ -8,7 +8,7 @@ struct P {
     b: i64,
 }
 
-impl thrust_models::Model for P {
+impl Model for P {
     type Ty = P;
 }
 

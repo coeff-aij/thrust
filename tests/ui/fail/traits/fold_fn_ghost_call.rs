@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::FnParam;
 use thrust_models::forall;
 use thrust_models::model::{Int, Seq};
 use thrust_models::{Ghost, Model};
@@ -61,7 +61,7 @@ fn fold<I: Iterator<Item = i64> + Model, F: Fn(i64, i64) -> i64>(
     let mut cnt = 0;
     while let Some(x) = rr.iter.next() {
         thrust_macros::invariant!(
-            |rr: &mut Run<I>, r: thrust_models::FnParam<&mut Run<I>>, f: F, acc: i64, cnt: i32|
+            |rr: &mut Run<I>, r: FnParam<&mut Run<I>>, f: F, acc: i64, cnt: i32|
             I::invariant((*rr).0)
                 && !rr == !r.at_entry()
                 && 0 <= cnt
@@ -88,7 +88,7 @@ struct Range {
     end: i64,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 

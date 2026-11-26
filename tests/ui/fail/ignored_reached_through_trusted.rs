@@ -4,10 +4,10 @@
 // A trusted body may run an ignored function itself, but `t` runs the verified `g` at `S`, and `g`
 // relies on `S`'s `eq` meeting the trait's spec; the ignored `eq` returns `false`, so `g`'s
 // assertion fails.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -20,7 +20,7 @@ impl PartialEq for S {
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
-fn g<T: PartialEq + thrust_models::Model>(a: &T) {
+fn g<T: PartialEq + Model>(a: &T) {
     assert!(a == a);
 }
 

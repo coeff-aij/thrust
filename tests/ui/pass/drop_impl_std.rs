@@ -3,7 +3,7 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The twin of `fail/drop_impl_std.rs`: `Vec::clear` empties `v`.
-
+use thrust_models::Model;
 struct W<'a>(&'a mut i32);
 
 impl Drop for W<'_> {
@@ -12,7 +12,7 @@ impl Drop for W<'_> {
     }
 }
 
-impl thrust_models::Model for W<'_> {
+impl Model for W<'_> {
     type Ty = Self;
 }
 

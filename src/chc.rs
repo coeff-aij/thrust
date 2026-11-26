@@ -1316,7 +1316,28 @@ impl<V> Term<V> {
                     args: args.clone(),
                 });
             }
-            _ => {}
+            Term::Null
+            | Term::ForallDefault(_)
+            | Term::Var(_)
+            | Term::Bool(_)
+            | Term::Int(_)
+            | Term::String(_)
+            | Term::Box(_)
+            | Term::Mut(_, _)
+            | Term::BoxCurrent(_)
+            | Term::MutCurrent(_)
+            | Term::MutFinal(_)
+            | Term::App(_, _)
+            | Term::ArrayEmpty(_, _)
+            | Term::SeqEmpty(_)
+            | Term::Tuple(_)
+            | Term::TupleProj(_, _)
+            | Term::DatatypeCtor(_, _, _)
+            | Term::DatatypeDiscr(_, _)
+            | Term::DatatypeSelector(_, _)
+            | Term::ForallFn(_, _)
+            | Term::IntToBitVec { .. }
+            | Term::UserQuantifiedVar(_, _) => {}
         }
         for t in self.subterms() {
             t.collect_guarded_calls(guards, calls);

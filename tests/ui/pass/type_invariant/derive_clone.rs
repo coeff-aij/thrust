@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 // A derived `clone` keeps the invariant: its contract makes the result's model that of `*self`,
 // whose invariant it requires (unlike a derived `Default`, `fail/type_invariant/derive_default.rs`).
 #[derive(Clone)]
@@ -8,7 +8,7 @@ struct D {
     n: u32,
 }
 
-impl thrust_models::Model for D {
+impl Model for D {
     type Ty = Self;
 }
 

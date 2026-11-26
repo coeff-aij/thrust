@@ -4,14 +4,14 @@
 // A `_` inside a written type, behind `&mut` in a generic struct (`&mut Wrap<_>`), stands for the
 // closure type at that position of the local's type. The assumed `n > 0` gives the closure's
 // precondition at `n`, which `call` requires.
-
+use thrust_models::{Model, model::Closure};
 pub struct Wrap<F> {
     n: i64,
     f: F,
 }
 
-impl<F> thrust_models::Model for Wrap<F> {
-    type Ty = (<i64 as thrust_models::Model>::Ty, thrust_models::model::Closure<F>);
+impl<F> Model for Wrap<F> {
+    type Ty = (<i64 as Model>::Ty, Closure<F>);
 }
 
 #[thrust_macros::context]
