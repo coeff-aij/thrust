@@ -1,11 +1,11 @@
 //@error-in-other-file: would promise the invariant
 //@compile-flags: -Adead_code -C debug-assertions=off -Aunused
-
+use thrust_models::Model;
 // As `pass/type_invariant/trusted_bounded_impl.rs`, with the result of the trusted method of the
 // type parameter itself: its contract was written over `T`, so at `T = Even` it cannot promise
 // `Even`'s invariant.
 struct Even(i64);
-impl thrust_models::Model for Even {
+impl Model for Even {
     type Ty = Self;
 }
 #[thrust_macros::context]

@@ -4,7 +4,7 @@
 // Rejected, not Unsat. `bounded` is written, but `Small` defines it through the derived
 // `produces` in a premise; a trusted generic contract names only `I::bounded`, assumed inside the
 // verified generic `via`, which `main` calls at `Small`.
-
+use thrust_models::{forall, Model};
 #[thrust_macros::context]
 trait Iter {
     type Item;
@@ -12,7 +12,7 @@ trait Iter {
     #[thrust_macros::predicate(derived)]
     fn produces(self, item: Self::Item) -> bool;
 
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> Self::produces(*self, i)))]
     fn next(&mut self) -> Option<Self::Item>;
 
     #[thrust_macros::predicate]
@@ -24,7 +24,7 @@ struct Small {
     n: isize,
 }
 
-impl thrust_models::Model for Small {
+impl Model for Small {
     type Ty = Small;
 }
 

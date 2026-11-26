@@ -1,11 +1,11 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -Adead_code -Aunused
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // As `generic_impl.rs`, with the impl method's own written contract: the invariant is part of it.
 #[derive(Clone, Copy)]
 struct Even(i64);
-impl thrust_models::Model for Even { type Ty = Self; }
+impl Model for Even { type Ty = Self; }
 #[thrust_macros::context]
 impl Invariant for Even {
     #[thrust_macros::predicate]

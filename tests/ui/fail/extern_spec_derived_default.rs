@@ -3,14 +3,14 @@
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
 // The extern spec states a value the derived body does not build: `align` is `None`.
-
+use thrust_models::Model;
 #[derive(Clone, Copy, PartialEq, Default)]
 struct Repr {
     align: Option<u32>,
     pack: Option<u32>,
 }
 
-impl thrust_models::Model for Repr {
+impl Model for Repr {
     type Ty = Self;
 }
 

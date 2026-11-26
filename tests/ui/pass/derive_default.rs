@@ -4,7 +4,7 @@
 
 // A derived Default impl builds each field through Default::default, which
 // has a spec saying only that it does not panic.
-
+use thrust_models::Model;
 #[derive(Default, PartialEq)]
 struct Settings {
     level: u8,
@@ -12,7 +12,7 @@ struct Settings {
     name: Option<i64>,
 }
 
-impl thrust_models::Model for Settings {
+impl Model for Settings {
     type Ty = Settings;
 }
 

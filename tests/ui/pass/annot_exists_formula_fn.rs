@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::exists;
 #[thrust::trusted]
 #[thrust::callable]
 fn rand() -> i32 { unimplemented!() }
@@ -13,7 +13,7 @@ fn _thrust_requires_f() -> bool {
 
 #[thrust::formula_fn]
 fn _thrust_ensures_f(result: i32) -> bool {
-    thrust_models::exists(|x: i32| result == 2 * x)
+    exists(|x: i32| result == 2 * x)
 }
 
 #[allow(path_statements)]

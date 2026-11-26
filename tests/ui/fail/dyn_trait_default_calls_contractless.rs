@@ -5,7 +5,7 @@
 // A call of `h` through `dyn Tr` takes the contract of its default body, analyzed over `Self`
 // assuming that `g`, which has no contract on the trait, accepts any arguments. At `Self = dyn Tr`
 // that assumption would have to hold of every impl, which is not checked, so it is rejected.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Tr {
     fn g(&self) -> u32 {
@@ -20,7 +20,7 @@ trait Tr {
 
 struct C;
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = ();
 }
 

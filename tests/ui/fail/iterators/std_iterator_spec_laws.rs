@@ -13,7 +13,7 @@
 // `Chain`, which call the lemmas of their witnesses and their cases.
 // Fail twin: one more impl, whose `produces` bounds the end state even when nothing is produced
 // but whose `inv` does not imply that bound, so `produces_refl` does not hold.
-
+use thrust_models::{forall, Model, model::{Int, Seq}};
 include!("../../../../std.rs");
 
 #[derive(PartialEq)]
@@ -21,7 +21,7 @@ struct Countdown {
     n: i64,
 }
 
-impl thrust_models::Model for Countdown {
+impl Model for Countdown {
     type Ty = Countdown;
 }
 
@@ -47,7 +47,7 @@ impl IteratorSpec for Countdown {
         o.n <= self.n
             && 0 <= o.n
             && visited.len() == self.n - o.n
-            && thrust_models::forall(|i: thrust_models::model::Int|
+            && forall(|i: Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.n - i)
     }
 
@@ -60,9 +60,9 @@ impl IteratorSpec for Countdown {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }

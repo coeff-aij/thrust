@@ -140,6 +140,25 @@ pub fn invariant(input: TokenStream) -> TokenStream {
     invariant::expand(input, invariant::Marker::Full)
 }
 
+/// Starts the body of a `for` loop that is to get no structural invariant: the loop is checked
+/// against the invariants written and the facts Thrust infers, without the `inv(iter)` and
+/// `produces(iter_old, produced, iter)` of `IteratorSpec` that it adds to a `for` loop by default.
+/// [`mod@context`] reads it and removes it; anywhere else it is an error, as it has no effect.
+///
+/// ```ignore
+/// for x in iter {
+///     thrust_macros::no_structural_invariant!();
+///     ...
+/// }
+/// ```
+#[proc_macro]
+pub fn no_structural_invariant(_input: TokenStream) -> TokenStream {
+    quote::quote!(compile_error!(
+        "`no_structural_invariant!()` must be the first statement of the body of a `for` loop in an item under `#[thrust_macros::context]`"
+    ))
+    .into()
+}
+
 /// Declares a partial loop invariant: the same closure as [`invariant`], whose
 /// predicate is conjoined with the invariant Thrust infers at the loop head
 /// instead of replacing it. The loop head is partial when any of its invariants is.
@@ -184,55 +203,26 @@ pub fn assume(input: TokenStream) -> TokenStream {
     invariant::expand(input, invariant::Marker::Assume)
 }
 
-/// A contract on a braced block, as ACSL's statement contracts and Why3's abstract blocks: the
-/// block is checked once from `requires` against `ensures`, and the code after it reads only the
-/// contract, as it reads a call to a function with a written contract:
+/// A contract on a block, written as the function the block would be extracted into. The body
+/// runs where it is written:
 ///
 /// ```ignore
 /// let n = thrust_macros::block_contract!(
-///     requires(|i: usize, v: &Vec<i64>| i < v.len()),
-///     ensures(|v: &Vec<i64>, result: i64| result == v[0]),
-///     { v[i] = 0; v[0] }
+///     |v: &mut Vec<i64>, i: usize| -> i64
+///     requires(i < (*v).len()),
+///     ensures(result == (*v)[i]),
+///     { v[i] }
 /// );
 /// ```
 ///
-/// Each clause takes a closure as for [`proof_assert`]; `ensures` names the block's value
-/// `result`. It runs nothing but the block.
+/// The block is verified as if it were extracted into a function with the written signature and
+/// contract, and its parameters have exactly the types of the outer variables of their names. A
+/// parameter written `mut` may be changed by the body, and `ensures` names its final value as `x`
+/// and its entry value as `old!(x)`; any other parameter keeps its value. `return`, `?` and a
+/// `break` that leave the block are errors. See [`mod@block_contract`].
 #[proc_macro]
 pub fn block_contract(input: TokenStream) -> TokenStream {
-    block_contract::expand(input, false)
-}
-
-/// Context-carrying counterpart of `block_contract!` (see [`_invariant_with_context`]).
-#[proc_macro]
-pub fn _block_contract_with_context(input: TokenStream) -> TokenStream {
-    block_contract::expand(input, true)
-}
-
-/// The opening marker form `block_contract!` expands into; not written by hand.
-#[doc(hidden)]
-#[proc_macro]
-pub fn block_requires(input: TokenStream) -> TokenStream {
-    invariant::expand(input, invariant::Marker::BlockRequires)
-}
-
-/// The closing marker form `block_contract!` expands into; not written by hand.
-#[doc(hidden)]
-#[proc_macro]
-pub fn block_ensures(input: TokenStream) -> TokenStream {
-    invariant::expand(input, invariant::Marker::BlockEnsures)
-}
-
-/// Context-carrying counterpart of `block_requires!` (see [`_invariant_with_context`]).
-#[proc_macro]
-pub fn _block_requires_with_context(input: TokenStream) -> TokenStream {
-    invariant::expand_with_context(input, invariant::Marker::BlockRequires)
-}
-
-/// Context-carrying counterpart of `block_ensures!` (see [`_invariant_with_context`]).
-#[proc_macro]
-pub fn _block_ensures_with_context(input: TokenStream) -> TokenStream {
-    invariant::expand_with_context(input, invariant::Marker::BlockEnsures)
+    block_contract::expand(input)
 }
 
 /// Context-carrying counterpart of `proof_assert!` (see [`_invariant_with_context`]).

@@ -27,7 +27,9 @@ use crate::rty;
 pub(crate) mod annot;
 mod annot_fn;
 mod basic_block;
+mod block_callees;
 mod block_contract;
+mod block_region;
 mod closure_hist_inv;
 mod crate_;
 mod derive;
@@ -35,6 +37,7 @@ pub(crate) mod derived_pred;
 mod did_cache;
 mod extern_spec;
 mod fn_mut_reuse;
+mod ghost_const;
 mod invariant_args;
 mod lemma;
 mod local_def;
@@ -64,13 +67,13 @@ fn scalar_const_term<T>(
             rty::Type::int_of_width(v.size().bits() as u32),
             chc::Term::int(v.to_int(v.size())),
         )),
-        (
-            mir_ty::TyKind::Uint(_) | mir_ty::TyKind::Char,
-            mir::ConstValue::Scalar(Scalar::Int(v)),
-        ) => Some((
+        (mir_ty::TyKind::Uint(_), mir::ConstValue::Scalar(Scalar::Int(v))) => Some((
             rty::Type::uint_of_width(v.size().bits() as u32),
             chc::Term::int(v.to_uint(v.size())),
         )),
+        (mir_ty::TyKind::Char, mir::ConstValue::Scalar(Scalar::Int(v))) => {
+            Some((rty::Type::char(), chc::Term::int(v.to_uint(v.size()))))
+        }
         (mir_ty::TyKind::Bool, mir::ConstValue::Scalar(Scalar::Int(v))) => {
             Some((rty::Type::bool(), chc::Term::bool(v.try_to_bool().unwrap())))
         }
@@ -114,6 +117,7 @@ pub fn mir_borrowck_skip_formula_fn(
         return Ok(tcx.arena.alloc(dummy_result));
     }
 
+    analyze::block_contract::check_regions_use_only_parameters(tcx, local_def_id);
     (rustc_interface::DEFAULT_QUERY_PROVIDERS
         .queries
         .mir_borrowck)(tcx, local_def_id)
@@ -410,6 +414,9 @@ struct GenericDefTy<'tcx> {
 struct InstantiationKey<'tcx> {
     generic_args: mir_ty::GenericArgsRef<'tcx>,
     caller_def_id: DefId,
+    /// For a formula function translated as a contract, the function whose ghost const arguments
+    /// it binds ([`ghost_const`]); `None` otherwise.
+    contract_of: Option<DefId>,
 }
 
 /// Identifies one instance of a predicate with a Rust body: the predicate, its generic
@@ -558,7 +565,8 @@ struct BasicBlockDef {
 /// The definitions of the enums the crate's types name: those whose datatypes the query declares
 /// ([`Analyzer::get_or_register_enum_def`]) and, under `THRUST_INT_RANGE`, every enum a type built
 /// so far names, whose definition the facts of its payloads read
-/// ([`refine::TypeBuilder::register_enum_def`]).
+/// ([`refine::TypeBuilder::register_enum_def`]). Without the option the facts of a payload, those of
+/// its `char`s, are read only of the enums registered ([`rty::EnumDefProvider::has_enum_def`]).
 #[derive(Debug, Clone, Default)]
 pub struct EnumDefs {
     defs: HashMap<DefId, rty::EnumDatatypeDef>,
@@ -597,6 +605,10 @@ impl EnumDefs {
 impl refine::EnumDefProvider for Rc<RefCell<EnumDefs>> {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> rty::EnumDatatypeDef {
         self.borrow().find_by_name(name).unwrap().clone()
+    }
+
+    fn has_enum_def(&self, name: &chc::DatatypeSymbol) -> bool {
+        self.borrow().find_by_name(name).is_some()
     }
 }
 
@@ -638,6 +650,8 @@ pub struct Analyzer<'tcx> {
 
     /// Collection of functions with `#[thrust::formula_fn]` attribute.
     formula_fns: HashMap<LocalDefId, DeferredFormulaFnDef<'tcx>>,
+    /// The variant of each lemma companion with one, collected once from the wrappers.
+    lemma_variants: HashMap<DefId, (DefId, mir_ty::GenericArgsRef<'tcx>)>,
     /// Instances of predicates with a Rust body; see [`Analyzer::predicate_with_args`].
     predicate_instances: Rc<RefCell<HashMap<PredicateInstanceKey<'tcx>, chc::UserDefinedPred>>>,
     /// The predicate instances whose bodies are being translated, innermost last.
@@ -737,17 +751,9 @@ pub struct Analyzer<'tcx> {
     assumptions: Vec<AssumeSite>,
     /// The fn-like defs whose bodies are trusted rather than analyzed.
     trusted_bodies: HashSet<LocalDefId>,
-    /// What each analyzed body's calls into code Thrust does not analyze cover, by the body and
-    /// the function called with its generic arguments.
-    handovers: Vec<(
-        DefId,
-        DefId,
-        mir_ty::GenericArgsRef<'tcx>,
-        unanalyzed_entry::HandedOver<'tcx>,
-    )>,
-    /// How many values of a closure type each analyzed call into code Thrust does not analyze
-    /// states the obligation of.
-    handover_counts: Vec<unanalyzed_entry::HandoverCount<'tcx>>,
+    /// The functions whose `pre!` each analyzed body's calls into code Thrust does not analyze
+    /// state.
+    stated_function_pres: Vec<unanalyzed_entry::StatedFunctionPre<'tcx>>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
     /// The functions each body calls, for the report.
@@ -1044,6 +1050,7 @@ impl<'tcx> Analyzer<'tcx> {
             tcx,
             defs,
             formula_fns,
+            lemma_variants: Default::default(),
             predicate_instances: Default::default(),
             defining_predicates: Default::default(),
             opaque_predicates: Default::default(),
@@ -1084,8 +1091,7 @@ impl<'tcx> Analyzer<'tcx> {
             invariant_annotations: Default::default(),
             assumptions: Default::default(),
             trusted_bodies: Default::default(),
-            handovers: Default::default(),
-            handover_counts: Default::default(),
+            stated_function_pres: Default::default(),
             body_checks: Default::default(),
             called_fns: Default::default(),
         }
@@ -1885,6 +1891,7 @@ impl<'tcx> Analyzer<'tcx> {
         let key = InstantiationKey {
             generic_args,
             caller_def_id,
+            contract_of: None,
         };
         let mut def_ty = match self.defs.get(&def_id)? {
             DefTy::Concrete(rty, _) => rty.clone(),
@@ -1894,6 +1901,7 @@ impl<'tcx> Analyzer<'tcx> {
                 let key = InstantiationKey {
                     generic_args: spec_args,
                     caller_def_id,
+                    contract_of: None,
                 };
                 spec.cache.borrow().get(&key).cloned()
             })?,
@@ -2315,20 +2323,52 @@ impl<'tcx> Analyzer<'tcx> {
         generic_args: mir_ty::GenericArgsRef<'tcx>,
         owner_fn_id: DefId,
     ) -> Option<annot_fn::FormulaFn<'tcx>> {
+        self.formula_fn_translated(local_def_id, generic_args, owner_fn_id, None)
+    }
+
+    /// [`Self::formula_fn_with_args`] of the `requires` or `ensures` carried by `contract_of`,
+    /// which may name the const parameters of the function it is the contract of
+    /// ([`ghost_const`]).
+    fn contract_formula_fn_with_args(
+        &self,
+        local_def_id: LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
+        contract_of: LocalDefId,
+    ) -> Option<annot_fn::FormulaFn<'tcx>> {
+        self.formula_fn_translated(
+            local_def_id,
+            generic_args,
+            owner_fn_id,
+            Some(contract_of.to_def_id()),
+        )
+    }
+
+    fn formula_fn_translated(
+        &self,
+        local_def_id: LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        owner_fn_id: DefId,
+        contract_of: Option<DefId>,
+    ) -> Option<annot_fn::FormulaFn<'tcx>> {
         let deferred_formula_fn = self.formula_fns.get(&local_def_id)?;
 
         let key = InstantiationKey {
             generic_args,
             caller_def_id: owner_fn_id,
+            contract_of,
         };
         let deferred_formula_fn_cache = Rc::clone(&deferred_formula_fn.cache);
         if let Some(formula_fn) = deferred_formula_fn_cache.borrow().get(&key) {
             return Some(formula_fn.clone());
         }
 
-        let translator =
+        let mut translator =
             annot_fn::AnnotFnTranslator::new(self, local_def_id, generic_args, owner_fn_id)
                 .with_def_id_cache(self.def_ids());
+        if let Some(contract_of) = contract_of {
+            translator = translator.for_contract(contract_of);
+        }
         let formula_fn = translator.into_formula_fn();
         deferred_formula_fn_cache
             .borrow_mut()
@@ -2447,6 +2487,7 @@ impl<'tcx> Analyzer<'tcx> {
         let key = InstantiationKey {
             generic_args,
             caller_def_id,
+            contract_of: None,
         };
         let body_unanalyzed = !deferred_ty_mode.is_some_and(|mode| mode.should_analyze())
             || (is_generic && !self.per_instance_too.contains(&def_id));
@@ -3472,9 +3513,40 @@ impl<'tcx> Analyzer<'tcx> {
             .map(|(def_id, _)| def_id)
     }
 
+    /// The logic function that is the variant of the lemma companion `companion`, and the generic
+    /// arguments it is written with, in the companion's own parameter space (the variant's
+    /// wrapper, `#[thrust::lemma_variant_wrapper]`, has the lemma's generics).
+    pub fn lemma_variant_of(
+        &self,
+        companion: DefId,
+    ) -> Option<(DefId, mir_ty::GenericArgsRef<'tcx>)> {
+        self.lemma_variants.get(&companion).copied()
+    }
+
+    /// Records the variant of the lemma companion that the wrapper `local_def_id` names, if it is
+    /// a `#[thrust::lemma_variant_wrapper]`; see [`Analyzer::lemma_variant_of`].
+    pub fn collect_lemma_variant(&mut self, local_def_id: LocalDefId) {
+        let wrapper_path = analyze::annot::lemma_variant_wrapper_path();
+        if !analyze::annot::has_thrust_attr(self.tcx, local_def_id.to_def_id(), &wrapper_path) {
+            return;
+        }
+        let companion_path = analyze::annot::lemma_variant_companion_path();
+        let Some((companion, _)) =
+            self.extract_path_and_args_with_attr(local_def_id, &companion_path)
+        else {
+            return;
+        };
+        let obligation_path = analyze::annot::lemma_variant_obligation_path();
+        let Some(variant) = self.extract_path_and_args_with_attr(local_def_id, &obligation_path)
+        else {
+            return;
+        };
+        self.lemma_variants.entry(companion).or_insert(variant);
+    }
+
     /// The definition a statement of `local_def_id`'s body marked with `attr_path` names, and the
     /// generic arguments it is written with, as type checking resolved them.
-    fn extract_path_and_args_with_attr(
+    pub fn extract_path_and_args_with_attr(
         &self,
         local_def_id: LocalDefId,
         attr_path: &[Symbol],
@@ -3626,8 +3698,12 @@ impl<'tcx> Analyzer<'tcx> {
         } else {
             generic_args
         };
-        let Some(formula_fn) = self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
-        else {
+        let Some(formula_fn) = self.contract_formula_fn_with_args(
+            formula_def_id,
+            generic_args,
+            owner_fn_id,
+            local_def_id,
+        ) else {
             panic!(
                 "require annotation {:?} is not a formula function",
                 formula_def_id
@@ -3658,8 +3734,12 @@ impl<'tcx> Analyzer<'tcx> {
         } else {
             generic_args
         };
-        let Some(formula_fn) = self.formula_fn_with_args(formula_def_id, generic_args, owner_fn_id)
-        else {
+        let Some(formula_fn) = self.contract_formula_fn_with_args(
+            formula_def_id,
+            generic_args,
+            owner_fn_id,
+            local_def_id,
+        ) else {
             panic!(
                 "ensure annotation {:?} is not a formula function",
                 formula_def_id

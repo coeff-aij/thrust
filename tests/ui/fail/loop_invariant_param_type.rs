@@ -2,13 +2,13 @@
 
 // An invariant's parameter has the type of the variable it names. `B` has `A`'s field types in
 // the other order, so `p.x` of a `B` would read `A`'s `y`, and `p.x >= 0` would hold.
-
+use thrust_models::Model;
 struct A {
     x: i64,
     y: i64,
 }
 
-impl thrust_models::Model for A {
+impl Model for A {
     type Ty = A;
 }
 
@@ -17,7 +17,7 @@ struct B {
     x: i64,
 }
 
-impl thrust_models::Model for B {
+impl Model for B {
     type Ty = B;
 }
 
