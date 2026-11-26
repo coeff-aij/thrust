@@ -563,9 +563,8 @@ impl PlaceType {
         // The field is `sel_C(inner)` under `is_C(inner)`, the variant the place is read at.
         let mut rty = variant.field_tys[field_idx.index()].clone().vacuous();
         rty.instantiate_ty_params(inner_ty.args.clone());
-        if let Some(facts) = rty::int_range_type_facts(&rty.ty, &enum_defs) {
-            rty.refinement.push_conj(facts);
-        }
+        rty.refinement
+            .push_conj(rty::int_range_type_facts(&rty.ty, &enum_defs));
         let sort = chc::DatatypeSort::new(def.name.clone(), inner_ty.arg_sorts());
         let rty = rty.boxed();
         let field = chc::Term::datatype_selector(
@@ -706,7 +705,7 @@ where
             if let Some(chc_var) = builder.find_mapped_var(var) {
                 origin.add_described_var_mapping(var, chc_var, self.described(var, &paths));
             }
-            let formula = rty.formula_with(Some(&self.enum_defs));
+            let formula = rty.binding_facts(&self.enum_defs);
             let mut instantiator = formula
                 .clone()
                 .map_free_var(|v| builder.mapped_var(v))

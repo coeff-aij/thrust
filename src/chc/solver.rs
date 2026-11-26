@@ -123,6 +123,12 @@ pub struct Capabilities {
     /// means "depends on every forall pred declared before it". The default `z3` rejects the
     /// command, and there a plain `declare-fun` is already exact, since z3 has no forall preds.
     pub dependency_aware_declarations: bool,
+    /// The facts of a binding's enum payloads and a quantified variable's guard of an enum are
+    /// stated by one defined predicate per enum type (`payload_facts_<n>`, `domain_guard_<n>`),
+    /// whose definitions take the selector form. With the default `z3` they stay in place, in the
+    /// existential form for payloads: on the selector form of an assumed payload fact its Spacer
+    /// answers `unknown`.
+    pub type_facts_by_predicate: bool,
 }
 
 /// A configuration for running a command-line CHC solver.
@@ -312,6 +318,7 @@ impl Config {
     pub fn capabilities(&self) -> Capabilities {
         Capabilities {
             dependency_aware_declarations: !self.solver.is_z3(),
+            type_facts_by_predicate: !self.solver.is_z3(),
         }
     }
 

@@ -4686,6 +4686,7 @@ mod tests {
 
     const PCSAT: Capabilities = Capabilities {
         dependency_aware_declarations: true,
+        type_facts_by_predicate: true,
     };
 
     fn test_origin(var: TermVarIdx, sort: &Sort) -> debug::origin::ClauseOrigin {

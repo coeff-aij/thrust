@@ -341,12 +341,17 @@ where
                 facts.push_conj(atom.into());
             }
         }
+        // The elements of a sequence have the facts of their type: a sequence of another element
+        // type entering it is checked against them.
         (Type::Seq { elem: got, .. }, Type::Seq { elem: expected, .. })
-            if !fits(&got.ty, &expected.ty) =>
+            if !fits(&got.ty, &expected.ty)
+                && got.ty.clone().strip_refinement() != expected.ty.clone().strip_refinement() =>
         {
-            if let Some(range) = super::seq_elem_range(&expected.ty, value()) {
-                facts.push_conj(range.into());
-            }
+            let expected = Type::Seq {
+                elem: expected.clone(),
+                fixed_len: None,
+            };
+            facts.push_conj(super::checked_type_facts(&expected, enum_defs));
         }
         (Type::Tuple(got), Type::Tuple(expected)) if got.elems.len() == expected.elems.len() => {
             for (index, (got, expected)) in got.elems.iter().zip(&expected.elems).enumerate() {
@@ -362,11 +367,10 @@ where
                     .subst_value_var(|| expected.kind.deref_term(value())),
             );
         }
-        // An enum's payloads have facts (`RefinedType::formula_with`): those of its `char`s, and
-        // under `THRUST_INT_RANGE` those of its integers. A value entering the type at other
-        // arguments (a type parameter, an alias, another integer type) is checked against them
-        // when the type has any; without the enums' definitions that cannot be told, which no
-        // analysis scope lacks.
+        // An enum's payloads have the facts of their integers and `char`s
+        // (`RefinedType::formula_with`). A value entering the type at other arguments (a type
+        // parameter, an alias, another integer type) is checked against them when the type has
+        // any; without the enums' definitions that cannot be told, which no analysis scope lacks.
         (Type::Enum(got), Type::Enum(expected))
             if got.clone().strip_refinement() != expected.clone().strip_refinement() =>
         {
@@ -378,7 +382,7 @@ where
                     expected.display()
                 );
             };
-            if super::has_payload_facts(&expected, defs) {
+            if super::has_range_facts(&expected, defs, &mut Vec::new()) {
                 facts.push_conj(
                     super::type_fact_checks(&expected, defs)
                         .unwrap_or_else(|ty| {

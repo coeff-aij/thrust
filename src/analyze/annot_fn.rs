@@ -392,6 +392,97 @@ type QuantifiedBody = (
     chc::Formula<rty::FunctionParamIdx>,
 );
 
+/// How a formula reads a quantified variable: only through the payload fields it selects (by
+/// constructor and index), its discriminant and its testers, or also as a whole value (an
+/// argument, a side of `==`).
+enum FieldReads {
+    Fields(std::collections::HashSet<(chc::DatatypeSymbol, usize)>),
+    Whole,
+}
+
+impl FieldReads {
+    fn of<V>(formula: &chc::Formula<V>, var: chc::UserQuantifiedVarId) -> Self {
+        let mut fields = std::collections::HashSet::new();
+        if reads_in_formula(formula, var, &mut fields) {
+            FieldReads::Fields(fields)
+        } else {
+            FieldReads::Whole
+        }
+    }
+}
+
+/// Adds to `fields` the payload fields of `var` that `formula` selects; `false` when it reads
+/// `var` otherwise than through a selector, its discriminant or a tester.
+fn reads_in_formula<V>(
+    formula: &chc::Formula<V>,
+    var: chc::UserQuantifiedVarId,
+    fields: &mut std::collections::HashSet<(chc::DatatypeSymbol, usize)>,
+) -> bool {
+    match formula {
+        chc::Formula::Atom(atom) => {
+            let guard_ok = atom
+                .guard
+                .as_deref()
+                .is_none_or(|guard| reads_in_formula(guard, var, fields));
+            let tested = matches!(atom.pred, chc::Pred::Tester(_))
+                && matches!(atom.args.as_slice(), [chc::Term::UserQuantifiedVar(_, v)] if *v == var);
+            guard_ok && (tested || atom.args.iter().all(|t| reads_in_term(t, var, fields)))
+        }
+        chc::Formula::Not(f) => reads_in_formula(f, var, fields),
+        chc::Formula::And(fs) | chc::Formula::Or(fs) => {
+            fs.iter().all(|f| reads_in_formula(f, var, fields))
+        }
+        chc::Formula::Implies(a, b) => {
+            reads_in_formula(a, var, fields) && reads_in_formula(b, var, fields)
+        }
+        chc::Formula::Exists(_, f) | chc::Formula::Forall(_, f) => reads_in_formula(f, var, fields),
+    }
+}
+
+fn reads_in_term<V>(
+    term: &chc::Term<V>,
+    var: chc::UserQuantifiedVarId,
+    fields: &mut std::collections::HashSet<(chc::DatatypeSymbol, usize)>,
+) -> bool {
+    match term {
+        chc::Term::DatatypeSelector(selector, inner) if matches!(&**inner, chc::Term::UserQuantifiedVar(_, v) if *v == var) =>
+        {
+            fields.insert((selector.ctor.clone(), selector.index));
+            true
+        }
+        chc::Term::DatatypeDiscr(_, inner) if matches!(&**inner, chc::Term::UserQuantifiedVar(_, v) if *v == var) => {
+            true
+        }
+        chc::Term::UserQuantifiedVar(_, v) => *v != var,
+        chc::Term::Null
+        | chc::Term::ForallDefault(_)
+        | chc::Term::Var(_)
+        | chc::Term::Bool(_)
+        | chc::Term::Int(_)
+        | chc::Term::String(_)
+        | chc::Term::Box(_)
+        | chc::Term::Mut(..)
+        | chc::Term::BoxCurrent(_)
+        | chc::Term::MutCurrent(_)
+        | chc::Term::MutFinal(_)
+        | chc::Term::App(..)
+        | chc::Term::ArrayEmpty(..)
+        | chc::Term::SeqEmpty(_)
+        | chc::Term::Tuple(_)
+        | chc::Term::TupleProj(..)
+        | chc::Term::DatatypeCtor(..)
+        | chc::Term::DatatypeDiscr(..)
+        | chc::Term::DatatypeSelector(..)
+        | chc::Term::UserDefinedFn(..)
+        | chc::Term::ForallFn(..)
+        | chc::Term::IntToBitVec { .. }
+        | chc::Term::ArrayLambda(..) => term
+            .subterms()
+            .into_iter()
+            .all(|t| reads_in_term(t, var, fields)),
+    }
+}
+
 #[derive(Clone)]
 pub struct AnnotFnTranslator<'a, 'tcx> {
     tcx: TyCtxt<'tcx>,
@@ -2407,7 +2498,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     fn to_formula_with_quantified_vars(&self, closure: &rustc_hir::Body<'tcx>) -> QuantifiedBody {
         let mut inner_translator = self.clone();
         let mut vars = Vec::new();
-        let mut range: Option<chc::Formula<rty::FunctionParamIdx>> = None;
+        let mut domains = Vec::new();
         for param in closure.params {
             let rustc_hir::PatKind::Binding(_, hir_id, ident, None) = param.pat.kind else {
                 panic!(
@@ -2430,33 +2521,73 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
-            let fact = if ranges_over_nothing {
-                Some(chc::Formula::bottom())
-            } else {
-                rty::binder_domain(&param_rty.ty, term.clone(), &self.analyzer.enum_defs)
-                    .unwrap_or_else(|enum_ty| {
-                        self.tcx.dcx().span_fatal(
-                            param.pat.span,
-                            format!(
-                                "thrust: the `char`s of a variable of type `{param_ty}` cannot \
-                                 all be given their code points: `{}` recurs in its own \
-                                 payload or is nested too deep",
-                                enum_ty.display()
-                            ),
-                        )
-                    })
-            };
-            if let Some(fact) = fact {
-                range = Some(match range {
-                    Some(range) => range.and(fact),
-                    None => fact,
-                });
-            }
+            domains.push((var, ranges_over_nothing, param_rty.ty, term.clone(), param));
             inner_translator.env.insert(hir_id, term);
             vars.push((var, sort));
         }
         let body_formula = inner_translator.to_formula(closure.value);
+        let range = domains
+            .into_iter()
+            .filter_map(|(var, ranges_over_nothing, ty, term, param)| {
+                if ranges_over_nothing {
+                    return Some(chc::Formula::bottom());
+                }
+                self.quantified_var_domain(&ty, term, &FieldReads::of(&body_formula, var))
+                    .unwrap_or_else(|enum_ty| {
+                        self.tcx.dcx().span_fatal(
+                            param.pat.span,
+                            format!(
+                                "thrust: the `char`s of a variable of type `{}` cannot \
+                                 all be given their code points: `{}` recurs in its own \
+                                 payload or is nested too deep",
+                                self.pat_ty(param.pat),
+                                enum_ty.display()
+                            ),
+                        )
+                    })
+            })
+            .reduce(chc::Formula::and);
         (vars, range, body_formula)
+    }
+
+    /// The domain a quantified variable `var` of type `ty` ranges over: the facts of its type
+    /// ([`rty::binder_domain`]). A variable of an enum type that the body `reads` only through some
+    /// payload fields gets the facts of those fields only, which gives the same formula. `Err` names
+    /// an enum holding a `char` that the domain cannot follow.
+    fn quantified_var_domain(
+        &self,
+        ty: &rty::Type<rty::Closed>,
+        var: chc::Term<rty::FunctionParamIdx>,
+        reads: &FieldReads,
+    ) -> Result<Option<chc::Formula<rty::FunctionParamIdx>>, rty::Type<rty::Closed>> {
+        let defs = &self.analyzer.enum_defs;
+        match (ty, reads) {
+            (rty::Type::Enum(_), FieldReads::Fields(fields)) => rty::binder_domain(
+                ty,
+                var,
+                defs,
+                Some(&|ctor, index| fields.contains(&(ctor.clone(), index))),
+            ),
+            (rty::Type::Enum(_), FieldReads::Whole)
+            | (
+                rty::Type::Int(_)
+                | rty::Type::UInt(_)
+                | rty::Type::BitVec(_)
+                | rty::Type::Bool
+                | rty::Type::String
+                | rty::Type::Opaque
+                | rty::Type::Never
+                | rty::Type::Param(_)
+                | rty::Type::Alias(_)
+                | rty::Type::Function(_)
+                | rty::Type::Array(_)
+                | rty::Type::Tuple(_)
+                | rty::Type::Pointer(_)
+                | rty::Type::Seq { .. }
+                | rty::Type::Char,
+                FieldReads::Fields(_) | FieldReads::Whole,
+            ) => rty::binder_domain(ty, var, defs, None),
+        }
     }
 
     /// The body of a one-parameter closure as a term, with the parameter bound to a fresh
