@@ -2805,9 +2805,8 @@ pub fn layout<
     // `hist_inv` bounds `size` and `align`: nothing after the `collect` needs a bound, as
     // `Size::align_to` requires nothing (its body checked by the `values.rs` root) and `max`
     // neither.
-    // Fallback: `Map::new`'s precondition (the map's `inv`) assumed, as the solver does not
-    // answer it; drop the `assume!` once it does. `collect`'s precondition, the same `inv`, is
-    // `Map::new`'s `ensures`.
+    // `Map::new`'s precondition (the map's `inv`) is proved after the closure; `collect`'s
+    // precondition, the same `inv`, is `Map::new`'s `ensures`.
     let variant_layout_of = thrust_macros::closure!(
         captures(
             calc: &mut &LayoutCalculator<C>,
@@ -2859,18 +2858,16 @@ pub fn layout<
             Ok(VariantLayout::from_layout(variant))
         },
         );
-    thrust_macros::assume!(<P: FnMut((VariantIdx, &IndexVec<FieldIdx, LocalIdx>)) -> Result<VariantLayout<FieldIdx>, crate::rustc_abi::layout::LayoutCalculatorError<F>>>
+    // `preservation_inv` from the closure's `requires` at the items produced: its captures do not
+    // change.
+    thrust_macros::proof!(Map::preservation_inv_of_stable_closure(&variant_iter, &variant_layout_of));
+    thrust_macros::proof_assert!(<P: FnMut((VariantIdx, &IndexVec<FieldIdx, LocalIdx>)) -> Result<VariantLayout<FieldIdx>, crate::rustc_abi::layout::LayoutCalculatorError<F>>>
         |variant_iter: IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>>, variant_layout_of: P|
         <IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>> as crate::IteratorSpec>::inv(variant_iter)
             && Map::<IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>>, P>::reinitialize()
             && Map::<IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>>, P>::preservation_inv(variant_iter, variant_layout_of)
             && Map::<IterEnumerated<'_, VariantIdx, IndexVec<FieldIdx, LocalIdx>>, P>::next_precondition(variant_iter, variant_layout_of));
     let variants = collect_index_vec_result::<VariantIdx, _, _, _>(Map::new(variant_iter, variant_layout_of))?;
-    // Reachability twin of the fallback's assumptions in this function (fail root
-    // layout_reach_fallback.rs).
-    #[cfg(thrust_layout_reach_fallback)]
-    thrust_macros::proof_assert!(|| false);
-
     size = size.align_to(align.abi);
 
     // Rewrite (rewrites.md R8): `iter_all(it, f)` for `it.all(f)`.
