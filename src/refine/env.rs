@@ -603,6 +603,27 @@ impl PlaceType {
         builder.build(ty, term)
     }
 
+    /// Whether the value is of the variant `variant_idx` of its enum, as a Boolean: its
+    /// discriminant, which the testers define, is the variant's; `false` for a variant the
+    /// datatype has no constructor for.
+    pub fn variant_test<T>(self, variant_idx: VariantIdx, enum_defs: T) -> PlaceType
+    where
+        T: EnumDefProvider,
+    {
+        let mut builder = PlaceTypeBuilder::default();
+        let (inner_ty, inner_term) = builder.subsume(self);
+        let inner_ty = inner_ty.into_enum().unwrap();
+        let def = enum_defs.enum_def(&inner_ty.symbol);
+        let variant = &def.variants[variant_idx];
+        let is_variant = if variant.uninhabited {
+            chc::Term::bool(false)
+        } else {
+            chc::Term::datatype_discr(def.name.clone(), inner_term)
+                .eq(chc::Term::int(variant.discr.clone()))
+        };
+        builder.build(rty::Type::bool(), is_variant)
+    }
+
     pub fn boxed(self) -> PlaceType {
         let mut builder = PlaceTypeBuilder::default();
         let (inner_ty, inner_term) = builder.subsume(self);
