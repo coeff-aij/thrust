@@ -3744,11 +3744,32 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             //     _len = PtrMetadata(copy _slice);
             //
             let operand_mir_ty = operand.ty(&self.local_decls, self.tcx);
-            let mir_ty::TyKind::Ref(_, slice_ty, mutability) = operand_mir_ty.kind() else {
-                unimplemented!("PtrMetadata for {operand_mir_ty:?}")
+            // The slice the operand points to, and whether its length is read through a borrow of
+            // the place it dereferences: a mutable reference is read through a shared reborrow, and
+            // a `Box<[T]>` through a shared borrow of the slice it holds (`*b`).
+            let (slice_ty, borrows_deref) = match operand_mir_ty.kind() {
+                mir_ty::TyKind::Ref(_, slice_ty, mutability) => (*slice_ty, mutability.is_mut()),
+                _ if operand_mir_ty.is_box() => (operand_mir_ty.boxed_ty().unwrap(), true),
+                _ => {
+                    let span = self.body.basic_blocks[self.basic_block].statements[stmt_idx]
+                        .source_info
+                        .span;
+                    self.tcx.dcx().span_fatal(
+                        span,
+                        format!(
+                            "the length of a sequence behind {operand_mir_ty} is not supported"
+                        ),
+                    )
+                }
             };
             let mir_ty::TyKind::Slice(elem_ty) = slice_ty.kind() else {
-                unimplemented!("PtrMetadata for {operand_mir_ty:?}")
+                let span = self.body.basic_blocks[self.basic_block].statements[stmt_idx]
+                    .source_info
+                    .span;
+                self.tcx.dcx().span_fatal(
+                    span,
+                    format!("the length of a value of type {slice_ty} is not supported"),
+                )
             };
             let slice_len = self
                 .tcx
@@ -3757,12 +3778,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 .expect("slice len lang item is unavailable");
             let args = self.tcx.mk_args(&[(*elem_ty).into()]);
             let func = analyze::fn_operand(self.tcx, slice_len, args, rustc_span::DUMMY_SP);
-            let operand = if mutability.is_mut() {
+            let operand = if borrows_deref {
                 let place = operand
                     .place()
-                    .expect("mutable slice metadata operand must be a place");
+                    .expect("slice metadata operand borrowed through its place must be a place");
                 let region = mir_ty::Region::new_from_kind(self.tcx, mir_ty::RegionKind::ReErased);
-                let ty = mir_ty::Ty::new_ref(self.tcx, region, *slice_ty, mir_ty::Mutability::Not);
+                let ty = mir_ty::Ty::new_ref(self.tcx, region, slice_ty, mir_ty::Mutability::Not);
                 let local = self
                     .local_decls
                     .push(mir::LocalDecl::new(ty, rustc_span::DUMMY_SP).immutable());
