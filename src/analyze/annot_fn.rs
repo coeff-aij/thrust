@@ -342,6 +342,21 @@ enum PatCond<T> {
 }
 
 impl<T> PatCond<T> {
+    /// The condition no value meets.
+    fn never() -> Self {
+        PatCond::Any(Vec::new())
+    }
+
+    /// Whether some value may meet the condition: `false` when it needs a variant pattern that
+    /// never matches ([`Self::never`]), whose bindings are then missing.
+    fn may_hold(&self) -> bool {
+        match self {
+            PatCond::Variant { .. } => true,
+            PatCond::All(conds) => conds.iter().all(Self::may_hold),
+            PatCond::Any(conds) => conds.iter().any(Self::may_hold),
+        }
+    }
+
     /// The condition as a formula, with a variant tested by the datatype tester.
     fn into_formula(self) -> chc::Formula<T> {
         let mut formula = match self {
@@ -2442,6 +2457,14 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         field_terms: Vec<chc::Term<rty::FunctionParamIdx>>,
     ) -> chc::Term<rty::FunctionParamIdx> {
         let adt_did = self.tcx.parent(variant_did);
+        let typing_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, adt_did);
+        let variant = self.tcx.adt_def(adt_did).variant_with_id(variant_did);
+        if refine::variant_has_no_values(self.tcx, variant, typing_env) {
+            self.tcx.dcx().span_fatal(
+                self.tcx.def_span(variant_did),
+                "a formula that constructs this variant is not supported: no value is of it, so its datatype has no constructor for it",
+            );
+        }
         let d_sym = crate::refine::datatype_symbol(self.tcx, adt_did);
         let variant_name = self.tcx.item_name(variant_did);
         let v_sym = crate::refine::variant_symbol(&d_sym, variant_name);
@@ -2636,6 +2659,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let mut disjuncts = Vec::new();
         for arm in arms {
             let (cond, arm_translator) = self.arm_pattern(scrutinee.clone(), arm.pat);
+            if !cond.may_hold() {
+                continue;
+            }
             let mut hit = cond.into_formula();
             if let Some(guard) = arm.guard {
                 hit = hit.and(arm_translator.to_formula(guard));
@@ -2657,20 +2683,33 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// arms in order, each condition testing the variants by the discriminant. The last arm is
     /// the value where no earlier arm matches, as Verus and Why3 translate a `match`: rustc has
     /// checked that the arms are exhaustive, so its pattern holds of every Rust value there and
-    /// its selectors are read under their testers. A value of the datatype that no Rust value
-    /// is (a variant whose payload is uninhabited, which rustc lets a `match` omit) also takes
-    /// the last arm, with its fields at unspecified values of their sorts. A guard on the last
-    /// arm is rejected, as Verus rejects one: the arm would then be the fallback of values its
-    /// guard does not hold of.
+    /// its selectors are read under their testers. An arm whose pattern never matches, naming a
+    /// variant the datatype has no constructor for, is left out. A value of the datatype that
+    /// no Rust value is (`Err(())` of `Result<u64, Infallible>`, which rustc lets a `match`
+    /// omit) also takes the last arm, with its fields at unspecified values of their sorts. A
+    /// guard on the last arm is rejected, as Verus rejects one: the arm would then be the
+    /// fallback of values its guard does not hold of. Where every arm names such a variant, no
+    /// Rust value reaches the `match`, and every value of the scrutinee's sort is one no Rust value
+    /// is: the `match` is a fixed value of its type with the type's facts
+    /// ([`rty::fact_witness`]), so that a logic function stays a function and keeps the facts of
+    /// its result type.
     fn match_term(
         &self,
+        match_expr: &'tcx rustc_hir::Expr<'tcx>,
         scrutinee: &'tcx rustc_hir::Expr<'tcx>,
         arms: &'tcx [rustc_hir::Arm<'tcx>],
     ) -> chc::Term<rty::FunctionParamIdx> {
         let scrutinee = self.to_term(scrutinee);
-        let (last, earlier) = arms
-            .split_last()
-            .expect("a `match` on an inhabited type has an arm");
+        let mut arms: Vec<_> = arms
+            .iter()
+            .filter_map(|arm| {
+                let (cond, arm_translator) = self.arm_pattern(scrutinee.clone(), arm.pat);
+                cond.may_hold().then_some((arm, cond, arm_translator))
+            })
+            .collect();
+        let Some((last, _, last_translator)) = arms.pop() else {
+            return self.fixed_value(match_expr);
+        };
         if let Some(guard) = last.guard {
             self.tcx.dcx().span_fatal(
                 guard.span,
@@ -2678,10 +2717,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                  formulas; add an arm after it",
             );
         }
-        let (_, last_translator) = self.arm_pattern(scrutinee.clone(), last.pat);
         let mut term = last_translator.to_term(last.body);
-        for arm in earlier.iter().rev() {
-            let (cond, arm_translator) = self.arm_pattern(scrutinee.clone(), arm.pat);
+        for (arm, cond, arm_translator) in arms.into_iter().rev() {
             let mut hit = cond.into_term();
             if let Some(guard) = arm.guard {
                 hit = hit.and(arm_translator.to_term(guard));
@@ -2689,6 +2726,22 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             term = chc::Term::ite(hit, arm_translator.to_term(arm.body), term);
         }
         term
+    }
+
+    /// A fixed value of the type of `expr` that has the type's facts ([`rty::fact_witness`]).
+    fn fixed_value(&self, expr: &'tcx rustc_hir::Expr<'tcx>) -> chc::Term<rty::FunctionParamIdx> {
+        let ty = self.expr_ty(expr);
+        self.analyzer
+            .register_enum_defs([ty], self.type_builder.clone());
+        let rty = self.type_builder.build(ty);
+        rty::fact_witness(&rty.ty, None, &self.analyzer.enum_defs).unwrap_or_else(|| {
+            self.tcx.dcx().span_fatal(
+                expr.span,
+                format!(
+                    "a `match` that no Rust value reaches is not supported at the type `{ty}`: it stands for a fixed value of its type, and Thrust builds none of that type"
+                ),
+            )
+        })
     }
 
     /// The condition under which `scrutinee` matches `pat`, and the translator for the arm,
@@ -2708,8 +2761,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     /// The condition under which `term` matches `pat`, with the term each binding of `pat`
     /// stands for pushed onto `bindings`.
     ///
-    /// Every enum is encoded as a datatype with one constructor per variant, so a variant
-    /// pattern is the datatype tester of that variant's constructor, and a variant's field is
+    /// Every enum is encoded as a datatype with one constructor per variant some value is of, so
+    /// a variant pattern is the datatype tester of that variant's constructor, and a variant's field is
     /// the constructor's selector, which the condition reads only after the tester: a selector
     /// applied to a value of another constructor is unspecified in SMT-LIB.
     fn pat_cond(
@@ -2817,7 +2870,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     /// A variant pattern on an enum is its tester, conjoined with the patterns of its fields
-    /// at the constructor's selectors. A struct pattern matches its fields.
+    /// at the constructor's selectors; one on a variant no value is of, which the datatype has no
+    /// constructor for, never matches, and its fields bind nothing. A struct pattern matches its
+    /// fields.
     fn adt_pat_cond(
         &self,
         term: chc::Term<rty::FunctionParamIdx>,
@@ -2841,6 +2896,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let variant_idx = adt.variant_index_with_id(variant.def_id);
         let enum_def = self.analyzer.get_or_register_enum_def(adt.did());
         let variant_def = &enum_def.variants[variant_idx];
+        if variant_def.uninhabited {
+            return PatCond::never();
+        }
         let sort = chc::DatatypeSort::new(
             enum_def.name.clone(),
             generic_args
@@ -3546,7 +3604,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 if self.expr_ty(hir).is_bool() {
                     FormulaOrTerm::Formula(self.match_formula(scrutinee, arms))
                 } else {
-                    FormulaOrTerm::Term(self.match_term(scrutinee, arms))
+                    FormulaOrTerm::Term(self.match_term(hir, scrutinee, arms))
                 }
             }
             ExprKind::Block(block, _) => {

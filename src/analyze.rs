@@ -1235,9 +1235,8 @@ impl<'tcx> Analyzer<'tcx> {
         }
 
         tracing::debug!(def_id = ?def_id, enum_def = ?enum_def, "register_enum_def");
-        let ctors = enum_def
-            .variants
-            .iter()
+        let mut ctors: Vec<_> = enum_def
+            .declared_variants()
             .map(|v| chc::DatatypeCtor {
                 symbol: v.name.clone(),
                 selectors: v
@@ -1253,6 +1252,13 @@ impl<'tcx> Analyzer<'tcx> {
                 discriminant: v.discr.clone(),
             })
             .collect();
+        if let Some((symbol, discriminant)) = enum_def.ctor_without_rust_value() {
+            ctors.push(chc::DatatypeCtor {
+                symbol,
+                selectors: Vec::new(),
+                discriminant,
+            });
+        }
         let datatype = chc::Datatype {
             symbol: enum_def.name.clone(),
             params: enum_def.ty_params,
@@ -2256,7 +2262,7 @@ impl<'tcx> Analyzer<'tcx> {
         guard: chc::Term,
         body: chc::Term,
     ) -> chc::Term {
-        let witness = rty::fact_witness(ret, body.clone(), &self.enum_defs).unwrap_or_else(|| {
+        let witness = rty::fact_witness(ret, Some(body.clone()), &self.enum_defs).unwrap_or_else(|| {
             self.tcx.dcx().span_fatal(
                 span,
                 format!(

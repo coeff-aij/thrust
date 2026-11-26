@@ -651,15 +651,15 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
-    /// A type without values that `ty` holds inside where no variant's exclusion covers it, so
-    /// that its model's values, which Rust's are not (`Infallible` is `()`), are values of `ty`'s
-    /// model: a generic argument, a tuple's element, the target of a reference, a pointer or a
-    /// sequence, or a field, in `ty` or in the ADTs it reaches, whose field types are read at the
-    /// ADT's arguments in `typing_env` (`Infallible` in `Result<u64, Infallible>`, in
-    /// `W<Infallible>`, in a field `Option<Infallible>`, or in a field `Option<I::A>` at an `I`
-    /// whose `A` is `Infallible`). The fields of a variant that has no values in the definition are
-    /// not entered (`B(W<Infallible>, Option<Infallible>)` with `struct W<T>(T)`): the variant is
-    /// excluded at the definition, or its struct has no values. An ADT whose model a `Model` impl
+    /// A type without values that `ty` holds inside, so that its model's values, which Rust's are
+    /// not (`Infallible` is `()`), are values of `ty`'s model: a generic argument, a tuple's
+    /// element, the target of a reference, a pointer or a sequence, or a field, in `ty` or in the
+    /// ADTs it reaches, whose field types are read at the ADT's arguments in `typing_env`
+    /// (`Infallible` in `Result<u64, Infallible>`, in `W<Infallible>`, in a field
+    /// `Option<Infallible>`, or in a field `Option<I::A>` at an `I` whose `A` is `Infallible`). The
+    /// fields of a variant that has no values in the definition are not entered
+    /// (`B(W<Infallible>, Option<Infallible>)` with `struct W<T>(T)`): its enum's datatype has no
+    /// constructor for the variant, or its struct has no values. An ADT whose model a `Model` impl
     /// gives is entered only through its generic arguments, since its fields make no model value,
     /// and a `PhantomData` not at all: it has one value whatever its argument.
     ///
@@ -2005,9 +2005,9 @@ struct UninhabitedTypeSearch<'tcx> {
 
 /// Whether no value is of `variant`: one of its fields, as the definition writes it, has no
 /// values in the definition's typing environment `typing_env`, where a type parameter has values.
-/// It does not depend on the instance, so such a variant is excluded at the definition
+/// It does not depend on the instance, so the datatype has no constructor for such a variant
 /// ([`rty::EnumVariantDef::uninhabited`]), and a struct with such a field has no values.
-fn variant_has_no_values<'tcx>(
+pub fn variant_has_no_values<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
     variant: &mir_ty::VariantDef,
     typing_env: mir_ty::TypingEnv<'tcx>,
