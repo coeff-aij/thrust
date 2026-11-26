@@ -1,14 +1,14 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 use std::ops::Deref;
 use thrust_models::forall;
 
 #[derive(Clone, Copy)]
 struct Wrapper(u64);
 
-impl thrust_models::Model for Wrapper {
+impl Model for Wrapper {
     type Ty = (u64,);
 }
 

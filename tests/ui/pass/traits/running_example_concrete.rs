@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables -A unused_parens
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::{forall, Model};
 // The running example before generics: a concrete `Range` with an inherent `next`, consumed by
 // a concrete `count` whose loop invariant is inferred. No trait, no type parameter, so the
 // query is plain Horn clauses; the paper's first rung. `running_example.rs` is the same program
@@ -12,14 +12,14 @@ struct Range {
     end: isize,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 
 #[thrust_macros::context]
 impl Range {
     #[thrust_macros::ensures(result == None ==> !((*self).start < (*self).end) && *self == !self)]
-    #[thrust_macros::ensures(thrust_models::forall(|i| result == Some(i) ==> (*self).start < (*self).end && i == (*self).start && (!self).start == i + 1 && (!self).end == (*self).end))]
+    #[thrust_macros::ensures(forall(|i| result == Some(i) ==> (*self).start < (*self).end && i == (*self).start && (!self).start == i + 1 && (!self).end == (*self).end))]
     fn next(&mut self) -> Option<isize> {
         if self.start < self.end {
             let item = self.start;

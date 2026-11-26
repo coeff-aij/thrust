@@ -1,11 +1,11 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 // The derived `clone` of `W<T>`, at `W<C>`, runs `C::clone`, which assumes the invariant of a field
 // nobody checked.
 struct C {
     n: u32,
 }
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 #[thrust_macros::context]
@@ -22,7 +22,7 @@ impl Clone for C {
 }
 #[derive(Clone)]
 struct W<T>(T);
-impl<T: thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Model> Model for W<T> {
     type Ty = T::Ty;
 }
 fn main() {

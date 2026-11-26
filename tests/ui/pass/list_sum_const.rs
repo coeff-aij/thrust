@@ -3,13 +3,13 @@
 //@rustc-env: THRUST_SOLVER_TIMEOUT_SECS=120
 
 // `-C opt-level=3` turns the overflow checks off.
-
+use thrust_models::Model;
 enum List {
   Cons(i32, Box<List>),
   Nil,
 }
 
-impl thrust_models::Model for List {
+impl Model for List {
   type Ty = Self;
 }
 

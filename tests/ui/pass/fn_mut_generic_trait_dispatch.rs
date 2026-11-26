@@ -6,7 +6,7 @@
 // such an instance; `gen3` reaches `apply` only through `Ap` at `T`, and `caller` runs `gen3` at
 // `S`, an instance analyzed nowhere but through `S::apply`'s analysis over `F`, which is therefore
 // emitted: it holds, as `Ap::apply` requires the closure's precondition at 1.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Ap {
     #[thrust_macros::requires(thrust_macros::pre!(f(1)))]
@@ -17,7 +17,7 @@ trait Ap {
 #[derive(PartialEq)]
 struct S;
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = S;
 }
 

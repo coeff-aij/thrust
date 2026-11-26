@@ -4,10 +4,10 @@
 // A tuple's builtin `Clone` runs `W`'s, a crate impl whose generic body runs `S`'s ignored
 // `clone`. Trait selection gives each impl's nested obligations, which are followed to the
 // ignored body: `q.0 .0 .0` is `0`.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -20,7 +20,7 @@ impl Clone for S {
 
 struct W<T>(T);
 
-impl<T: thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Model> Model for W<T> {
     type Ty = W<T::Ty>;
 }
 

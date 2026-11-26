@@ -1,5 +1,5 @@
 //@compile-flags: -Adead_code -C debug-assertions=off
-
+use thrust_models::Model;
 // `W<T>`'s destructor is checked once over `T`, where `get` assumes nothing; std's `unwrap_or`
 // drops a `W<C>`, where `get` runs `C::get`, which assumes the invariant.
 #[thrust_macros::context]
@@ -11,7 +11,7 @@ trait Get {
 struct C {
     n: u32,
 }
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 #[thrust_macros::context]
@@ -27,7 +27,7 @@ impl Get for C {
     }
 }
 struct W<T: Get>(T);
-impl<T: Get + thrust_models::Model> thrust_models::Model for W<T> {
+impl<T: Get + Model> Model for W<T> {
     type Ty = T::Ty;
 }
 impl<T: Get> Drop for W<T> {
@@ -39,7 +39,7 @@ impl<T: Get> Drop for W<T> {
 struct Holder {
     w: W<C>,
 }
-impl thrust_models::Model for Holder {
+impl Model for Holder {
     type Ty = Self;
 }
 fn main() {
