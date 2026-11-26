@@ -81,6 +81,247 @@ pub(crate) fn shl_is_pow2(q: u64) {
     }
 }
 
+/// A field's weight: its size and twice its alignment's bytes, as a total function of the field's
+/// model value. `LayoutCalculator::deref_functional` ties it to the layout `Deref::deref` returns,
+/// so a real field type (rustc's `Layout`, which dereferences to the interned `&LayoutData`) is
+/// given it as the weight of that referent. It stands for every implementation in a signature, as
+/// Creusot's `View::view` and a Verus trait `spec fn` do, so no existential over the weights'
+/// sequence is needed.
+#[thrust_macros::context]
+pub trait Weighted: Copy + thrust_models::Model {
+    #[thrust_macros::logic]
+    fn weight_of(x: Self) -> Int;
+}
+
+/// The weights of the first `k` fields of `s`: entry `i` is `F::weight_of(s[i])`.
+#[thrust_macros::context]
+#[thrust_macros::logic]
+#[thrust_macros::variant(k)]
+fn weight_seq<F: Weighted>(s: Seq<<F as thrust_models::Model>::Ty>, k: USize) -> Seq<Int> {
+    if k <= 0 { Seq::empty() } else { weight_seq::<F>(s, k - 1).push(F::weight_of(s[k - 1])) }
+}
+
+/// The weight of a list of fields: the sum of its entries' weights, which `weight` states of `w`.
+#[thrust_macros::context]
+#[thrust_macros::logic]
+pub(crate) fn weight_total<I: Idx, F: Weighted>(fields: &IndexSlice<I, F>) -> Int {
+    sum_first(weight_seq::<F>(*fields, (*fields).len()), (*fields).len())
+}
+
+/// The first `k` entries of `weight_seq` are `k` weights.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|s: Seq<<F as thrust_models::Model>::Ty>| weight_seq::<F>(s, k).len() == k))]
+pub(crate) fn weight_seq_len<F: Weighted>(k: usize) {
+    if k > 0 {
+        weight_seq_len::<F>(k - 1);
+    }
+}
+
+/// The weights of the first `k` fields of `s` are `k` weights.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(weight_seq::<F>(s, k).len() == k)]
+pub(crate) fn weight_seq_len_of<F: Weighted>(s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, k: usize) {
+    if k > 0 {
+        weight_seq_len_of::<F>(s, k - 1);
+    }
+}
+
+/// Entry `i` of the weights of the first `k` fields is field `i`'s weight.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|s: Seq<<F as thrust_models::Model>::Ty>, i: USize|
+    !(0 <= i && i < k && k <= s.len()) || weight_seq::<F>(s, k)[i] == F::weight_of(s[i])))]
+pub(crate) fn weight_seq_nth<F: Weighted>(k: usize) {
+    if k > 0 {
+        weight_seq_len::<F>(k - 1);
+        weight_seq_nth::<F>(k - 1);
+    }
+}
+
+/// `weights::weight_first` is `sum_first`.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>| crate::case_study::weights::weight_first(ts, k) == sum_first(ts, k)))]
+pub(crate) fn weight_first_is_sum_first(k: usize) {
+    if k > 0 {
+        weight_first_is_sum_first(k - 1);
+    }
+}
+
+/// A sequence pushed with one more entry keeps the sum of its first `k` entries.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(k <= ts.len())]
+#[thrust_macros::ensures(sum_first(ts.push(w), k) == sum_first(ts, k))]
+pub(crate) fn sum_first_push_prefix(ts: Ghost<Seq<Int>>, w: Ghost<Int>, k: usize) {
+    if k > 0 {
+        sum_first_push_prefix(ts, w, k - 1);
+    }
+}
+
+/// A sequence pushed with one more entry keeps the sum of its first `k` entries, for every sequence.
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::ensures(forall(|ts: Seq<Int>, w: Int| k <= ts.len() ==> sum_first(ts.push(w), k) == sum_first(ts, k)))]
+pub(crate) fn sum_first_push_prefix_all(k: usize) {
+    if k > 0 {
+        sum_first_push_prefix_all(k - 1);
+    }
+}
+
+/// The weight of the first `k` fields of `s` is not negative when no weight is.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(k <= s.len())]
+#[thrust_macros::requires(forall(|x: <F as thrust_models::Model>::Ty| 0 <= F::weight_of(x)))]
+#[thrust_macros::ensures(0 <= sum_first(weight_seq::<F>(s, k), k))]
+pub(crate) fn weight_seq_sum_nonneg<F: Weighted>(s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, k: usize) {
+    if k > 0 {
+        weight_seq_sum_nonneg::<F>(s, k - 1);
+        weight_seq_len_of::<F>(s, k - 1);
+        sum_first_push_prefix_all(k - 1);
+    }
+}
+
+/// The weight of the first `m` fields of a list whose entries are those of `l` at the indices of a
+/// selection `vf[f[0]], ...` (all below `n`) is the sum of the entries of `l`'s weights at those
+/// indices, for every list and selection.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(m)]
+#[thrust_macros::requires(n <= l.len())]
+#[thrust_macros::ensures(forall(|fs: Seq<<F as thrust_models::Model>::Ty>, vf: Seq<<L as thrust_models::Model>::Ty>, f: crate::thrust_models::model::Array<Int, Int>|
+    !(m <= fs.len()
+        && forall(|k: Int| !(0 <= k && k < m)
+            || (fs[k] == l[L::index_logic(vf[f[k]])] && L::index_logic(vf[f[k]]) < n)))
+        || sum_first(weight_seq::<F>(fs, m), m)
+            == crate::case_study::selection_weights::wat_sel::<J, L>(weight_seq::<F>(l, n), vf, f, m)))]
+pub(crate) fn weight_total_of_selection<F: Weighted, J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(
+    l: Ghost<Seq<<F as thrust_models::Model>::Ty>>,
+    n: usize,
+    m: usize,
+) {
+    if m > 0 {
+        weight_total_of_selection::<F, J, L>(l, n, m - 1);
+        weight_seq_len::<F>(m - 1);
+        weight_seq_nth::<F>(n);
+        sum_first_push_prefix_all(m - 1);
+    }
+}
+
+/// `weight_total_of_selection` for every position count up to `k`.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(n <= l.len())]
+#[thrust_macros::ensures(forall(|fs: Seq<<F as thrust_models::Model>::Ty>, vf: Seq<<L as thrust_models::Model>::Ty>, f: crate::thrust_models::model::Array<Int, Int>, m: USize|
+    !(m <= k && m <= fs.len()
+        && forall(|j: Int| !(0 <= j && j < m)
+            || (fs[j] == l[L::index_logic(vf[f[j]])] && L::index_logic(vf[f[j]]) < n)))
+        || sum_first(weight_seq::<F>(fs, m), m)
+            == crate::case_study::selection_weights::wat_sel::<J, L>(weight_seq::<F>(l, n), vf, f, m)))]
+pub(crate) fn weight_total_of_selection_upto<F: Weighted, J: Idx + thrust_models::Model, L: Idx + thrust_models::Model>(
+    l: Ghost<Seq<<F as thrust_models::Model>::Ty>>,
+    n: usize,
+    k: usize,
+) {
+    if k > 0 {
+        weight_total_of_selection_upto::<F, J, L>(l, n, k - 1);
+    }
+    weight_total_of_selection::<F, J, L>(l, n, k);
+}
+
+/// The weights of the first `k` fields of `s` are not negative when no weight is.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::requires(k <= s.len())]
+#[thrust_macros::requires(forall(|x: <F as thrust_models::Model>::Ty| 0 <= F::weight_of(x)))]
+#[thrust_macros::ensures(forall(|i: Int| !(0 <= i && i < k) || 0 <= weight_seq::<F>(s, k)[i]))]
+pub(crate) fn weight_seq_nonneg<F: Weighted>(s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, k: usize) {
+    weight_seq_nth::<F>(k);
+}
+
+/// The weight of the fields a selection of the entries of class `e` of `vf` holds, with the weight
+/// of a list of distinct entries of `local_layouts` of another class, is at most the weight of all
+/// of `local_layouts`: the two share no local, as the class sets the list and the selection come
+/// from are disjoint (the selection is `counts::selection_of`; the list is the promoted locals).
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::requires(nv == vf.len())]
+#[thrust_macros::requires(n == local_layouts.len())]
+#[thrust_macros::requires(forall(|x: <F as thrust_models::Model>::Ty| 0 <= F::weight_of(x)))]
+#[thrust_macros::requires(crate::case_study::lemmas::distinct::<L>(p, c))]
+#[thrust_macros::requires(forall(|j: Int| !(0 <= j && j < c)
+    || (L::index_logic(p[j]) < n && !(a[L::index_logic(p[j])] == *e))))]
+#[thrust_macros::requires(forall(|j: Int| !(0 <= j && j < vf.len()) || L::index_logic(vf[j]) < n))]
+#[thrust_macros::requires(forall(|p1: Int, q1: Int|
+    !(0 <= p1 && p1 < vf.len() && 0 <= q1 && q1 < vf.len()
+        && L::index_logic(vf[p1]) == L::index_logic(vf[q1]) && a[L::index_logic(vf[p1])] == *e)
+        || p1 == q1))]
+#[thrust_macros::ensures(forall(|fs: Seq<<F as thrust_models::Model>::Ty>|
+    !crate::case_study::counts::selection_of::<J, L, K, T, F>(&fs, *vf, *a, *e, local_layouts)
+        || (0 <= sum_first(weight_seq::<F>(fs, fs.len()), fs.len())
+            && sum_first(weight_seq::<F>(fs, fs.len()), fs.len())
+                + crate::case_study::weights::weight_at::<L>(weight_seq::<F>(*local_layouts, n), p, c)
+                <= sum_first(weight_seq::<F>(*local_layouts, n), n))))]
+#[thrust::reveal(crate::case_study::counts::selection_of, crate::case_study::counts::selects)]
+pub(crate) fn selection_weight_bound<'a, F: Weighted, J: Idx + thrust_models::Model, L: Idx + thrust_models::Model, K: Idx + thrust_models::Model, T: thrust_models::Model>(
+    local_layouts: &crate::rustc_index::IndexSlice<L, F>,
+    vf: &crate::rustc_index::IndexVec<J, L>,
+    a: &crate::rustc_index::IndexVec<K, T>,
+    e: &T,
+    p: Ghost<crate::rustc_index::IndexVec<u32, L>>,
+    c: usize,
+    n: usize,
+    nv: usize,
+) {
+    let l = thrust_macros::ghost!(|local_layouts: &crate::rustc_index::IndexSlice<L, F>| -> Seq<<F as thrust_models::Model>::Ty> { *local_layouts });
+    let ts = thrust_macros::ghost!(|local_layouts: &crate::rustc_index::IndexSlice<L, F>, n: usize| -> Seq<Int> { weight_seq::<F>(*local_layouts, n) });
+    thrust_macros::proof!(weight_seq_nonneg::<F>(l, n));
+    thrust_macros::proof!(crate::case_study::lemmas::l4_all(p, c));
+    thrust_macros::proof!(crate::case_study::counts::map_bound(vf, a, e, nv));
+    thrust_macros::proof!(crate::case_study::selection_weights::acc_cnt_le::<J, L, K, T>(nv));
+    thrust_macros::proof!(crate::case_study::selection_weights::sel_ok_intro::<J, L, K, T>());
+    thrust_macros::proof!(weight_total_of_selection_upto::<F, J, L>(l, n, nv));
+    thrust_macros::proof!(crate::case_study::selection_weights::sel_list_le_upto::<J, L>(ts, p, c, n, nv));
+    thrust_macros::proof!(crate::case_study::selection_weights::sel_list_disjoint_upto::<J, L, K, T>(c, nv));
+    thrust_macros::proof!(crate::case_study::selection_weights::wat_sel_nonneg_upto::<J, L>(ts, n, nv));
+    thrust_macros::proof!(weight_first_is_sum_first(n));
+}
+
+/// A list pushed with one more field keeps the weights of its first `k` fields.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::variant(k)]
+#[thrust_macros::requires(k <= s.len())]
+#[thrust_macros::ensures(weight_seq::<F>(s.push(x), k) == weight_seq::<F>(s, k))]
+pub(crate) fn weight_seq_push_prefix<F: Weighted>(s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, x: F, k: usize) {
+    if k > 0 {
+        weight_seq_push_prefix::<F>(s, x, k - 1);
+    }
+}
+
+/// The weight of a list pushed with one field is the list's weight plus the field's.
+#[thrust_macros::context]
+#[thrust_macros::lemma]
+#[thrust_macros::requires(n == s.len())]
+#[thrust_macros::ensures(
+    sum_first(weight_seq::<F>(s.push(x), s.len() + 1), s.len() + 1)
+        == sum_first(weight_seq::<F>(s, s.len()), s.len()) + F::weight_of(x))]
+pub(crate) fn weight_total_push<F: Weighted>(s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, x: F, n: usize) {
+    weight_seq_push_prefix::<F>(s, x, n);
+    weight_seq_len_of::<F>(s, n);
+    let ts = thrust_macros::ghost!(|s: Ghost<Seq<<F as thrust_models::Model>::Ty>>, n: usize| -> Seq<Int> { weight_seq::<F>(s, n) });
+    let w = thrust_macros::ghost!(|x: F| -> Int { F::weight_of(x) });
+    sum_first_push_prefix(ts, w, n);
+}
+
 /// The sum of the first `k` entries of `ts`. A sum, it is an `Int` over `Int`s, as `ones` is: at
 /// `u64` its result would be checked `>= 0` without the facts of the sequence's elements, which
 /// the README says such a sum cannot be shown.
@@ -356,7 +597,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
     >(
         self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -420,17 +661,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         I: Idx,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
     >(
         fields: &IndexSlice<I, F>,
         w: USize,
     ) -> bool {
-        exists(|ts: Seq<Int>|
-            ts.len() == (*fields).len()
-                && forall(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, q: USize|
-                    !(0 <= i && i < ts.len() && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l && q == l.align.abi.pow2)
-                        || ts[i] == pow2(q) * 2 + l.size.raw)
-                && w == sum_first(ts, ts.len()))
+        w == sum_first(weight_seq::<F>(*fields, (*fields).len()), (*fields).len())
     }
 
     /// `s` is the weight of `fields` with the prefix's size and twice its alignment, the `repr`
@@ -442,7 +678,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model<Ty: PartialEq>,
     >(
         fields: &IndexSlice<FieldIdx, F>,
         repr: &ReprOptions,
@@ -469,7 +705,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model<Ty: PartialEq>,
     >(
         self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -489,18 +725,53 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// generic `Deref::deref` is a relation, as Creusot's `T::deref.postcondition` is, so a
     /// contract that names a field's layout by `exists d. post!(.., d) && **d == l` speaks of every
     /// layout the relation allows; this predicate makes that the one layout `deref` returns.
-    /// rustc's `Layout` dereferences to the interned pointer it holds.
     #[thrust_macros::predicate]
-    pub(crate) fn deref_functional<
+    pub(crate) fn deref_unique<
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
     >() -> bool {
         forall(|x: <F as thrust_models::Model>::Ty, d1: &&LayoutData<FieldIdx, VariantIdx>, d2: &&LayoutData<FieldIdx, VariantIdx>|
             !(thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d1)
                 && thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d2))
                 || **d1 == **d2)
+    }
+
+    /// `F::weight_of` is the weight of the layout `F`'s `deref` returns: `weight_of` of a value is its
+    /// layout's size plus twice its alignment's bytes at every layout `post!` allows (a read of a
+    /// field gives such a layout, so the field's weight is that of the layout read), and is
+    /// non-negative. Opaque, so that a proof that reads no weights sees one symbol: the functions
+    /// that read weights reveal it.
+    #[thrust_macros::predicate]
+    #[thrust::opaque]
+    pub(crate) fn weight_graph<
+        'a,
+        FieldIdx: Idx + thrust_models::Model,
+        VariantIdx: Idx,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
+    >() -> bool {
+        forall(|x: <F as thrust_models::Model>::Ty, d: &&LayoutData<FieldIdx, VariantIdx>, q: USize|
+            !(thrust_macros::post!(<F as core::ops::Deref>::deref(&x), d) && q == (**d).align.abi.pow2)
+                || F::weight_of(x) == pow2(q) * 2 + (**d).size.raw)
+            && forall(|x: <F as thrust_models::Model>::Ty| F::weight_of(x) >= 0)
+    }
+
+    /// `F`'s `deref` is a function (`deref_unique`) and `F::weight_of` is the weight of the layout
+    /// it returns (`weight_graph`). It is a requirement on `F` that the
+    /// verified functions state and no root discharges, as `deref_unique` is. A real field type
+    /// satisfies it: rustc's `Layout` dereferences to the interned `&LayoutData`, `weight_of` of
+    /// it is the weight of that referent, a function of the field's value as `deref` is, and a
+    /// size and an alignment's bytes are non-negative. Functions that do not read weights
+    /// (`place_field`) require `deref_unique` alone.
+    #[thrust_macros::predicate]
+    pub(crate) fn deref_functional<
+        'a,
+        FieldIdx: Idx + thrust_models::Model,
+        VariantIdx: Idx,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
+    >() -> bool {
+        Self::deref_unique::<FieldIdx, VariantIdx, F>() && Self::weight_graph::<FieldIdx, VariantIdx, F>()
     }
 
     /// An invariant of the layouts rustc computes that `place_field` relies on: the size below the
@@ -527,7 +798,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
     >(
         fields: &IndexSlice<FieldIdx, F>,
         dl: TargetDataLayout,
@@ -550,7 +821,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -565,15 +836,12 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
     >(
         fields: &IndexSlice<FieldIdx, F>,
         ts: Seq<Int>,
     ) -> bool {
-        ts.len() == (*fields).len()
-            && forall(|i: USize, l: LayoutData<FieldIdx, VariantIdx>, d: &&LayoutData<FieldIdx, VariantIdx>, q: USize|
-                !(0 <= i && i < ts.len() && thrust_macros::post!(<F as core::ops::Deref>::deref(&(*fields)[i]), d) && **d == l && q == l.align.abi.pow2)
-                    || ts[i] == pow2(q) * 2 + l.size.raw)
+        ts == weight_seq::<F>(*fields, (*fields).len())
     }
 
     /// `order` is a permutation of the `n` field indices, which holds the last field last when
@@ -595,7 +863,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
     >(
         fields: &IndexSlice<FieldIdx, F>,
         kind: StructKind,
@@ -614,7 +882,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model,
         VariantIdx: Idx,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model,
     >(
         fields: &IndexSlice<FieldIdx, F>,
     ) -> bool {
@@ -640,7 +908,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + Weighted + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -712,7 +980,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + Weighted + thrust_models::Model<Ty: PartialEq>,
     >(
         self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -773,7 +1041,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + Weighted + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -1090,7 +1358,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + Weighted + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -1201,7 +1469,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + core::fmt::Debug + Copy + Weighted + thrust_models::Model<Ty: PartialEq>,
     >(
         &self,
         fields: &IndexSlice<FieldIdx, F>,
@@ -1416,7 +1684,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// dropped, and with `End` the field's niche is taken while none has been. It stays a function
     /// (rewrites.md R18): in place under a block contract, `place_field` has to reveal
     /// `niche_ends_by`, and four of its goals after the niche choice get no answer at 300 s.
-    #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
+    #[thrust_macros::requires(Self::deref_unique::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
         !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) || Self::field_wf::<FieldIdx, VariantIdx>(**d, *dl)))]
     #[thrust_macros::requires(offset.raw < 13835058055282163712u64)]
@@ -1440,7 +1708,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model<Ty: PartialEq>,
     >(
         largest_niche: &mut Option<Niche>,
         largest_niche_available: &mut u128,
@@ -1470,7 +1738,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
     /// offset and the alignment's bytes grow by less than the field's weight, and the step fails
     /// only with `SizeOverflow`, when the padded field reaches the object size bound. The niche
     /// changes as `offer_niche` changes it.
-    #[thrust_macros::requires(Self::deref_functional::<FieldIdx, VariantIdx, F>())]
+    #[thrust_macros::requires(Self::deref_unique::<FieldIdx, VariantIdx, F>())]
     #[thrust_macros::requires(forall(|d: &&LayoutData<FieldIdx, VariantIdx>|
         !thrust_macros::post!(<F as core::ops::Deref>::deref(field), d) || Self::field_wf::<FieldIdx, VariantIdx>(**d, *dl)))]
     #[thrust_macros::requires((*dl).default_address_space_pointer_spec.pointer_size.raw == 2
@@ -1515,7 +1783,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'a,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model<Ty: PartialEq>,
     >(
         offset: &mut Size,
         align: &mut Align,
@@ -1645,7 +1913,7 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
         'b,
         FieldIdx: Idx + thrust_models::Model<Ty: PartialEq>,
         VariantIdx: Idx + thrust_models::Model<Ty: PartialEq>,
-        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + thrust_models::Model<Ty: PartialEq>,
+        F: core::ops::Deref<Target = &'a LayoutData<FieldIdx, VariantIdx>> + Copy + Weighted + thrust_models::Model<Ty: PartialEq>,
     >(
         fields: &'b IndexSlice<FieldIdx, F>,
         in_memory_order: &IndexVec<u32, FieldIdx>,
