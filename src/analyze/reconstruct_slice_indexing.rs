@@ -309,8 +309,10 @@ fn find_bounds_check<'tcx>(body: &Body<'tcx>, block: BasicBlock) -> Option<Bound
 /// that check belongs to the region, for the statements before the check, but the blocks after it
 /// are reached through the call that the check is reconstructed into. A check of the same index
 /// against another slice, such as the inner one of `s[i][i]`, does not end the region, nor does
-/// one against a constant length in a block that does nothing else ([`checks_only`]), such as the
-/// inner one of `a[i][i]` of `[[T; N]; M]`.
+/// one against a constant length in the check's own target block, when that block does nothing
+/// else ([`checks_only`]), such as the inner one of `a[i][i]` of `[[T; N]; M]`. A check further on
+/// ends the region: a call or a branch in between can change the array, and the first check's
+/// access must not read the array as it is after them.
 fn access_region<'tcx>(
     tcx: TyCtxt<'tcx>,
     body: &Body<'tcx>,
@@ -327,7 +329,9 @@ fn access_region<'tcx>(
         let other_slice = checked.is_some_and(|checked| {
             checked_slice(tcx, body, &check).is_some_and(|slice| slice != checked)
         });
-        let other_array = checked_len(tcx, &check).is_some() && checks_only(body, &check);
+        let other_array = block == bounds_check.target
+            && checked_len(tcx, &check).is_some()
+            && checks_only(body, &check);
         !other_slice && !other_array
     };
     let dominators = body.basic_blocks.dominators();
