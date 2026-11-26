@@ -978,6 +978,50 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         FormulaOrTerm::Term(chc::Term::App(fun, vec![lhs, rhs]))
     }
 
+    /// The type of the quantified variable `pat` as the item writes it, normalized in the item's
+    /// typing environment, where a type parameter, or a projection on one, has values; and that
+    /// environment.
+    fn binder_written_ty(
+        &self,
+        pat: &'tcx rustc_hir::Pat<'tcx>,
+    ) -> (mir_ty::Ty<'tcx>, mir_ty::TypingEnv<'tcx>) {
+        let root = self.tcx.typeck_root_def_id(self.local_def_id.to_def_id());
+        let typing_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, root);
+        let ty = self.typeck.pat_ty(pat);
+        let ty = self
+            .tcx
+            .try_normalize_erasing_regions(typing_env, ty)
+            .unwrap_or(ty);
+        (ty, typing_env)
+    }
+
+    /// Whether a quantified variable ranges over nothing: its written type
+    /// ([`Self::binder_written_ty`]) has no values, as rustc decides it in the item's typing
+    /// environment, so a generic item's contract means at an instance (`g::<Infallible>`) what it
+    /// means over its type parameters, where the item is verified.
+    fn binder_ranges_over_nothing(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> bool {
+        let (ty, typing_env) = self.binder_written_ty(pat);
+        ty.is_privately_uninhabited(self.tcx, typing_env)
+    }
+
+    /// Stops with an error when the written type of a quantified variable holds a type without
+    /// values inside ([`TypeBuilder::uninhabited_type_inside`]: `Result<u64, Infallible>`), since
+    /// its model has values that are no Rust value's (`Err(())`).
+    fn reject_binder_holding_type_without_values(&self, pat: &'tcx rustc_hir::Pat<'tcx>) {
+        let (ty, typing_env) = self.binder_written_ty(pat);
+        if let Some(found) = self
+            .type_builder
+            .uninhabited_type_inside(ty, typing_env, pat.span)
+        {
+            self.tcx.dcx().span_fatal(
+                pat.span,
+                format!(
+                    "a quantified variable of type `{ty}` is not supported: it holds `{found}`, which has no values, where its model has values"
+                ),
+            );
+        }
+    }
+
     fn pat_ty(&self, pat: &'tcx rustc_hir::Pat<'tcx>) -> mir_ty::Ty<'tcx> {
         self.normalized_ty(self.typeck.pat_ty(pat))
     }
@@ -2358,9 +2402,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
     }
 
     /// The parameters of an `exists` / `forall` closure as quantified variables, the domain of
-    /// their types (the range of an integer type in use ([`rty::int_range`]), the length of an
-    /// array: [`rty::binder_domain`]) and the code points of the `char`s they hold
-    /// ([`rty::char_domain_formula`]), over which they range, and the body.
+    /// their types ([`rty::binder_domain`], and `false` at a type without values), over which they
+    /// range, and the body.
     fn to_formula_with_quantified_vars(&self, closure: &rustc_hir::Body<'tcx>) -> QuantifiedBody {
         let mut inner_translator = self.clone();
         let mut vars = Vec::new();
@@ -2373,6 +2416,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 );
             };
             let param_ty = self.pat_ty(param.pat);
+            let ranges_over_nothing = self.binder_ranges_over_nothing(param.pat);
+            if !ranges_over_nothing {
+                self.reject_binder_holding_type_without_values(param.pat);
+            }
             // The enums in the variable's type may occur nowhere else in the function or
             // predicate, yet the query declares their datatypes.
             self.analyzer
@@ -2383,10 +2430,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
-            let domain = rty::binder_domain(&param_rty.ty, term.clone());
-            let closed_ty = param_rty.ty.clone().strip_refinement();
-            let char_facts =
-                rty::char_domain_formula(&closed_ty, term.clone(), &self.analyzer.enum_defs)
+            let fact = if ranges_over_nothing {
+                Some(chc::Formula::bottom())
+            } else {
+                rty::binder_domain(&param_rty.ty, term.clone(), &self.analyzer.enum_defs)
                     .unwrap_or_else(|enum_ty| {
                         self.tcx.dcx().span_fatal(
                             param.pat.span,
@@ -2397,8 +2444,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                                 enum_ty.display()
                             ),
                         )
-                    });
-            for fact in domain.into_iter().chain(char_facts) {
+                    })
+            };
+            if let Some(fact) = fact {
                 range = Some(match range {
                     Some(range) => range.and(fact),
                     None => fact,

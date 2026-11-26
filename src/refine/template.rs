@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use num_bigint::BigInt;
@@ -378,12 +378,14 @@ impl<'tcx> TypeBuilder<'tcx> {
         );
 
         let name = refine::datatype_symbol(self.tcx, def_id);
+        let typing_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, def_id);
         let variants: IndexVec<_, _> = adt
             .variants()
             .iter()
             .zip(adt.discriminants(self.tcx))
             .map(|(variant, (_, discr))| {
                 let discr = discr_value(self.tcx, discr);
+                let uninhabited = variant_has_no_values(self.tcx, variant, typing_env);
                 let field_tys = variant
                     .fields
                     .iter()
@@ -393,6 +395,7 @@ impl<'tcx> TypeBuilder<'tcx> {
                     name: refine::variant_symbol(&name, variant.name),
                     discr,
                     field_tys,
+                    uninhabited,
                 }
             })
             .collect();
@@ -646,6 +649,152 @@ impl<'tcx> TypeBuilder<'tcx> {
             param_env: mir_ty::ParamEnv::new(clauses),
             ..self.typing_env
         }
+    }
+
+    /// A type without values that `ty` holds inside where no variant's exclusion covers it, so
+    /// that its model's values, which Rust's are not (`Infallible` is `()`), are values of `ty`'s
+    /// model: a generic argument, a tuple's element, the target of a reference, a pointer or a
+    /// sequence, or a field, in `ty` or in the ADTs it reaches, whose field types are read at the
+    /// ADT's arguments in `typing_env` (`Infallible` in `Result<u64, Infallible>`, in
+    /// `W<Infallible>`, in a field `Option<Infallible>`, or in a field `Option<I::A>` at an `I`
+    /// whose `A` is `Infallible`). The fields of a variant that has no values in the definition are
+    /// not entered (`B(W<Infallible>, Option<Infallible>)` with `struct W<T>(T)`): the variant is
+    /// excluded at the definition, or its struct has no values. An ADT whose model a `Model` impl
+    /// gives is entered only through its generic arguments, since its fields make no model value,
+    /// and a `PhantomData` not at all: it has one value whatever its argument.
+    ///
+    /// Each instance of an ADT is entered once. An ADT met again inside itself at other arguments
+    /// (`Nest<(T, T)>` in `enum Nest<T> { L(T), N(Box<Nest<(T, T)>>) }`) is entered only through
+    /// those arguments, which keeps the search finite: a part of its fields is a part that its
+    /// definition, or that of an ADT it reaches, writes, which the enclosing instance enters, or a
+    /// part of its arguments. That holds unless such a definition writes a projection, whose value
+    /// depends on the arguments: such a type is rejected with an error at `span`, where it is
+    /// written.
+    pub fn uninhabited_type_inside(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+        typing_env: mir_ty::TypingEnv<'tcx>,
+        span: rustc_span::Span,
+    ) -> Option<mir_ty::Ty<'tcx>> {
+        let mut search = UninhabitedTypeSearch {
+            typing_env,
+            span,
+            adts_with_model_impl: self.adts_with_model_impl(),
+            entered: HashSet::new(),
+            enclosing: Vec::new(),
+        };
+        self.uninhabited_type_inside_within(ty, &mut search)
+    }
+
+    fn uninhabited_type_inside_within(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+        search: &mut UninhabitedTypeSearch<'tcx>,
+    ) -> Option<mir_ty::Ty<'tcx>> {
+        match ty.kind() {
+            mir_ty::TyKind::Adt(adt, _) if adt.is_phantom_data() => None,
+            mir_ty::TyKind::Adt(adt, args) => {
+                let in_args = args
+                    .types()
+                    .find_map(|arg| self.uninhabited_type_or_inside(arg, search));
+                if in_args.is_some()
+                    || search.adts_with_model_impl.contains(&adt.did())
+                    || !search.entered.insert(ty)
+                {
+                    return in_args;
+                }
+                if search.enclosing.contains(&adt.did()) {
+                    if self.definition_reaches_projection(*adt, search, &mut HashSet::new()) {
+                        self.tcx.dcx().span_fatal(
+                            search.span,
+                            format!(
+                                "`{ty}` is not supported here: its definition holds itself at other type arguments through a projection, so Thrust cannot search it for a type without values"
+                            ),
+                        );
+                    }
+                    return None;
+                }
+                search.enclosing.push(adt.did());
+                let definition_env = mir_ty::TypingEnv::non_body_analysis(self.tcx, adt.did());
+                let typing_env = search.typing_env;
+                let found = adt
+                    .variants()
+                    .iter()
+                    .filter(|variant| !variant_has_no_values(self.tcx, variant, definition_env))
+                    .flat_map(|variant| variant.fields.iter())
+                    .map(|field| {
+                        let field_ty = field.ty(self.tcx, args);
+                        self.tcx
+                            .try_normalize_erasing_regions(typing_env, field_ty)
+                            .unwrap_or(field_ty)
+                    })
+                    .find_map(|field_ty| self.uninhabited_type_or_inside(field_ty, search));
+                search.enclosing.pop();
+                found
+            }
+            mir_ty::TyKind::Tuple(elems) => elems
+                .iter()
+                .find_map(|elem| self.uninhabited_type_inside_within(elem, search)),
+            mir_ty::TyKind::Ref(_, target, _)
+            | mir_ty::TyKind::RawPtr(target, _)
+            | mir_ty::TyKind::Slice(target)
+            | mir_ty::TyKind::Array(target, _) => self.uninhabited_type_or_inside(*target, search),
+            _ => None,
+        }
+    }
+
+    fn uninhabited_type_or_inside(
+        &self,
+        ty: mir_ty::Ty<'tcx>,
+        search: &mut UninhabitedTypeSearch<'tcx>,
+    ) -> Option<mir_ty::Ty<'tcx>> {
+        if ty.is_privately_uninhabited(self.tcx, search.typing_env) {
+            return Some(ty);
+        }
+        self.uninhabited_type_inside_within(ty, search)
+    }
+
+    /// Whether a field type that `adt`'s definition writes, or that of an ADT it reaches, holds a
+    /// projection, whose value depends on the arguments the ADT is at.
+    fn definition_reaches_projection(
+        &self,
+        adt: mir_ty::AdtDef<'tcx>,
+        search: &UninhabitedTypeSearch<'tcx>,
+        seen: &mut HashSet<DefId>,
+    ) -> bool {
+        if search.adts_with_model_impl.contains(&adt.did()) || !seen.insert(adt.did()) {
+            return false;
+        }
+        adt.all_fields().any(|field| {
+            let field_ty = self.tcx.type_of(field.did).instantiate_identity();
+            field_ty.walk().any(|arg| match arg.kind() {
+                mir_ty::GenericArgKind::Type(ty) => match ty.kind() {
+                    mir_ty::TyKind::Alias(..) => true,
+                    mir_ty::TyKind::Adt(inner, _) => {
+                        self.definition_reaches_projection(*inner, search, seen)
+                    }
+                    _ => false,
+                },
+                mir_ty::GenericArgKind::Lifetime(_) | mir_ty::GenericArgKind::Const(_) => false,
+            })
+        })
+    }
+
+    /// The ADTs that a `Model` impl gives a model.
+    fn adts_with_model_impl(&self) -> HashSet<DefId> {
+        let Some(model_ty) = self.def_ids.model_ty() else {
+            return HashSet::new();
+        };
+        let model_trait = self.tcx.parent(model_ty);
+        self.tcx
+            .all_impls(model_trait)
+            .filter_map(
+                |impl_did| match self.tcx.type_of(impl_did).instantiate_identity().kind() {
+                    mir_ty::TyKind::Adt(adt, _) => Some(adt.did()),
+                    _ => None,
+                },
+            )
+            .collect()
     }
 
     pub fn resolve_model_ty(&self, orig_ty: mir_ty::Ty<'tcx>) -> mir_ty::Ty<'tcx> {
@@ -1841,6 +1990,35 @@ where
         });
         rty::FunctionType::new(param_rtys, ret_rty).with_abi(self.abi)
     }
+}
+
+/// The state of [`TypeBuilder::uninhabited_type_inside`].
+struct UninhabitedTypeSearch<'tcx> {
+    /// Where the searched type is written, in which the field types of the ADTs it reaches are read.
+    typing_env: mir_ty::TypingEnv<'tcx>,
+    /// Where the searched type is written, where a type the search does not support is reported.
+    span: rustc_span::Span,
+    adts_with_model_impl: HashSet<DefId>,
+    /// The ADT instances entered so far.
+    entered: HashSet<mir_ty::Ty<'tcx>>,
+    /// The ADTs whose fields are being searched, outermost first.
+    enclosing: Vec<DefId>,
+}
+
+/// Whether no value is of `variant`: one of its fields, as the definition writes it, has no
+/// values in the definition's typing environment `typing_env`, where a type parameter has values.
+/// It does not depend on the instance, so such a variant is excluded at the definition
+/// ([`rty::EnumVariantDef::uninhabited`]), and a struct with such a field has no values.
+fn variant_has_no_values<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    variant: &mir_ty::VariantDef,
+    typing_env: mir_ty::TypingEnv<'tcx>,
+) -> bool {
+    variant.fields.iter().any(|field| {
+        tcx.type_of(field.did)
+            .instantiate_identity()
+            .is_privately_uninhabited(tcx, typing_env)
+    })
 }
 
 fn discr_value<'tcx>(tcx: mir_ty::TyCtxt<'tcx>, discr: mir_ty::util::Discr<'tcx>) -> BigInt {
