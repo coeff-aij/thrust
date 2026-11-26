@@ -1330,15 +1330,8 @@ impl<'tcx> TypeBuilder<'tcx> {
         let call = predicates
             .predicates
             .iter()
-            .filter_map(|clause| clause.as_trait_clause())
-            .find(|pred| {
-                let trait_ref = pred.skip_binder().trait_ref;
-                trait_ref.self_ty() == param
-                    && self
-                        .tcx
-                        .fn_trait_kind_from_def_id(trait_ref.def_id)
-                        .is_some()
-            })?;
+            .filter_map(|clause| fn_trait_predicate(self.tcx, *clause))
+            .find(|pred| pred.skip_binder().trait_ref.self_ty() == param)?;
         let output = predicates
             .predicates
             .iter()
@@ -1852,13 +1845,26 @@ fn discr_value<'tcx>(tcx: mir_ty::TyCtxt<'tcx>, discr: mir_ty::util::Discr<'tcx>
     }
 }
 
-/// The `Fn`, `FnMut` or `FnOnce` bounds among the predicates of `def_id` whose self type is
-/// not a type parameter, such as `for<'a> &'a Y: Fn(..)` or `<T as Tr>::Assoc: Fn(..)`, with
-/// the span of each.
+/// The clause as a trait predicate when its trait is `Fn`, `FnMut` or `FnOnce`, found by lang
+/// item. [`TypeBuilder::closure_param_bound`] and [`unstatable_closure_bounds`] both read bounds
+/// through it.
+fn fn_trait_predicate<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    clause: mir_ty::Clause<'tcx>,
+) -> Option<mir_ty::PolyTraitPredicate<'tcx>> {
+    let pred = clause.as_trait_clause()?;
+    tcx.fn_trait_kind_from_def_id(pred.skip_binder().trait_ref.def_id)?;
+    Some(pred)
+}
+
+/// The `Fn`, `FnMut` or `FnOnce` bounds among the predicates of `def_id`, supertraits included,
+/// that [`TypeBuilder::closure_param_bound`] does not read, with the self type and the span of
+/// each: `for<'a> &'a Y: Fn(..)`, `<T as Tr>::Assoc: Fn(..)`, or `Y: Fn(..)` reached only through
+/// a bound `Y: MyFn` of a trait `MyFn: Fn(..)`.
 ///
-/// A `pre!` is stated of a closure type parameter ([`TypeBuilder::closure_param_bound`] reads its
-/// bound by the parameter), so a closure run through one of these bounds has no `pre!` to
-/// state. The check is on the generic signature, before any instantiation.
+/// A `pre!` is stated of a closure type parameter, which `closure_param_bound` reads by the
+/// parameter from the bounds written on it, so a closure run through one of these bounds has no
+/// `pre!` to state. The check is on the generic signature, before any instantiation.
 pub fn unstatable_closure_bounds<'tcx>(
     tcx: mir_ty::TyCtxt<'tcx>,
     def_id: DefId,
@@ -1868,13 +1874,17 @@ pub fn unstatable_closure_bounds<'tcx>(
     while let Some(def_id) = owner {
         let predicates = tcx.predicates_of(def_id);
         for (clause, span) in predicates.predicates {
-            let Some(pred) = clause.as_trait_clause() else {
-                continue;
-            };
-            let trait_ref = pred.skip_binder().trait_ref;
-            let is_fn_trait = tcx.fn_trait_kind_from_def_id(trait_ref.def_id).is_some();
-            if is_fn_trait && !matches!(trait_ref.self_ty().kind(), mir_ty::TyKind::Param(_)) {
-                bounds.push((*span, trait_ref.self_ty()));
+            for reached in rustc_trait_selection::traits::elaborate(tcx, [*clause]) {
+                let Some(pred) = fn_trait_predicate(tcx, reached) else {
+                    continue;
+                };
+                let self_ty = pred.skip_binder().trait_ref.self_ty();
+                // `F: Fn(..)` has `FnMut` and `FnOnce` as supertraits: the bound as written.
+                let from_fn_bound = fn_trait_predicate(tcx, *clause).is_some();
+                let written = from_fn_bound && matches!(self_ty.kind(), mir_ty::TyKind::Param(_));
+                if !written {
+                    bounds.push((*span, self_ty));
+                }
             }
         }
         owner = predicates.parent;
