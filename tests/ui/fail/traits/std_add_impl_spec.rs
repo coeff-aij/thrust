@@ -2,13 +2,13 @@
 //@compile-flags: -C debug-assertions=off
 
 // The pass twin with the sum in `main` off by one, which the postcondition rules out.
-
+use thrust_models::Model;
 #[derive(PartialEq)]
 struct Size {
     raw: i64,
 }
 
-impl thrust_models::Model for Size {
+impl Model for Size {
     type Ty = Size;
 }
 

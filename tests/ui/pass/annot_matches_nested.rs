@@ -1,7 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 #[derive(Clone, Copy)]
 pub enum Kind {
     Sized,
@@ -9,7 +9,7 @@ pub enum Kind {
     Prefixed(i64, i64),
 }
 
-impl thrust_models::Model for Kind {
+impl Model for Kind {
     type Ty = Self;
 }
 
@@ -18,7 +18,7 @@ pub struct Shape {
     len: i64,
 }
 
-impl thrust_models::Model for Shape {
+impl Model for Shape {
     type Ty = Self;
 }
 

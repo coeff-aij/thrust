@@ -4,10 +4,10 @@
 
 // The twin of `fail/ignored_unused_in_lib.rs`: a library whose verified functions do not run
 // `S`'s `Debug::fmt` may leave it ignored, though the impl is public.
-
+use thrust_models::Model;
 pub struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

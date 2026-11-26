@@ -184,6 +184,8 @@ impl<I: Idx + thrust_models::Model, J: Idx + thrust_models::Model> IndexSlice<I,
     pub fn invert_bijective_mapping(&self) -> IndexVec<J, I> {
         let mut inverse = IndexVec::from_elem_n(Idx::new(0), self.len());
         for (i1, &i2) in self.iter_enumerated() {
+            // The structural invariant of `for` slows the solver here (https://github.com/coeff-aij/thrust/issues/442).
+            thrust_macros::no_structural_invariant!();
             inverse[i2] = i1;
         }
         inverse

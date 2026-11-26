@@ -2,8 +2,9 @@
 //@compile-flags: -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
 
-// The reserved receiver is `s[i][0]` (5). The argument overwrites `s[j]` with `i != j`, so `check` still
-// receives the borrow of `s[i][0]`; the write may name the same element, so the creation moves before it.
+// The reserved receiver is `s[i][0]`; the argument reads it, then overwrites `s[j]`, which is the
+// pointer `s[i]` the receiver goes through when `i == j`. The receiver stays on the old element and
+// holds its value before the call.
 trait Check {
     fn check(&mut self, k: i64);
 }
@@ -14,7 +15,7 @@ impl Check for i64 {
     }
 }
 
-#[thrust_macros::requires(i < (*s).len() && i != j && j < (*s).len() && 0 < (*(*s)[i]).len() && (*(*s)[i])[0] == 5 && 0 < (*b).len() && (*b)[0] == 0)]
+#[thrust_macros::requires(i < (*s).len() && j < (*s).len() && 0 < (*(*s)[i]).len() && (*(*s)[i])[0] == 5 && 0 < (*b).len())]
 #[thrust_macros::ensures(true)]
 fn go<'a>(s: &mut [&'a mut [i64]], b: &'a mut [i64], i: usize, j: usize) {
     s[i][0].check({

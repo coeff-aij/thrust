@@ -2,14 +2,14 @@
 //@compile-flags: -C debug-assertions=off
 // An impl of a trait method without a contract that a trusted generic body calls through its
 // bound is checked under `requires(true)`.
-
+use thrust_models::Model;
 trait Tr {
     fn m(&self);
 }
 
 struct S;
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 

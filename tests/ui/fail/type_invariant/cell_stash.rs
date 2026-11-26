@@ -1,13 +1,13 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -C debug-assertions=off -Adead_code -Aunused
 //@rustc-env: THRUST_UNSPECIFIED_UNREACHABLE=1 THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::Model;
 // A trusted function stores the borrow of its `&mut Even` parameter in a `Cell` named by a shared
 // parameter of the same lifetime, and another hands it back to the caller, who writes an odd value:
 // the borrow outlives the call, so the invariant is not ensured of the parameter's final value.
 #[derive(Clone, Copy)]
 struct Even(i64);
-impl thrust_models::Model for Even { type Ty = Self; }
+impl Model for Even { type Ty = Self; }
 #[thrust_macros::context]
 impl Invariant for Even {
     #[thrust_macros::predicate]

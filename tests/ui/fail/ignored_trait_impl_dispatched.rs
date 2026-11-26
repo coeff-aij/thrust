@@ -4,10 +4,10 @@
 // `g`'s contract is verified once and reused at `S`. Its `==` on `&T` runs std's impl for
 // references, whose specification holds only if `T`'s `eq` meets the trait's, which an ignored
 // body is not checked against: at `S` the call runs the panicking `eq`.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -21,7 +21,7 @@ impl PartialEq for S {
 
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(true)]
-fn g<T: PartialEq + thrust_models::Model>(a: &T) -> bool {
+fn g<T: PartialEq + Model>(a: &T) -> bool {
     a == a
 }
 
