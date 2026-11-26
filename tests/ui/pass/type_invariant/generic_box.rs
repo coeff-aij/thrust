@@ -6,7 +6,7 @@
 // where the call runs `C::bump`, which assumes the invariant of the value inside the `Box`. The
 // contract of `g` is inferred, so at `C` it can require that invariant; a written contract at `T`
 // cannot state it (`fail/type_invariant/generic_box.rs`).
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(result <= 100)]
@@ -17,7 +17,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

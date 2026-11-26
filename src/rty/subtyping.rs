@@ -128,6 +128,7 @@ where
     let mut clauses = Vec::new();
     match (got, expected) {
         (Type::Int(_) | Type::UInt(_), Type::Int(_) | Type::UInt(_))
+        | (Type::Char, Type::Char)
         | (Type::Bool, Type::Bool)
         | (Type::String, Type::String)
         | (Type::Opaque, Type::Opaque)
@@ -194,7 +195,7 @@ where
             );
             clauses.extend(cs);
         }
-        (Type::Seq(got), Type::Seq(expected)) => {
+        (Type::Seq { elem: got, .. }, Type::Seq { elem: expected, .. }) => {
             clauses.extend(relate_refined_type(
                 scope,
                 got,
@@ -218,6 +219,13 @@ where
         }
         (Type::Param(got), Type::Param(expected))
             if got.forall_sort_idx == expected.forall_sort_idx => {}
+        // An opaque function pointer, as a closure seen from outside its body holds one, relates
+        // to no function type (`OpaqueFnPtrs` in `refine::template`). Relying on this is sound
+        // because every closure value passed the construction check in `check_closure_captures`,
+        // so a function pointer seen as opaque outside the body was already related to the type
+        // the body takes it at. The other sources of opaque types that meet a function type here
+        // (trait objects, raw pointers, `DynModel`) have no function pointer's Rust type.
+        (Type::Function(_), Type::Opaque) | (Type::Opaque, Type::Function(_)) => {}
         (Type::Alias(got), Type::Alias(expected))
             if got.forall_sort_index() == expected.forall_sort_index() => {}
         _ => rustc_middle::ty::tls::with(|tcx| {
@@ -335,14 +343,15 @@ where
         }
         // The elements of a sequence have the facts of their type: a sequence of another element
         // type entering it is checked against them.
-        (Type::Seq(got), Type::Seq(expected))
+        (Type::Seq { elem: got, .. }, Type::Seq { elem: expected, .. })
             if !fits(&got.ty, &expected.ty)
                 && got.ty.clone().strip_refinement() != expected.ty.clone().strip_refinement() =>
         {
-            facts.push_conj(super::checked_type_facts(
-                &Type::Seq(expected.clone()),
-                enum_defs,
-            ));
+            let expected = Type::Seq {
+                elem: expected.clone(),
+                fixed_len: None,
+            };
+            facts.push_conj(super::checked_type_facts(&expected, enum_defs));
         }
         (Type::Tuple(got), Type::Tuple(expected)) if got.elems.len() == expected.elems.len() => {
             for (index, (got, expected)) in got.elems.iter().zip(&expected.elems).enumerate() {
@@ -358,10 +367,10 @@ where
                     .subst_value_var(|| expected.kind.deref_term(value())),
             );
         }
-        // An enum's payloads have the facts of their integers (`RefinedType::formula_with`).
-        // A value entering the type at other arguments (a type parameter, an alias, another
-        // integer type) is checked against them when the type has any; without the enums'
-        // definitions that cannot be told, which no analysis scope lacks.
+        // An enum's payloads have the facts of their integers and `char`s
+        // (`RefinedType::formula_with`). A value entering the type at other arguments (a type
+        // parameter, an alias, another integer type) is checked against them when the type has
+        // any; without the enums' definitions that cannot be told, which no analysis scope lacks.
         (Type::Enum(got), Type::Enum(expected))
             if got.clone().strip_refinement() != expected.clone().strip_refinement() =>
         {

@@ -4,9 +4,9 @@
 // A crate's own `impl Fn for &S` runs its own body, not a forwarded call: its assertion is reachable
 // from a trusted caller and fails.
 #![feature(unboxed_closures, fn_traits)]
-
+use thrust_models::Model;
 struct S;
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = ();
 }
 impl FnOnce<(i32,)> for &S {

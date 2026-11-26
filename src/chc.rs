@@ -1316,7 +1316,28 @@ impl<V> Term<V> {
                     args: args.clone(),
                 });
             }
-            _ => {}
+            Term::Null
+            | Term::ForallDefault(_)
+            | Term::Var(_)
+            | Term::Bool(_)
+            | Term::Int(_)
+            | Term::String(_)
+            | Term::Box(_)
+            | Term::Mut(_, _)
+            | Term::BoxCurrent(_)
+            | Term::MutCurrent(_)
+            | Term::MutFinal(_)
+            | Term::App(_, _)
+            | Term::ArrayEmpty(_, _)
+            | Term::SeqEmpty(_)
+            | Term::Tuple(_)
+            | Term::TupleProj(_, _)
+            | Term::DatatypeCtor(_, _, _)
+            | Term::DatatypeDiscr(_, _)
+            | Term::DatatypeSelector(_, _)
+            | Term::ForallFn(_, _)
+            | Term::IntToBitVec { .. }
+            | Term::UserQuantifiedVar(_, _) => {}
         }
         for t in self.subterms() {
             t.collect_guarded_calls(guards, calls);
@@ -3350,8 +3371,8 @@ pub struct System {
     /// Predicate variables pushed together with every clause that defines them, independently of
     /// any analysis of a body at an instance: a reachability check for unknowns
     /// ([`System::pred_var_reach_of`]) does not count them. The `hist_inv!` relation of an
-    /// `FnMut` closure's by-value captures is one: its laws come with it and each call's step
-    /// from the closure's own body.
+    /// `FnMut` closure's by-value captures at the closure's own parameters is one: its laws come
+    /// with it and each call's step from the closure's own body checked there.
     self_defined_pred_vars: HashSet<PredVarId>,
     /// The source name of each quantified variable issued with one, named in a comment of the
     /// SMT-LIB2 output when logging is on.

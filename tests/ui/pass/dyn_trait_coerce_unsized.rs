@@ -6,6 +6,7 @@
 // `W` is built, which is a packing of its own.
 
 #![feature(coerce_unsized, unsize)]
+use thrust_models::Model;
 use std::marker::Unsize;
 use std::ops::CoerceUnsized;
 
@@ -17,7 +18,7 @@ trait Shape {
 
 struct Tri;
 
-impl thrust_models::Model for Tri {
+impl Model for Tri {
     type Ty = ();
 }
 

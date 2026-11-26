@@ -4,14 +4,14 @@
 
 // A closure type parameter inside a path type in a formula signature is modelled once: the
 // `Holder<F>` result is `(Closure<F>,)`, so `result.0 != f` compares two `Closure<F>`.
-
+use thrust_models::Model;
 use thrust_models::model::Closure;
 
 struct Holder<F> {
     f: F,
 }
 
-impl<F> thrust_models::Model for Holder<F> {
+impl<F> Model for Holder<F> {
     type Ty = (Closure<F>,);
 }
 

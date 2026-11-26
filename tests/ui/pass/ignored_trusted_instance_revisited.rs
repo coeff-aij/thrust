@@ -4,10 +4,10 @@
 
 // The twin of `fail/ignored_trusted_instance_revisited.rs`: `S`'s `eq` is checked against the trait's spec,
 // which `h`'s trusted contract relies on at `S`.
-
+use thrust_models::Model;
 struct S(i32);
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = Self;
 }
 
@@ -20,7 +20,7 @@ impl PartialEq for S {
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result == true)]
-fn h<T: PartialEq + thrust_models::Model>(a: &T) -> bool {
+fn h<T: PartialEq + Model>(a: &T) -> bool {
     a == a
 }
 

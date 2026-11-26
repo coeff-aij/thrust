@@ -1,9 +1,9 @@
 //@compile-flags: -C debug-assertions=off -A unused-variables
-
+use thrust_models::Model;
 // A model may not hold a `&str`, in an enum either.
 #[derive(Clone, Copy)]
 enum E { A(&'static str), B }
-impl thrust_models::Model for E { type Ty = E; } //~ ERROR: the model `E` holds `str`
+impl Model for E { type Ty = E; } //~ ERROR: the model `E` holds `str`
 #[thrust::trusted]
 #[thrust_macros::requires(true)]
 #[thrust_macros::ensures(result != a)]

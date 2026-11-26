@@ -7,15 +7,15 @@
 // impl's contract says a counter before its end yields an item. The body is checked against the
 // impl's contract, the impl's contract against the trait's, and the call in `main` uses the
 // impl's.
-
+use thrust_models::{forall, Model, model::{Int, Seq}};
 struct Counter {
     cur: i64,
     end: i64,
 }
 
 // `(*self).0` is `self.cur`, `(*self).1` is `self.end`.
-impl thrust_models::Model for Counter {
-    type Ty = (thrust_models::model::Int, thrust_models::model::Int);
+impl Model for Counter {
+    type Ty = (Int, Int);
 }
 
 #[thrust_macros::context]
@@ -53,7 +53,7 @@ impl IteratorSpec for Counter {
             && self.0 <= o.0
             && o.0 <= o.1
             && visited.len() == o.0 - self.0
-            && thrust_models::forall(|i: thrust_models::model::Int|
+            && forall(|i: Int|
                 !(0 <= i && i < visited.len()) || visited[i] == self.0 + i)
     }
 
@@ -66,9 +66,9 @@ impl IteratorSpec for Counter {
 
     fn produces_trans(
         a: &Self,
-        ab: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        ab: Seq<<Self::Item as Model>::Ty>,
         b: &Self,
-        bc: thrust_models::model::Seq<<Self::Item as thrust_models::Model>::Ty>,
+        bc: Seq<<Self::Item as Model>::Ty>,
         c: &Self,
     ) {
     }

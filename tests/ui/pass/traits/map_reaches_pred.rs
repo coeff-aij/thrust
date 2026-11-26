@@ -1,6 +1,7 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off -A unused-variables
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
+use thrust_models::Model;
 use thrust_models::model::{Closure, Int, Mut};
 use thrust_models::{exists, forall};
 
@@ -32,7 +33,7 @@ struct Range {
     end: i64,
 }
 
-impl thrust_models::Model for Range {
+impl Model for Range {
     type Ty = Range;
 }
 
@@ -85,7 +86,7 @@ struct Map<F> {
     func: F,
 }
 
-impl<F> thrust_models::Model for Map<F> {
+impl<F> Model for Map<F> {
     type Ty = Map<Closure<F>>;
 }
 

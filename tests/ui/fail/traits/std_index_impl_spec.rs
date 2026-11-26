@@ -3,15 +3,15 @@
 
 // The pass twin with the postcondition for index 0 naming the other field, which the
 // body does not satisfy.
-
+use thrust_models::{Model, model::Int};
 struct Pair {
     left: i64,
     right: i64,
 }
 
 // Pair is represented as Tuple<Int, Int>, so `(*self).0` is `self.left`.
-impl thrust_models::Model for Pair {
-    type Ty = (thrust_models::model::Int, thrust_models::model::Int);
+impl Model for Pair {
+    type Ty = (Int, Int);
 }
 
 #[thrust_macros::context]
