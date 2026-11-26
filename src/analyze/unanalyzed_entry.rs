@@ -145,11 +145,17 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         self.trusted_bodies = trusted;
     }
 
+    /// Records the bodies outside `THRUST_VERIFY_ONLY` that the analysis reached at no instance,
+    /// which are trusted for their contract from then on.
+    pub fn trust_unreached_bodies(&mut self, unreached: HashSet<LocalDefId>) {
+        self.unreached_trusted_bodies = unreached;
+    }
+
     /// Whether `def_id` is a crate function whose body is trusted rather than analyzed.
     pub fn is_trusted_body(&self, def_id: DefId) -> bool {
-        def_id
-            .as_local()
-            .is_some_and(|local| self.trusted_bodies.contains(&local))
+        def_id.as_local().is_some_and(|local| {
+            self.trusted_bodies.contains(&local) || self.unreached_trusted_bodies.contains(&local)
+        })
     }
 
     /// Records a function whose `pre!` an analyzed call into code Thrust does not analyze
@@ -652,6 +658,10 @@ impl<'tcx> analyze::Analyzer<'tcx> {
         &mut self,
         instance: mir_ty::Instance<'tcx>,
     ) -> Option<rty::FunctionType> {
+        // Its extern spec writes the precondition; building it here would analyze the body.
+        if self.is_unselected_spec_target(instance.def_id()) {
+            return None;
+        }
         let template = self
             .concrete_def_ty(instance.def_id())
             .and_then(|def_ty| def_ty.ty.as_function().cloned());

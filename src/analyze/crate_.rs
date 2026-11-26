@@ -32,6 +32,22 @@ pub struct Analyzer<'tcx, 'ctx> {
     /// those outside `THRUST_VERIFY_ONLY` that are trusted for their contract, and the closures in
     /// them.
     trusted: HashSet<LocalDefId>,
+    /// The functions outside `THRUST_VERIFY_ONLY` with a written contract whose body Thrust checks
+    /// only at the instances calls reach, never over their type parameters
+    /// ([`Analyzer::is_checked_per_instance`]). Trusted for that contract, an instance this run's
+    /// code makes would be checked in no run, so each is analyzed at every instance this run's
+    /// analyzed code runs (`analyze_reached_unselected_instances`), as a function without a
+    /// contract is.
+    unselected_per_instance: HashSet<LocalDefId>,
+    /// The defs of `unselected_per_instance` that the analysis reached at no instance, with the
+    /// closures in them: trusted for their contract, as a function outside the selection is.
+    /// Kept apart from `trusted`, which the analysis has read before they are known.
+    unreached_unselected: HashSet<LocalDefId>,
+    /// Every function of the crate whose body is checked only per instance and is not trusted
+    /// ([`Analyzer::is_checked_per_instance`]), in the selection or outside it.
+    checked_per_instance: HashSet<LocalDefId>,
+    /// The walk that finds the instances of `checked_per_instance` this run's code runs.
+    instance_walk: analyze::InstanceWalk<'tcx>,
     selection: Option<analyze::selection::Selection>,
     body_checks: analyze::BodyChecks,
 }
@@ -111,7 +127,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                     {
                         impl_methods_with_own_contract.push(target_def_id);
                     }
-                    local_spec_targets.push(local_target_def_id);
+                    let narrower = is_narrower_local_spec(
+                        self.tcx,
+                        *local_def_id,
+                        target_def_id,
+                        analyzer.owner_fn_id_args,
+                        analyzer.targets_ghost_consts(),
+                    );
+                    local_spec_targets.push((local_target_def_id, narrower));
                     // The spec is the target's contract; a trusted target's body is not
                     // checked against it.
                     if analyze::annot::has_thrust_attr(
@@ -181,9 +204,29 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         for def_id in impl_methods_with_own_contract {
             self.ctx.register_impl_method_with_own_contract(def_id);
         }
-        // Nor is the body of a target outside `THRUST_VERIFY_ONLY`, whose contract the spec writes.
-        for local_target_def_id in local_spec_targets {
-            if self.is_outside_selection(local_target_def_id) {
+        // Nor is the body of a target outside `THRUST_VERIFY_ONLY`, whose contract the spec writes,
+        // unless the body is checked only per instance: it is then analyzed at the instances this
+        // run's code runs.
+        let narrower_targets: HashSet<LocalDefId> = local_spec_targets
+            .iter()
+            .filter(|(_, narrower)| *narrower)
+            .map(|(target, _)| *target)
+            .collect();
+        for (local_target_def_id, narrower) in local_spec_targets {
+            if !self.is_outside_selection(local_target_def_id)
+                || self.skip_analysis.contains(&local_target_def_id)
+            {
+                continue;
+            }
+            if self.is_checked_per_instance(local_target_def_id, narrower) {
+                self.unselected_per_instance.insert(local_target_def_id);
+                self.ctx
+                    .register_unselected_spec_target(local_target_def_id.to_def_id());
+                self.body_checks.record(
+                    local_target_def_id,
+                    analyze::BodyCheck::Unselected(OUTSIDE_SELECTION),
+                );
+            } else {
                 self.skip_analysis.insert(local_target_def_id);
                 self.trusted.insert(local_target_def_id);
                 self.body_checks.record(
@@ -202,6 +245,18 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         for local_def_id in roots.into_iter().chain(nested) {
             self.refine_fn_def(*local_def_id);
         }
+        self.checked_per_instance = self
+            .tcx
+            .mir_keys(())
+            .iter()
+            .copied()
+            .filter(|def_id| {
+                self.tcx.def_kind(*def_id).is_fn_like()
+                    && !self.tcx.is_closure_like(def_id.to_def_id())
+                    && !self.skip_analysis.contains(def_id)
+                    && self.is_checked_per_instance(*def_id, narrower_targets.contains(def_id))
+            })
+            .collect();
     }
 
     /// Whether `local_def_id` is a function outside the selection of `THRUST_VERIFY_ONLY`
@@ -267,6 +322,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let has_const_param = self.has_const_param(local_def_id);
         let is_law_impl = self.is_law_impl(local_def_id);
         let outside_selection = self.is_outside_selection(local_def_id);
+        let checked_per_instance =
+            outside_selection && self.is_checked_per_instance(local_def_id, false);
         let per_instance_requested = self.ctx.per_instance_generics();
         let mut analyzer = self.ctx.local_def_analyzer(local_def_id);
         // A function a `block_contract!` block is extracted into has one call, its region: its
@@ -342,6 +399,13 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             .typeck_root_def_id(local_def_id.to_def_id())
             .as_local()
         {
+            if root_local_def_id != local_def_id
+                && self.unselected_per_instance.contains(&root_local_def_id)
+            {
+                // Analyzed with its function, at the instances that is reached at.
+                let enclosing = self.body_checks.get(root_local_def_id);
+                self.body_checks.record(local_def_id, enclosed(enclosing));
+            }
             if root_local_def_id != local_def_id && self.skip_analysis.contains(&root_local_def_id)
             {
                 self.skip_analysis.insert(local_def_id);
@@ -360,7 +424,14 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let mut expected = None;
         if outside_selection && !self.skip_analysis.contains(&local_def_id) {
             let ty = analyzer.expected_ty();
-            if !ty.has_pred_var() {
+            if !ty.has_pred_var() && checked_per_instance {
+                tracing::debug!("checked per instance, outside THRUST_VERIFY_ONLY");
+                self.unselected_per_instance.insert(local_def_id);
+                self.body_checks.record(
+                    local_def_id,
+                    analyze::BodyCheck::Unselected(OUTSIDE_SELECTION),
+                );
+            } else if !ty.has_pred_var() {
                 tracing::debug!("trusted outside THRUST_VERIFY_ONLY");
                 self.skip_analysis.insert(local_def_id);
                 self.trusted.insert(local_def_id);
@@ -381,22 +452,30 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // argument its call fixes is a premise there (`GhostTie::Fixed`).
         let targets_ghost_consts = analyzer.targets_ghost_consts();
         let has_const_param = has_const_param || targets_ghost_consts;
+        let spec_of_unselected_per_instance = analyzer.is_annotated_as_extern_spec_fn()
+            && owner_fn_id
+                .as_local()
+                .is_some_and(|def_id| self.unselected_per_instance.contains(&def_id));
         if analyzer.is_annotated_as_extern_spec_fn()
-            && is_narrower_local_spec(
-                self.tcx,
-                local_def_id,
-                owner_fn_id,
-                owner_fn_id_args,
-                targets_ghost_consts,
-            )
+            && (spec_of_unselected_per_instance
+                || is_narrower_local_spec(
+                    self.tcx,
+                    local_def_id,
+                    owner_fn_id,
+                    owner_fn_id_args,
+                    targets_ghost_consts,
+                ))
         {
             // The spec covers the local target only at some of its instances, so it is not the
             // contract of the target's generic body: the body is analyzed at each covered
             // instance a call reaches, in the caller's environment, against the spec there
             // (`Analyzer::def_ty_with_args`). Checked over the target's own type parameters, the
             // spec's types, normalized under the spec's bounds or at its fixed arguments,
-            // disagree with the body's. A trusted target, or one outside `THRUST_VERIFY_ONLY`,
-            // is not analyzed.
+            // disagree with the body's. A target outside `THRUST_VERIFY_ONLY` whose body is
+            // checked only per instance is registered so too, whatever the spec covers: analyzed at
+            // the instances this run reaches, its contract built only there, so that a run emits no
+            // obligation of a function it neither verifies nor reaches. A trusted target, or
+            // another one outside the selection, is not analyzed.
             let skips_target = owner_fn_id
                 .as_local()
                 .is_some_and(|def_id| self.skip_analysis.contains(&def_id));
@@ -523,6 +602,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 fn_mut_generic_defs.push(*local_def_id);
                 continue;
             }
+            if self.in_unselected_per_instance(*local_def_id) {
+                continue;
+            }
             self.analyze_placeholder(*local_def_id);
         }
         // A def is skipped (D34) when a concrete instantiation has analyzed its body and no
@@ -531,13 +613,36 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         // analysis did not analyze at its arguments (`Analyzer::record_fn_mut_generic_reused`,
         // with the impls of a trait method reached at a type parameter). Analyzing a def may add
         // one for a def skipped before, which is then analyzed too.
+        // The instances of `checked_per_instance` this run's code runs are analyzed after, and
+        // may reuse a def skipped here, which then gets its analysis over its type parameters.
         let mut pending = fn_mut_generic_defs;
+        let mut verified_per_instance = Vec::new();
+        loop {
+            self.decide_fn_mut_generics(pending, &mut verified_per_instance);
+            if !self.analyze_reached_per_instance() {
+                break;
+            }
+            let (reused, rest): (Vec<_>, Vec<_>) = verified_per_instance
+                .into_iter()
+                .partition(|local_def_id| self.ctx.has_reused_instance(*local_def_id));
+            pending = reused;
+            verified_per_instance = rest;
+        }
+        self.trust_unreached_unselected_per_instance();
+    }
+
+    /// Analyzes the `FnMut`-bounded defs of `pending` over their type parameters, but those that
+    /// `skips_fn_mut_generic` leaves to their instances, until no analysis adds a reused instance
+    /// of one left out; those left are added to `verified_per_instance`.
+    fn decide_fn_mut_generics(
+        &mut self,
+        mut pending: Vec<LocalDefId>,
+        verified_per_instance: &mut Vec<LocalDefId>,
+    ) {
         while !pending.is_empty() {
             let mut skipped = Vec::new();
             for local_def_id in pending {
-                if self.ctx.has_concrete_instance(local_def_id)
-                    && !self.ctx.has_reused_instance(local_def_id)
-                {
+                if self.skips_fn_mut_generic(local_def_id) {
                     // The placeholder analysis would check the body against a closure contract
                     // that is a free forall predicate, which no clause relates to the concrete
                     // closures of this crate. An `FnMut` closure's state changes between calls,
@@ -551,17 +656,222 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
                 self.analyze_placeholder(local_def_id);
             }
-            pending = skipped
-                .into_iter()
-                .filter(|local_def_id| {
-                    let reused = self.ctx.has_reused_instance(*local_def_id);
-                    if !reused {
-                        tracing::debug!(?local_def_id, "verified per concrete instantiation");
-                    }
-                    reused
-                })
-                .collect();
+            pending = Vec::new();
+            for local_def_id in skipped {
+                if self.ctx.has_reused_instance(local_def_id) {
+                    pending.push(local_def_id);
+                } else {
+                    tracing::debug!(?local_def_id, "verified per concrete instantiation");
+                    verified_per_instance.push(local_def_id);
+                }
+            }
         }
+    }
+
+    /// Whether the placeholder analysis of the `FnMut`-bounded def `local_def_id` is left out:
+    /// when no instance has reused its generic analysis and concrete instantiations have analyzed
+    /// its body, or in `unselected_per_instance` (with the closures in one), whose instances this
+    /// run's code runs are each analyzed.
+    fn skips_fn_mut_generic(&self, local_def_id: LocalDefId) -> bool {
+        if self.ctx.has_reused_instance(local_def_id) {
+            return false;
+        }
+        self.in_unselected_per_instance(local_def_id)
+            || self.ctx.has_concrete_instance(local_def_id)
+    }
+
+    /// Whether `local_def_id` is a def of `unselected_per_instance` or a closure in one.
+    fn in_unselected_per_instance(&self, local_def_id: LocalDefId) -> bool {
+        let root = self.tcx.typeck_root_def_id(local_def_id.to_def_id());
+        root.as_local()
+            .is_some_and(|root| self.unselected_per_instance.contains(&root))
+    }
+
+    /// Whether the body of the generic function `local_def_id` is checked only at the instances
+    /// calls reach, never over its type parameters: one with an `FnMut`-bounded type parameter,
+    /// at each concrete closure (D34); the target of a local extern spec that covers only some of
+    /// its instances (`narrower_spec`), at each covered one; and any but a destructor (D57) under
+    /// `THRUST_PER_INSTANCE_GENERICS=1`. However its contract is written.
+    fn is_checked_per_instance(&self, local_def_id: LocalDefId, narrower_spec: bool) -> bool {
+        // A trait method declared without a default body has no body to check. A lemma is a
+        // proof: its calls are ghost and take its contract, so it is not run at instances.
+        if !self.tcx.mir_keys(()).contains(&local_def_id)
+            || analyze::annot::has_thrust_attr(
+                self.tcx,
+                local_def_id.to_def_id(),
+                &analyze::annot::lemma_path(),
+            )
+        {
+            return false;
+        }
+        if narrower_spec {
+            return true;
+        }
+        if !self
+            .tcx
+            .generics_of(local_def_id)
+            .requires_monomorphization(self.tcx)
+        {
+            return false;
+        }
+        let is_destructor = self
+            .tcx
+            .impl_of_assoc(local_def_id.to_def_id())
+            .is_some_and(|impl_def_id| {
+                self.tcx.trait_id_of_impl(impl_def_id) == self.tcx.lang_items().drop_trait()
+            });
+        self.has_fn_mut_bounded_param(local_def_id)
+            || (per_instance_generics_requested() && !is_destructor)
+    }
+
+    /// Analyzes each instance of a def of `checked_per_instance` that the bodies analyzed since
+    /// the last call run ([`analyze::Analyzer::instances_reached_from_new_analyses`]), at its
+    /// arguments, as a call there would: in the typing environment of the analysis that reached
+    /// it, with that function as the caller. Each analysis is walked from in turn. Returns whether
+    /// it analyzed any. A function in the selection, or in a run over the whole crate, is sought
+    /// as one outside it is: an instance that only a trusted body, a std body, a vtable or a
+    /// function pointer runs is checked by no direct call.
+    fn analyze_reached_per_instance(&mut self) -> bool {
+        if self.checked_per_instance.is_empty() {
+            return false;
+        }
+        let mut analyzed = false;
+        let mut walk = std::mem::take(&mut self.instance_walk);
+        loop {
+            let reached = self.ctx.instances_reached_from_new_analyses(
+                &mut walk,
+                |def_id| self.crate_mode(def_id),
+                |def_id| {
+                    def_id
+                        .as_local()
+                        .is_some_and(|local| self.checked_per_instance.contains(&local))
+                },
+            );
+            if reached.is_empty() {
+                break;
+            }
+            for instance in reached {
+                if self.ctx.analyzed_at(instance.def_id, instance.generic_args)
+                    || self.closure_of_trusted_body(instance.generic_args, &instance.through)
+                {
+                    continue;
+                }
+                tracing::info!(
+                    ?instance,
+                    "checked per instance, at an instance this run reaches"
+                );
+                self.instantiate_closure_contracts(&instance);
+                self.ctx.def_ty_with_args(
+                    instance.def_id,
+                    instance.generic_args,
+                    instance.env_def_id,
+                );
+                analyzed = true;
+            }
+        }
+        self.instance_walk = walk;
+        analyzed
+    }
+
+    /// Builds the contract of each closure among the arguments of `instance` under the function it
+    /// is analyzed from, as the analysis of the body that makes the closure does
+    /// (`basic_block::register_closure_local_types`): a `pre!` or `post!` of the closure in the
+    /// instance's contract reads it from there.
+    fn instantiate_closure_contracts(&mut self, instance: &analyze::ReachedInstance<'tcx>) {
+        let closures: Vec<_> = instance
+            .generic_args
+            .iter()
+            .flat_map(|arg| arg.walk())
+            .filter_map(|part| match *part.as_type()?.kind() {
+                mir_ty::Closure(def_id, args) if def_id.is_local() => Some((def_id, args)),
+                _ => None,
+            })
+            .collect();
+        for (closure_def_id, closure_args) in closures {
+            let parent_count = self.tcx.generics_of(closure_def_id).parent_count;
+            let parent_args = self.tcx.mk_args(&closure_args[..parent_count]);
+            let _ = self
+                .ctx
+                .def_ty_with_args(closure_def_id, parent_args, instance.env_def_id);
+        }
+    }
+
+    /// Whether `generic_args` name a closure written in a trusted body (`trusted`) whose own code
+    /// runs the instance: `through` holds that body, or the body is `#[thrust::trusted]`. The
+    /// instance is then the body's own choice. A `#[thrust::trusted]` body's choices are its
+    /// author's responsibility. A body trusted for its contract outside `THRUST_VERIFY_ONLY` is
+    /// verified in the run that selects it, whose walk finds the instances its code runs at its type
+    /// parameters. A closure such a body only hands out (returns or stores) is run by other code:
+    /// that instance is not skipped, so it is analyzed here, and stops if the closure has no
+    /// contract to analyze it with. The walk still follows a skipped instance, for what it runs at
+    /// the type arguments this run fixes.
+    fn closure_of_trusted_body(
+        &self,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+        through: &HashSet<rustc_span::def_id::DefId>,
+    ) -> bool {
+        generic_args.iter().any(|arg| {
+            arg.walk().any(|part| {
+                let Some(ty) = part.as_type() else {
+                    return false;
+                };
+                let (mir_ty::Closure(def_id, _)
+                | mir_ty::CoroutineClosure(def_id, _)
+                | mir_ty::Coroutine(def_id, _)) = *ty.kind()
+                else {
+                    return false;
+                };
+                let root = self.tcx.typeck_root_def_id(def_id);
+                let Some(local_root) = root.as_local() else {
+                    return false;
+                };
+                self.trusted.contains(&local_root)
+                    && (through.contains(&root)
+                        || analyze::annot::has_thrust_attr(
+                            self.tcx,
+                            root,
+                            &analyze::annot::trusted_path(),
+                        ))
+            })
+        })
+    }
+
+    /// Trusts for its contract each def of `unselected_per_instance` whose body the analysis
+    /// reached at no instance, with the closures in it, as a function outside the selection is:
+    /// it is then a root of the walks of code Thrust does not analyze.
+    fn trust_unreached_unselected_per_instance(&mut self) {
+        let unreached: HashSet<_> = self
+            .unselected_per_instance
+            .iter()
+            .copied()
+            .filter(|def_id| !self.ctx.has_analyzed_body(*def_id))
+            .collect();
+        for def_id in &self.unselected_per_instance {
+            let reached = !unreached.contains(def_id);
+            let def = self.tcx.def_path_str(*def_id);
+            tracing::info!(
+                def,
+                reached,
+                "outside THRUST_VERIFY_ONLY, checked per instance"
+            );
+        }
+        for def_id in self.tcx.mir_keys(()) {
+            let root = self.tcx.typeck_root_def_id(def_id.to_def_id());
+            if root
+                .as_local()
+                .is_some_and(|root| unreached.contains(&root))
+            {
+                self.unreached_unselected.insert(*def_id);
+            }
+        }
+        self.ctx
+            .trust_unreached_bodies(self.unreached_unselected.clone());
+    }
+
+    /// Whether the body of `local_def_id` is not analyzed in this run.
+    fn is_skipped(&self, local_def_id: LocalDefId) -> bool {
+        self.skip_analysis.contains(&local_def_id)
+            || self.unreached_unselected.contains(&local_def_id)
     }
 
     /// Checks that the contract written on a method of a local trait impl refines the trait's
@@ -1065,6 +1375,10 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             tcx,
             skip_analysis,
             trusted: HashSet::new(),
+            unselected_per_instance: HashSet::new(),
+            unreached_unselected: HashSet::new(),
+            checked_per_instance: HashSet::new(),
+            instance_walk: Default::default(),
             selection,
             body_checks,
         }
@@ -1311,7 +1625,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     ) {
         let analyzed = self.tcx.mir_keys(()).iter().copied().filter(|def_id| {
             let id = def_id.to_def_id();
-            !self.skip_analysis.contains(def_id)
+            !self.is_skipped(*def_id)
                 && self.tcx.def_kind(id).is_fn_like()
                 && !self.tcx.is_closure_like(id)
         });
@@ -1348,7 +1662,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
     /// The mode of a crate function on the ignored walk ([`analyze::Mode`]).
     fn crate_mode(&self, def_id: rustc_span::def_id::DefId) -> Option<analyze::Mode> {
         let local = def_id.as_local()?;
-        if self.trusted.contains(&local) {
+        if self.trusted.contains(&local) || self.unreached_unselected.contains(&local) {
             return Some(analyze::Mode::Trusted);
         }
         // A derived impl is not trusted by the user: its methods rely on the fields' impls.
@@ -1364,9 +1678,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
 
     /// Whether `def_id` is a fn-like def of the crate whose body Thrust analyzes.
     fn is_analyzed(&self, def_id: rustc_span::def_id::DefId) -> bool {
-        def_id.as_local().is_some_and(|local| {
-            self.tcx.def_kind(def_id).is_fn_like() && !self.skip_analysis.contains(&local)
-        })
+        def_id
+            .as_local()
+            .is_some_and(|local| self.tcx.def_kind(def_id).is_fn_like() && !self.is_skipped(local))
     }
 
     /// Fixes the precondition of each crate function with an inferred contract that code Thrust
@@ -1450,11 +1764,12 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         let Some(closure) = closure else {
             return;
         };
-        let written = self
-            .ctx
-            .concrete_def_ty(callee.def_id())
-            .and_then(|def_ty| def_ty.ty.as_function())
-            .is_some_and(|fn_ty| !self.ctx.infers_precondition(fn_ty));
+        let written = self.ctx.is_unselected_spec_target(callee.def_id())
+            || self
+                .ctx
+                .concrete_def_ty(callee.def_id())
+                .and_then(|def_ty| def_ty.ty.as_function())
+                .is_some_and(|fn_ty| !self.ctx.infers_precondition(fn_ty));
         if written {
             return;
         }
