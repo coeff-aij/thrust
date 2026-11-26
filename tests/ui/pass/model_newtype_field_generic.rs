@@ -5,7 +5,7 @@
 // A struct that declares the model of its only non-zero-sized field is that field in the logic
 // also in a function that leaves the element type unbounded: the value is a sequence, not the
 // `(sequence, unit)` tuple of the struct's fields, so `len` on it is a sequence operation.
-
+use thrust_models::Model;
 use std::marker::PhantomData;
 
 struct IndexVec<I, T> {
@@ -13,8 +13,8 @@ struct IndexVec<I, T> {
     _marker: PhantomData<fn(&I)>,
 }
 
-impl<I, T: thrust_models::Model> thrust_models::Model for IndexVec<I, T> {
-    type Ty = <Vec<T> as thrust_models::Model>::Ty;
+impl<I, T: Model> Model for IndexVec<I, T> {
+    type Ty = <Vec<T> as Model>::Ty;
 }
 
 struct IndexSlice<I, T> {
@@ -22,8 +22,8 @@ struct IndexSlice<I, T> {
     raw: [T],
 }
 
-impl<I, T: thrust_models::Model> thrust_models::Model for IndexSlice<I, T> {
-    type Ty = <[T] as thrust_models::Model>::Ty;
+impl<I, T: Model> Model for IndexSlice<I, T> {
+    type Ty = <[T] as Model>::Ty;
 }
 
 #[thrust_macros::context]

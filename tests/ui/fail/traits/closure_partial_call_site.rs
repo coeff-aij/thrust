@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Aunused_parens -A unused-variables -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=60
-
+use thrust_models::{Model, model::Closure};
 // The closure is narrower than what the call site can establish: `seeded` only
 // promises a positive seed, so a mapper undefined at 1 must be rejected there.
 #[thrust_macros::context]
@@ -19,8 +19,8 @@ struct S<F> {
     func: F,
 }
 
-impl<F> thrust_models::Model for S<F> {
-    type Ty = S<thrust_models::model::Closure<F>>;
+impl<F> Model for S<F> {
+    type Ty = S<Closure<F>>;
 }
 
 #[thrust_macros::context]

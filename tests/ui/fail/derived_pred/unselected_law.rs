@@ -3,7 +3,7 @@
 
 // Rejected. With the inherited law `r_refl` outside `THRUST_VERIFY_ONLY` it is not checked for `S`,
 // so it gives `r` no rule; without the selection the file is accepted.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Rel {
     #[thrust_macros::predicate(derived)]
@@ -22,7 +22,7 @@ struct S {
     a: isize,
 }
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = S;
 }
 

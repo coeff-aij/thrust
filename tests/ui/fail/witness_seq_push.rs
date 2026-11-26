@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -A unused-variables -C debug-assertions=off
 //@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper
-
+use thrust_models::witness;
 use thrust_models::model::{Int, Seq, UInt};
 use thrust_models::Model;
 use thrust_models::{exists, forall, Ghost};
@@ -45,7 +45,7 @@ fn weight_push<F: core::ops::Deref<Target = u64> + Copy + Model>(s: &Vec<F>, x: 
     let ts = thrust_macros::choose!(|s: &Vec<F>, w: u64| -> Seq<Int> { weight::<F>(*s, w) });
     thrust_macros::proof!(sum_first_push(ts, wx, s.len()));
     thrust_macros::proof_assert!(|s: &Vec<F>, x: &F, ts: Ghost<Seq<Int>>, wx: i64, w: u64|
-        thrust_models::witness(weight::<F>((*s).push(*x), w + wx), ts));
+        witness(weight::<F>((*s).push(*x), w + wx), ts));
 }
 
 fn main() {}

@@ -1,20 +1,18 @@
 //@check-pass
 //@compile-flags: -C debug-assertions=off
-
-// The code under the contract starts from `requires` alone, which is checked where it is
-// written.
+// The block is verified from `requires` alone, which is checked where the block is written.
 #[thrust::trusted]
 #[thrust::callable]
 fn rand() -> i64 {
     unimplemented!()
 }
-
 fn main() {
     let n = rand();
     let mut x = if n > 0 { n } else { 1 };
     thrust_macros::block_contract!(
-        requires(|x: i64| x > 0),
-        ensures(|x: i64| x > 1),
+        |mut x: i64| -> ()
+        requires(x > 0),
+        ensures(x > 1),
         {
             x = x * 2;
         }

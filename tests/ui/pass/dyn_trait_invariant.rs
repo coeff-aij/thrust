@@ -4,7 +4,7 @@
 
 // Packing a value into a trait object requires its type invariant, which the impl's methods
 // assume and a call through the trait object does not state.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Counter {
     #[thrust_macros::ensures(result <= 100)]
@@ -15,7 +15,7 @@ struct C {
     n: u32,
 }
 
-impl thrust_models::Model for C {
+impl Model for C {
     type Ty = Self;
 }
 

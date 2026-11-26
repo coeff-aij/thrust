@@ -4,7 +4,7 @@
 
 // The twin of `fail/dyn_trait_written_to_trusted.rs`: the trait's contract, which code Thrust
 // does not analyze is trusted to keep, is the precondition of a call through the trait object.
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Call {
     #[thrust_macros::requires(*x < 10)]
@@ -14,7 +14,7 @@ trait Call {
 
 struct S;
 
-impl thrust_models::Model for S {
+impl Model for S {
     type Ty = ();
 }
 

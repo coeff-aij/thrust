@@ -9,7 +9,7 @@
 //
 // Each of the three functions pins the field against the whole value from a different side:
 // reading it, building the struct out of it, and writing through it.
-
+use thrust_models::Model;
 use std::marker::PhantomData;
 
 struct Idx;
@@ -19,11 +19,11 @@ struct IndexVec<I, T> {
     _marker: PhantomData<fn(&I)>,
 }
 
-impl<I, T> thrust_models::Model for IndexVec<I, T>
+impl<I, T> Model for IndexVec<I, T>
 where
-    T: thrust_models::Model,
+    T: Model,
 {
-    type Ty = <[T] as thrust_models::Model>::Ty;
+    type Ty = <[T] as Model>::Ty;
 }
 
 #[thrust_macros::context]

@@ -1,15 +1,15 @@
 //@error-in-other-file: Unsat
-
+use thrust_models::model::Mut;
 #[allow(unused_variables)]
 #[thrust::formula_fn]
-fn _thrust_requires_f(x: thrust_models::model::Mut<i64>, y: i64) -> bool {
+fn _thrust_requires_f(x: Mut<i64>, y: i64) -> bool {
     true
 }
 
 #[allow(unused_variables)]
 #[thrust::formula_fn]
-fn _thrust_ensures_f(result: (), x: thrust_models::model::Mut<i64>, y: i64) -> bool {
-    x == thrust_models::model::Mut::new(*x, y)
+fn _thrust_ensures_f(result: (), x: Mut<i64>, y: i64) -> bool {
+    x == Mut::new(*x, y)
 }
 
 #[allow(path_statements)]

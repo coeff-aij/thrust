@@ -5,11 +5,11 @@
 // `slice::Iter` is the `(base, cursor)` pair of the sequence it was made from and the position
 // of the element the next `next` returns, so the element `next` hands back is named without a
 // quantifier and without a loop.
-
+use thrust_models::Model;
 #[thrust_macros::requires((*s).len() > 0)]
 #[thrust_macros::ensures(result == (*s)[0])]
 fn head<T>(s: &[T]) -> T
-    where T: thrust_models::Model + Copy, T::Ty: PartialEq
+    where T: Model + Copy, T::Ty: PartialEq
 {
     let mut it = s.iter();
     match it.next() {

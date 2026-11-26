@@ -4,13 +4,13 @@
 
 // A call of `Deref::deref` at a type parameter is analysed as accepting any argument, so the
 // impl an instance reaches has to.
-
+use thrust_models::Model;
 use std::ops::Deref;
 
 #[derive(Clone, Copy)]
 struct Wrapper(u64);
 
-impl thrust_models::Model for Wrapper {
+impl Model for Wrapper {
     type Ty = (u64,);
 }
 

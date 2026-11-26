@@ -4,7 +4,7 @@
 // Rejected. A generic impl verified once over its type parameters may not leave a derived
 // predicate out: each instance needs a relation of its own, which only analyzing the impl at each
 // instance gives (`THRUST_PER_INSTANCE_GENERICS=1`, `generic_law_instance.rs`).
-
+use thrust_models::Model;
 #[thrust_macros::context]
 trait Iter {
     type Item;
@@ -20,12 +20,12 @@ struct Rep<T> {
     v: T,
 }
 
-impl<T: thrust_models::Model> thrust_models::Model for Rep<T> {
+impl<T: Model> Model for Rep<T> {
     type Ty = Rep<T::Ty>;
 }
 
 #[thrust_macros::context]
-impl<T: Copy + thrust_models::Model> Iter for Rep<T> {
+impl<T: Copy + Model> Iter for Rep<T> {
     type Item = T;
 
     fn next(&mut self) -> Option<T> {
