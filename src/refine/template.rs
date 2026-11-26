@@ -1851,3 +1851,33 @@ fn discr_value<'tcx>(tcx: mir_ty::TyCtxt<'tcx>, discr: mir_ty::util::Discr<'tcx>
         discr.val.into()
     }
 }
+
+/// The `Fn`, `FnMut` or `FnOnce` bounds among the predicates of `def_id` whose self type is
+/// not a type parameter, such as `for<'a> &'a Y: Fn(..)` or `<T as Tr>::Assoc: Fn(..)`, with
+/// the span of each.
+///
+/// A `pre!` is stated of a closure type parameter ([`TypeBuilder::closure_param_bound`] reads its
+/// bound by the parameter), so a closure run through one of these bounds has no `pre!` to
+/// state. The check is on the generic signature, before any instantiation.
+pub fn unstatable_closure_bounds<'tcx>(
+    tcx: mir_ty::TyCtxt<'tcx>,
+    def_id: DefId,
+) -> Vec<(rustc_span::Span, mir_ty::Ty<'tcx>)> {
+    let mut bounds = Vec::new();
+    let mut owner = Some(def_id);
+    while let Some(def_id) = owner {
+        let predicates = tcx.predicates_of(def_id);
+        for (clause, span) in predicates.predicates {
+            let Some(pred) = clause.as_trait_clause() else {
+                continue;
+            };
+            let trait_ref = pred.skip_binder().trait_ref;
+            let is_fn_trait = tcx.fn_trait_kind_from_def_id(trait_ref.def_id).is_some();
+            if is_fn_trait && !matches!(trait_ref.self_ty().kind(), mir_ty::TyKind::Param(_)) {
+                bounds.push((*span, trait_ref.self_ty()));
+            }
+        }
+        owner = predicates.parent;
+    }
+    bounds
+}
