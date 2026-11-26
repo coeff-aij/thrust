@@ -108,6 +108,9 @@ pub fn closure_pre_forall_pred(
     )
 }
 
+/// The postcondition of a call of the closure type parameter `did` through `&mut` (Creusot's
+/// `postcondition_mut`), over the `Mut` pair of the closure's state before and after the call,
+/// the arguments and the result. A call through `&` reads it at a pair of equal states.
 pub fn closure_post_forall_pred(
     tcx: mir_ty::TyCtxt<'_>,
     did: DefId,
@@ -117,6 +120,23 @@ pub fn closure_post_forall_pred(
 ) -> ForallPred {
     ForallPred::new(
         stable_def_id_symbol(tcx, did, "q_post"),
+        type_arguments,
+        type_parameters,
+        params,
+    )
+}
+
+/// The postcondition of a call of the closure type parameter `did` that consumes the closure
+/// (Creusot's `postcondition_once`), over its state, the arguments and the result.
+pub fn closure_post_once_forall_pred(
+    tcx: mir_ty::TyCtxt<'_>,
+    did: DefId,
+    type_arguments: String,
+    type_parameters: Vec<Sort>,
+    params: Vec<Sort>,
+) -> ForallPred {
+    ForallPred::new(
+        stable_def_id_symbol(tcx, did, "q_post_once"),
         type_arguments,
         type_parameters,
         params,

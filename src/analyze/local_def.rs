@@ -639,19 +639,8 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let Some(p) = self.type_builder.resolve_param_ty(*p, self.generic_args) else {
                 continue;
             };
-            if let Some(fun_ty) = self.type_builder.build_closure_type_for_param(
-                p,
-                impl_local_def_id,
-                self.generic_args,
-            ) {
-                self.type_builder.register_closure_type_param(
-                    analyze::TypeParam::GenericType {
-                        param_def_id: self.type_builder.param_def_id(&p),
-                        local_idx: self.type_builder.param_local_idx(&p),
-                    },
-                    fun_ty,
-                );
-            }
+            self.type_builder
+                .closure_param_contract(p, impl_local_def_id, self.generic_args);
         }
     }
 

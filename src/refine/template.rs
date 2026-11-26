@@ -9,7 +9,7 @@ use rustc_middle::ty as mir_ty;
 use rustc_span::def_id::DefId;
 
 use super::basic_block::BasicBlockType;
-use crate::analyze::{DefIdCache, EnumDefs, TypeParam, TypeParamMap};
+use crate::analyze::{self, ClosureParamContracts, DefIdCache, EnumDefs, TypeParam, TypeParamMap};
 use crate::chc;
 use crate::refine;
 use crate::rty;
@@ -158,7 +158,7 @@ pub struct TypeBuilder<'tcx> {
     /// See [`rty::TypeParamIdx`] for more details.
     param_idx_mapping: HashMap<u32, rty::TypeParamIdx>,
     type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
-    closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
+    closure_type_params: Rc<RefCell<ClosureParamContracts>>,
     system: Rc<RefCell<chc::System>>,
     enum_defs: Rc<RefCell<EnumDefs>>,
     /// The structs whose fields are being built, outermost first.
@@ -198,6 +198,58 @@ fn pre_upvars_term<V>(upvars: chc::Term<V>, closure_kind: mir_ty::ClosureKind) -
     match closure_kind {
         mir_ty::ClosureKind::FnMut => upvars.mut_current(),
         mir_ty::ClosureKind::Fn | mir_ty::ClosureKind::FnOnce => upvars,
+    }
+}
+
+/// How a call of a closure type parameter reads the parameter's postcondition.
+///
+/// Calls through `&` and `&mut` read one relation (Creusot's `postcondition_mut`) over the `Mut`
+/// pair of the closure's state before and after the call, so that an impl whose methods bound one
+/// parameter by `Fn` and by `FnMut` declares it once; a call through `&` reads it at two equal
+/// states (Creusot's `fn_mut` law). A call by value reads a relation of its own (Creusot's
+/// `postcondition_once`), except at a parameter that is `Fn` wherever it is in scope, where it is
+/// an `Fn` call (Creusot's `fn_once` law).
+#[derive(Clone, Copy)]
+enum PostReading {
+    /// `q_post` at the receiver, the `Mut` pair of a call through `&mut`.
+    Pair,
+    /// `q_post` at the pair of two equal states, the state behind the `&` of an `Fn` call.
+    UnchangedShared,
+    /// `q_post` at the pair of two equal states, the state a call by value consumes of a
+    /// parameter that is `Fn` wherever it is in scope.
+    UnchangedConsumed,
+    /// `q_post_once` at the receiver.
+    Consumed,
+}
+
+impl PostReading {
+    fn of(closure_kind: mir_ty::ClosureKind, fn_where_declared: bool) -> Self {
+        match closure_kind {
+            mir_ty::ClosureKind::FnMut => PostReading::Pair,
+            mir_ty::ClosureKind::Fn => PostReading::UnchangedShared,
+            mir_ty::ClosureKind::FnOnce if fn_where_declared => PostReading::UnchangedConsumed,
+            mir_ty::ClosureKind::FnOnce => PostReading::Consumed,
+        }
+    }
+
+    /// The sort the relation takes the receiver in, from the sort `receiver` of the call's
+    /// receiver.
+    fn receiver_sort(self, receiver: chc::Sort) -> chc::Sort {
+        match self {
+            PostReading::Pair | PostReading::Consumed => receiver,
+            PostReading::UnchangedShared => chc::Sort::mut_(receiver.deref()),
+            PostReading::UnchangedConsumed => chc::Sort::mut_(receiver),
+        }
+    }
+
+    /// The receiver term matching [`Self::receiver_sort`].
+    fn receiver_term<V: chc::Var>(self, receiver: chc::Term<V>) -> chc::Term<V> {
+        let unchanged = |state: chc::Term<V>| chc::Term::mut_(state.clone(), state);
+        match self {
+            PostReading::Pair | PostReading::Consumed => receiver,
+            PostReading::UnchangedShared => unchanged(receiver.box_current()),
+            PostReading::UnchangedConsumed => unchanged(receiver),
+        }
     }
 }
 
@@ -315,7 +367,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         def_ids: DefIdCache<'tcx>,
         owner_fn_id: DefId,
         type_params: Rc<RefCell<TypeParamMap<'tcx>>>,
-        closure_type_params: Rc<RefCell<HashMap<TypeParam, rty::FunctionType>>>,
+        closure_type_params: Rc<RefCell<ClosureParamContracts>>,
         system: Rc<RefCell<chc::System>>,
         enum_defs: Rc<RefCell<EnumDefs>>,
     ) -> Self {
@@ -534,15 +586,31 @@ impl<'tcx> TypeBuilder<'tcx> {
         rty::AliasType::new(*index, args).into()
     }
 
-    /// The contract of the closure-typed parameter `param_ty` of the function being analyzed,
-    /// registering it on first use from the bound `local_def_id` states at `generic_args`.
-    ///
-    /// A contract already registered for `param_ty` is kept: it was built from the bound of the
-    /// function declaring `param_ty`, while `local_def_id` may be a callee analyzed at that
-    /// function's arguments, whose bound can be of another closure kind.
+    /// The contract of the closure-typed parameter `param_ty` of the function being analyzed, at
+    /// the closure kind its bound in `local_def_id` names, registering it on first use from that
+    /// bound at `generic_args`.
     pub(crate) fn closure_param_contract(
         &self,
         param_ty: mir_ty::ParamTy,
+        local_def_id: rustc_hir::def_id::LocalDefId,
+        generic_args: mir_ty::GenericArgsRef<'tcx>,
+    ) -> Option<rty::FunctionType> {
+        let (call, _) = self.closure_param_bound(param_ty, local_def_id, generic_args)?;
+        let bound_kind = self.tcx.fn_trait_kind_from_def_id(call.def_id())?;
+        self.closure_param_call_contract(param_ty, bound_kind, local_def_id, generic_args)
+    }
+
+    /// The contract of a call of the closure-typed parameter `param_ty` of the function being
+    /// analyzed through the trait of `call_kind`, registering it on first use from the bound
+    /// `local_def_id` states at `generic_args`.
+    ///
+    /// A contract already registered for `param_ty` and `call_kind` is kept: the contracts at one
+    /// call kind read the same relations whichever bound they are built from, and `local_def_id`
+    /// may be a callee analyzed at the arguments of the function declaring `param_ty`.
+    pub(crate) fn closure_param_call_contract(
+        &self,
+        param_ty: mir_ty::ParamTy,
+        call_kind: mir_ty::ClosureKind,
         local_def_id: rustc_hir::def_id::LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
     ) -> Option<rty::FunctionType> {
@@ -550,23 +618,20 @@ impl<'tcx> TypeBuilder<'tcx> {
             param_def_id: self.param_def_id(&param_ty),
             local_idx: self.param_local_idx(&param_ty),
         };
-        if let Some(contract) = self.closure_type_params.borrow().get(&type_param) {
+        let key = (type_param, call_kind);
+        if let Some(contract) = self.closure_type_params.borrow().get(&key) {
             return Some(contract.clone());
         }
-        let contract = self.build_closure_type_for_param(param_ty, local_def_id, generic_args)?;
-        self.register_closure_type_param(type_param, contract.clone());
-        Some(contract)
-    }
-
-    pub(crate) fn register_closure_type_param(
-        &self,
-        type_param: TypeParam,
-        fun_type: rty::FunctionType,
-    ) {
-        tracing::info!(?type_param, ?fun_type, "register_closure_type_param");
+        let contract = self.build_closure_call_type_for_param(
+            param_ty,
+            call_kind,
+            local_def_id,
+            generic_args,
+        )?;
         self.closure_type_params
             .borrow_mut()
-            .insert(type_param, fun_type);
+            .insert(key, contract.clone());
+        Some(contract)
     }
 
     /// Replaces {closure} types with thrust_models::Closure<{closure}>.
@@ -1201,8 +1266,8 @@ impl<'tcx> TypeBuilder<'tcx> {
         }
     }
 
-    /// Extracts the [`ClosureTraitCall`] of a `Fn` / `FnMut` / `FnOnce` trait predicate
-    /// whose `Self` type matches `param_ty`. Returns `None` otherwise.
+    /// Extracts the [`ClosureTraitCall`] through the trait of `call_kind` of a `Fn` / `FnMut` /
+    /// `FnOnce` trait predicate whose `Self` type matches `param_ty`. Returns `None` otherwise.
     ///
     /// The first parameter is the closure value (wrapped in a `&` / `&mut` pointer
     /// for `Fn` / `FnMut`, or owned for `FnOnce`), followed by the logical arguments
@@ -1213,6 +1278,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         &self,
         param_ty: mir_ty::ParamTy,
         pred: mir_ty::TraitPredicate<'tcx>,
+        call_kind: mir_ty::ClosureKind,
     ) -> Option<ClosureTraitCall> {
         let trait_ref = pred.trait_ref;
         if trait_ref.self_ty() != param_ty.to_ty(self.tcx) {
@@ -1221,11 +1287,11 @@ impl<'tcx> TypeBuilder<'tcx> {
         // Reject non-`Fn`/`FnMut`/`FnOnce` predicates (e.g. `Sized`) before building any type,
         // so that a `ParamTy` the current TypeBuilder cannot translate is never built here.
         use mir_ty::ClosureKind::*;
-        let closure_kind = self.tcx.fn_trait_kind_from_def_id(trait_ref.def_id)?;
+        self.tcx.fn_trait_kind_from_def_id(trait_ref.def_id)?;
         tracing::debug!(?trait_ref.args);
 
         let receiver_type = self.build_ty(trait_ref.args.type_at(0));
-        let receiver_type = match closure_kind {
+        let receiver_type = match call_kind {
             Fn => rty::PointerType::immut_to(receiver_type).into(),
             FnMut => rty::PointerType::mut_to(receiver_type).into(),
             FnOnce => receiver_type,
@@ -1243,7 +1309,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         tracing::debug!("found the signature for closure trait: {params:#?}");
         Some(ClosureTraitCall {
             params,
-            kind: closure_kind,
+            kind: call_kind,
         })
     }
 
@@ -1351,14 +1417,16 @@ impl<'tcx> TypeBuilder<'tcx> {
         Some((call, output))
     }
 
-    /// Builds the contract of a closure-typed parameter from its `Fn` bound.
+    /// Builds the contract of a call of a closure-typed parameter through the trait of
+    /// `call_kind`, with the signature its `Fn` bound states.
     ///
     /// `param_ty` must already be resolved for the current analysis
     /// ([`Self::resolve_param_ty`]); `generic_args` instantiates `local_def_id`'s
     /// predicates so the bound is found at those same arguments.
-    pub fn build_closure_type_for_param(
+    fn build_closure_call_type_for_param(
         &self,
         param_ty: mir_ty::ParamTy,
+        call_kind: mir_ty::ClosureKind,
         local_def_id: rustc_hir::def_id::LocalDefId,
         generic_args: mir_ty::GenericArgsRef<'tcx>,
     ) -> Option<rty::FunctionType> {
@@ -1366,7 +1434,7 @@ impl<'tcx> TypeBuilder<'tcx> {
         let ClosureTraitCall {
             mut params,
             kind: closure_kind,
-        } = self.closure_trait_call(param_ty, call.skip_binder())?;
+        } = self.closure_trait_call(param_ty, call.skip_binder(), call_kind)?;
         let mut ret = self.closure_trait_ret(param_ty, output.skip_binder())?;
 
         let free = |idx| chc::Term::var(rty::RefinedTypeVar::Free(idx));
@@ -1391,6 +1459,8 @@ impl<'tcx> TypeBuilder<'tcx> {
         // is one symbol per type parameter: named after the parameter's own def id,
         // which every method of an impl that declares `F` shares. Naming it after the
         // method would give each method its own copy, and nothing would relate them.
+        // The methods may bound `F` by different closure traits, so each relation takes
+        // the closure's state in one shape whichever trait a call goes through.
         let contract_owner = self.param_def_id(&param_ty);
         let pre_pred = refine::closure_pre_forall_pred(
             self.tcx,
@@ -1402,14 +1472,30 @@ impl<'tcx> TypeBuilder<'tcx> {
         self.system
             .borrow_mut()
             .register_forall_pred(pre_pred.clone());
-        params_sort.push(ret_sort);
-        let post_pred = refine::closure_post_forall_pred(
-            self.tcx,
-            contract_owner,
-            type_args,
-            type_params,
-            params_sort,
+        let post_reading = PostReading::of(
+            closure_kind,
+            analyze::fn_bounded_where_declared(self.tcx, contract_owner),
         );
+        params_sort[0] = post_reading.receiver_sort(params_sort[0].clone());
+        params_sort.push(ret_sort);
+        let post_pred = match post_reading {
+            PostReading::Pair | PostReading::UnchangedShared | PostReading::UnchangedConsumed => {
+                refine::closure_post_forall_pred(
+                    self.tcx,
+                    contract_owner,
+                    type_args,
+                    type_params,
+                    params_sort,
+                )
+            }
+            PostReading::Consumed => refine::closure_post_once_forall_pred(
+                self.tcx,
+                contract_owner,
+                type_args,
+                type_params,
+                params_sort,
+            ),
+        };
         self.system
             .borrow_mut()
             .register_forall_pred(post_pred.clone());
@@ -1429,9 +1515,10 @@ impl<'tcx> TypeBuilder<'tcx> {
                 chc::Atom::new(pre_pred.into(), pre_args).into()
             });
 
-        ret.extend_refinement(
-            chc::Atom::new(post_pred.into(), [args, vec![value.clone()]].concat()).into(),
-        );
+        let mut post_args = args;
+        post_args[0] = post_reading.receiver_term(post_args[0].clone());
+        post_args.push(value);
+        ret.extend_refinement(chc::Atom::new(post_pred.into(), post_args).into());
         let ret = Box::new(ret);
 
         Some(rty::FunctionType {
