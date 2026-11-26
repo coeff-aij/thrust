@@ -1935,8 +1935,22 @@ impl<'tcx> Analyzer<'tcx> {
             caller_def_id,
             contract_of: None,
         };
-        let mut def_ty = match self.defs.get(&def_id)? {
-            DefTy::Concrete(rty, _) => rty.clone(),
+        // A concrete def's type is over its own type parameters, and is instantiated at the
+        // arguments here. The instantiation caches of a generic def and of a spec hold the type
+        // already at the arguments, over the caller's forall sorts (`Analyzer::def_ty_at` builds
+        // it with the caller as the owner), which `def_ty_at` returns as it is: instantiating it
+        // again would read the caller's type parameters as positions in `generic_args`.
+        let def_ty = match self.defs.get(&def_id)? {
+            DefTy::Concrete(rty, _) => {
+                let mut def_ty = rty.clone();
+                def_ty.instantiate_ty_params(
+                    generic_args
+                        .types()
+                        .map(|ty| type_builder.build(ty))
+                        .collect(),
+                );
+                def_ty
+            }
             DefTy::Generic(generic) => generic.cache.borrow().get(&key)?.clone(),
             DefTy::Deferred(specs) => specs.iter().find_map(|spec| {
                 let (spec_args, _) = self.covered_spec_args(spec, generic_args, caller_def_id)?;
@@ -1948,12 +1962,6 @@ impl<'tcx> Analyzer<'tcx> {
                 spec.cache.borrow().get(&key).cloned()
             })?,
         };
-        def_ty.instantiate_ty_params(
-            generic_args
-                .types()
-                .map(|ty| type_builder.build(ty))
-                .collect(),
-        );
         def_ty.ty.as_function().cloned()
     }
 
