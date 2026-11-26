@@ -11,6 +11,7 @@ use crate::analyze::selection::ItemPath;
 use crate::chc;
 use crate::chc::debug;
 use crate::pretty::PrettyDisplayExt as _;
+use crate::refine;
 use crate::rty::ClauseBuilderExt as _;
 
 /// An implementation of local crate analysis.
@@ -104,6 +105,17 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
             let analyzer = self.ctx.local_def_analyzer(*local_def_id);
             if analyzer.is_annotated_as_extern_spec_fn() {
                 let target_def_id = analyzer.extern_spec_fn_target_def_id();
+                // An analyzed local target's calls are analyzed; any other body is not.
+                let target_analyzed = target_def_id.as_local().is_some_and(|local| {
+                    !analyze::annot::has_thrust_attr(
+                        self.tcx,
+                        local.to_def_id(),
+                        &analyze::annot::trusted_path(),
+                    )
+                });
+                if !target_analyzed {
+                    reject_unstatable_closure_bounds(self.tcx, *local_def_id);
+                }
                 if let Some(local_target_def_id) = target_def_id.as_local() {
                     keys.swap_remove(&local_target_def_id);
                     if self.tcx.def_kind(self.tcx.parent(target_def_id))
@@ -290,6 +302,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 "`#[thrust::trusted]` needs both `requires` and `ensures` (or `#[thrust::callable]`), or the contract of the trait law it defines, on `{}`",
                 self.tcx.def_path_str(local_def_id)
             );
+            reject_unstatable_closure_bounds(self.tcx, local_def_id);
             self.skip_analysis.insert(local_def_id);
             self.trusted.insert(local_def_id);
             self.body_checks
@@ -1614,4 +1627,23 @@ fn is_narrower_local_spec<'tcx>(
         .iter()
         .filter(|(clause, _)| clause.as_projection_clause().is_some())
         .any(|(clause, _)| !target_projections.contains(&tcx.erase_regions(*clause)))
+}
+
+/// Stops at a function whose body Thrust does not analyze when a closure it may run is bound by
+/// `Fn`/`FnMut`/`FnOnce` on a type that is not a type parameter: its contract has to state the
+/// `pre!` of every such closure, and a `pre!` can only name a closure type parameter, a closure
+/// or a function item. The check is on the generic signature.
+fn reject_unstatable_closure_bounds(tcx: TyCtxt<'_>, def_id: LocalDefId) {
+    let bounds = refine::unstatable_closure_bounds(tcx, def_id.to_def_id());
+    let Some((span, self_ty)) = bounds.first() else {
+        return;
+    };
+    tcx.dcx().span_fatal(
+        *span,
+        format!(
+            "a closure run through a bound on `{self_ty}` cannot have its `pre!` stated, so the \
+             contract of a function whose body is not analyzed cannot cover it; bound the \
+             parameter as `Y: Fn(..)` so that the contract can state it"
+        ),
+    );
 }

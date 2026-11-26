@@ -8,7 +8,9 @@
 //! module and remove this one.
 
 mod template;
-pub use template::{array_model_type, TemplateRegistry, TemplateScope, TypeBuilder};
+pub use template::{
+    array_model_type, unstatable_closure_bounds, TemplateRegistry, TemplateScope, TypeBuilder,
+};
 
 mod basic_block;
 pub use basic_block::{BasicBlockType, BasicBlockTypeParamKind};
