@@ -1,6 +1,7 @@
 use crate::thrust_models;
 use std::marker::PhantomData;
-use std::slice::SliceIndex;
+use std::ops::{Index, IndexMut};
+use std::slice::{self, SliceIndex};
 
 use thrust_models::forall;
 use thrust_models::model::Seq;
@@ -134,7 +135,7 @@ impl<I: Idx, T> IndexSlice<I, T> {
     }
 
     #[inline]
-    pub fn iter(&self) -> std::slice::Iter<'_, T> {
+    pub fn iter(&self) -> slice::Iter<'_, T> {
         self.raw.iter()
     }
 
@@ -163,7 +164,7 @@ impl<I: Idx, T: thrust_models::Model> IndexSlice<I, T>
     #[inline]
     #[thrust_macros::requires(true)]
     #[thrust_macros::ensures(result.0 == *self && result.1 == !self && result.2 == 0 && (!self).len() == (*self).len())]
-    pub fn iter_mut(&mut self) -> std::slice::IterMut<'_, T> {
+    pub fn iter_mut(&mut self) -> slice::IterMut<'_, T> {
         self.raw.iter_mut()
     }
 }
@@ -192,7 +193,7 @@ impl<I: Idx + thrust_models::Model, J: Idx + thrust_models::Model> IndexSlice<I,
     }
 }
 
-impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> std::ops::Index<R> for IndexSlice<I, T> {
+impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> Index<R> for IndexSlice<I, T> {
     type Output = <R::Output as SliceIndex<[T]>>::Output;
 
     #[inline]
@@ -204,7 +205,7 @@ impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> std::ops::Index<R
     }
 }
 
-impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> std::ops::IndexMut<R> for IndexSlice<I, T> {
+impl<I: Idx, T: thrust_models::Model, R: IntoSliceIdx<I, [T]>> IndexMut<R> for IndexSlice<I, T> {
     #[inline]
     fn index_mut(&mut self, index: R) -> &mut Self::Output {
         &mut self.raw[index.into_slice_idx()]
