@@ -1800,7 +1800,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         self.record_called_fn(def_id, args);
                         self.callable_ty(def_id, args)
                     }
-                    None => unreachable!("rejected by `reject_unsupported_fn_pointer_cast`"),
+                    _ => unimplemented!(),
                 };
                 PlaceType::with_ty_and_term(func_ty.vacuous(), chc::Term::null())
             }
@@ -3424,27 +3424,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.env.place_type(self.elaborate_place(place))
     }
 
-    /// Stops at a cast to a function pointer whose source Thrust cannot relate to the pointer's
-    /// function type: a closure, or a function item that is not a constant operand.
-    fn reject_unsupported_fn_pointer_cast(&self, rvalue: &Rvalue<'tcx>, span: rustc_span::Span) {
-        use mir_ty::adjustment::PointerCoercion;
-        let Rvalue::Cast(mir::CastKind::PointerCoercion(coercion, _), operand, _) = rvalue else {
-            return;
-        };
-        let message = match coercion {
-            PointerCoercion::ClosureFnPointer(_) => {
-                "a closure coerced to a function pointer is not supported; call the closure \
-                 directly or pass it as a generic `F: Fn(..)`"
-            }
-            PointerCoercion::ReifyFnPointer if operand.const_fn_def().is_none() => {
-                "a function pointer made from a function item held in a variable is not \
-                 supported; coerce the function item directly"
-            }
-            _ => return,
-        };
-        self.tcx.dcx().span_fatal(span, message);
-    }
-
     /// Stops at a statement that would read the value of a raw pointer or a trait object, whose
     /// model carries no information (`rty::Type::Opaque`): dereferencing, comparing, casting or
     /// taking one. They are not supported; reading the null model would make any two values equal.
@@ -3868,7 +3847,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 StatementKind::Assign(x) => {
                     let (lhs, rvalue) = &**x;
                     self.check_opaque_use(lhs, rvalue, stmt.source_info.span);
-                    self.reject_unsupported_fn_pointer_cast(rvalue, stmt.source_info.span);
                     self.analyze_assignment(lhs, rvalue, stmt_idx);
                 }
                 StatementKind::Nop
