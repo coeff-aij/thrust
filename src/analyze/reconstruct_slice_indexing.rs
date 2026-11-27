@@ -47,9 +47,6 @@ struct IndexedPlaceFinder<'a, 'tcx> {
     body: &'a Body<'tcx>,
     tcx: TyCtxt<'tcx>,
     index: Local,
-    /// The slice the bounds check compares with, when known ([`checked_slice`]): a place that
-    /// indexes another sequence is not the access the check guards.
-    checked_slice: Option<mir::Place<'tcx>>,
     found: Option<mir::Place<'tcx>>,
     use_locations: Vec<mir::Location>,
     mutating_locations: Vec<mir::Location>,
@@ -86,9 +83,6 @@ impl<'tcx> mir::visit::Visitor<'tcx> for IndexedPlaceFinder<'_, 'tcx> {
                 base.ty(&self.body.local_decls, self.tcx).ty.kind(),
                 mir_ty::TyKind::Slice(_) | mir_ty::TyKind::Array(..)
             ) {
-                return;
-            }
-            if self.checked_slice.is_some_and(|slice| slice != base) {
                 return;
             }
             self.found = Some(indexed);
@@ -172,7 +166,7 @@ pub fn reconstruct<'tcx>(tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
         let Some(bounds_check) = find_bounds_check(body, block) else {
             continue;
         };
-        let region = access_region(tcx, body, &bounds_check);
+        let region = access_region(body, &bounds_check);
         let Some((access, uses)) = find_slice_access(tcx, body, &bounds_check, &region) else {
             tracing::trace!(?block, "bounds check is not followed by slice indexing");
             read_length_through_reference(tcx, body, &bounds_check);
@@ -296,27 +290,21 @@ fn find_bounds_check<'tcx>(body: &Body<'tcx>, block: BasicBlock) -> Option<Bound
 }
 
 /// The blocks that the bounds check's target dominates and reaches up to the next bounds check of
-/// the same index that may check the same sequence, in depth-first order. The block that ends in
-/// that check belongs to the region, for the statements before the check, but the blocks after it
-/// are reached through the call that the check is reconstructed into. A check of the same index
-/// against another slice, such as the inner one of `s[i][i]`, does not end the region.
-fn access_region<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    bounds_check: &BoundsCheck<'tcx>,
-) -> Vec<BasicBlock> {
-    let checked = checked_slice(tcx, body, bounds_check);
-    let ends_region = |block: BasicBlock| {
-        let Some(check) = find_bounds_check(body, block) else {
+/// the same index, in depth-first order. The block that ends in that check belongs to the region, for
+/// the statements before the check, but the blocks after it are reached through the call that
+/// the check is reconstructed into.
+fn access_region(body: &Body<'_>, bounds_check: &BoundsCheck<'_>) -> Vec<BasicBlock> {
+    let rechecks_index = |block: BasicBlock| {
+        let terminator = body.basic_blocks[block].terminator();
+        let TerminatorKind::Assert { msg, .. } = &terminator.kind else {
             return false;
         };
-        if check.index_local != bounds_check.index_local {
+        let mir::AssertMessage::BoundsCheck { index, .. } = &**msg else {
             return false;
-        }
-        let other_slice = checked.is_some_and(|checked| {
-            checked_slice(tcx, body, &check).is_some_and(|slice| slice != checked)
-        });
-        !other_slice
+        };
+        index.place().is_some_and(|place| {
+            place.projection.is_empty() && place.local == bounds_check.index_local
+        })
     };
     let dominators = body.basic_blocks.dominators();
     let mut region = Vec::new();
@@ -329,7 +317,7 @@ fn access_region<'tcx>(
             continue;
         }
         region.push(block);
-        if ends_region(block) {
+        if rechecks_index(block) {
             continue;
         }
         stack.extend(body.basic_blocks[block].terminator().successors());
@@ -350,7 +338,6 @@ fn find_slice_access<'tcx>(
         body,
         tcx,
         index: bounds_check.index_local,
-        checked_slice: checked_slice(tcx, body, bounds_check),
         found: None,
         use_locations: Vec::new(),
         mutating_locations: Vec::new(),
@@ -493,32 +480,6 @@ fn replace_place_with<'tcx>(
             None => replacer.visit_terminator(data.terminator_mut()),
         }
     }
-}
-
-/// The slice whose length `check` compares its index with, when that length is the `PtrMetadata`
-/// of a pointer to the slice taken in the check's block.
-fn checked_slice<'tcx>(
-    tcx: TyCtxt<'tcx>,
-    body: &Body<'tcx>,
-    check: &BoundsCheck<'tcx>,
-) -> Option<mir::Place<'tcx>> {
-    let len = check.len.place()?.as_local()?;
-    let statements = &body.basic_blocks[check.block].statements;
-    let assigned = |local: Local| {
-        statements.iter().find_map(|statement| {
-            let (lhs, rvalue) = statement.kind.as_assign()?;
-            (lhs.as_local() == Some(local)).then_some(rvalue)
-        })
-    };
-    let Some(Rvalue::UnaryOp(mir::UnOp::PtrMetadata, pointer)) = assigned(len) else {
-        return None;
-    };
-    let pointer = pointer.place()?;
-    let pointee = match pointer.as_local().and_then(assigned) {
-        Some(Rvalue::RawPtr(_, place)) => *place,
-        _ => tcx.mk_place_deref(pointer),
-    };
-    Some(pointee)
 }
 
 /// Ends `block` with the `Index::index` or `IndexMut::index_mut` call for the access, returning
