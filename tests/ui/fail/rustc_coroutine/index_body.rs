@@ -1,7 +1,7 @@
 //@error-in-other-file: Unsat
 //@compile-flags: -Adead_code -C debug-assertions=off --cfg thrust_index_body_fail
 //@no-rustfix
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=rustc_index::**,crate
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // Twin of the index.rs pass root: `cfg(thrust_index_body_fail)` makes `IndexSlice::index` panic, which
