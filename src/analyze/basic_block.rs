@@ -1800,7 +1800,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                         self.record_called_fn(def_id, args);
                         self.callable_ty(def_id, args)
                     }
-                    None => unreachable!("rejected by `reject_unsupported_pointer_cast`"),
+                    None => unreachable!("rejected by `reject_unsupported_fn_pointer_cast`"),
                 };
                 PlaceType::with_ty_and_term(func_ty.vacuous(), chc::Term::null())
             }
@@ -1821,17 +1821,6 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 }
                 op_pty.ty = expected_ty;
                 op_pty
-            }
-            Rvalue::Cast(
-                mir::CastKind::PointerCoercion(
-                    mir_ty::adjustment::PointerCoercion::UnsafeFnPointer,
-                    _,
-                ),
-                operand,
-                _ty,
-            ) => {
-                // `unsafe` is not part of the refinement type of a function pointer.
-                self.operand_type(operand)
             }
             Rvalue::Cast(mir::CastKind::IntToInt, operand, ty) => {
                 let op_ty = operand.ty(&self.body.local_decls, self.tcx);
@@ -3435,10 +3424,9 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
         self.env.place_type(self.elaborate_place(place))
     }
 
-    /// Stops at a pointer coercion Thrust does not model: to a function pointer whose source
-    /// cannot be related to the pointer's function type (a closure, or a function item that is
-    /// not a constant operand), or to a raw pointer, whose model carries no information.
-    fn reject_unsupported_pointer_cast(&self, rvalue: &Rvalue<'tcx>, span: rustc_span::Span) {
+    /// Stops at a cast to a function pointer whose source Thrust cannot relate to the pointer's
+    /// function type: a closure, or a function item that is not a constant operand.
+    fn reject_unsupported_fn_pointer_cast(&self, rvalue: &Rvalue<'tcx>, span: rustc_span::Span) {
         use mir_ty::adjustment::PointerCoercion;
         let Rvalue::Cast(mir::CastKind::PointerCoercion(coercion, _), operand, _) = rvalue else {
             return;
@@ -3452,13 +3440,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 "a function pointer made from a function item held in a variable is not \
                  supported; coerce the function item directly"
             }
-            PointerCoercion::MutToConstPointer | PointerCoercion::ArrayToPointer => {
-                "thrust: coercing to a raw pointer is not supported: its model carries no \
-                 information"
-            }
-            PointerCoercion::ReifyFnPointer
-            | PointerCoercion::UnsafeFnPointer
-            | PointerCoercion::Unsize => return,
+            _ => return,
         };
         self.tcx.dcx().span_fatal(span, message);
     }
@@ -3886,7 +3868,7 @@ impl<'tcx, 'ctx> Analyzer<'tcx, 'ctx> {
                 StatementKind::Assign(x) => {
                     let (lhs, rvalue) = &**x;
                     self.check_opaque_use(lhs, rvalue, stmt.source_info.span);
-                    self.reject_unsupported_pointer_cast(rvalue, stmt.source_info.span);
+                    self.reject_unsupported_fn_pointer_cast(rvalue, stmt.source_info.span);
                     self.analyze_assignment(lhs, rvalue, stmt_idx);
                 }
                 StatementKind::Nop
