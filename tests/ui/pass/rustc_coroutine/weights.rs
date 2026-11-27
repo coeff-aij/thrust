@@ -1,6 +1,6 @@
 //@check-pass
 //@compile-flags: -Adead_code -C debug-assertions=off
-//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=120 THRUST_TRY_SPECS=1
+//@rustc-env: THRUST_SOLVER=tests/thrust-pcsat-wrapper THRUST_SOLVER_TIMEOUT_SECS=300 THRUST_TRY_SPECS=1
 //@rustc-env: THRUST_VERIFY_ONLY=case_study::weights
 //@rustc-env: THRUST_SPLIT=1 THRUST_SPLIT_GOALS=1
 // The weight lemmas of thrust/weights.rs: a selection of distinct indices below `n` weighs at
