@@ -794,14 +794,10 @@ impl<Cx: HasDataLayout> LayoutCalculator<Cx> {
             in_memory_order.len() == (*fields).len()
                 && forall(|j: USize| !(0 <= j && j < (*fields).len()) || <FieldIdx as Idx>::index_logic(in_memory_order[j]) == j));
         let optimize_field_order = !repr.inhibit_struct_field_reordering();
-        let end = if let StructKind::MaybeUnsized = kind {
-            fields.len() - 1
-        } else {
-            fields.len()
-        };
+        let end = if let StructKind::MaybeUnsized = kind { fields.len() - 1 } else { fields.len() };
         let optimizing = &mut in_memory_order.raw[..end];
         let fields_excluding_tail = &fields.raw[..end];
-
+        // unsizable tail fields are excluded so that we use the same seed for the sized and unsized layouts.
         let field_seed = fields_excluding_tail
             .iter()
             .fold(Hash64::ZERO, |acc, f| acc.wrapping_add(f.randomization_seed));
