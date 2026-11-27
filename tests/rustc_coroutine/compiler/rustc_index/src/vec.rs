@@ -2,6 +2,7 @@ use std::fmt;
 use crate::thrust_models;
 use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
+use std::slice;
 use std::vec;
 
 use thrust_models::forall;
@@ -126,20 +127,20 @@ impl<I: Idx, T> IntoIterator for IndexVec<I, T> {
 
 impl<'a, I: Idx, T: thrust_models::Model> IntoIterator for &'a IndexVec<I, T> {
     type Item = &'a T;
-    type IntoIter = std::slice::Iter<'a, T>;
+    type IntoIter = slice::Iter<'a, T>;
 
     #[inline]
-    fn into_iter(self) -> std::slice::Iter<'a, T> {
+    fn into_iter(self) -> slice::Iter<'a, T> {
         self.iter()
     }
 }
 
 impl<'a, I: Idx, T: thrust_models::Model> IntoIterator for &'a mut IndexVec<I, T> {
     type Item = &'a mut T;
-    type IntoIter = std::slice::IterMut<'a, T>;
+    type IntoIter = slice::IterMut<'a, T>;
 
     #[inline]
-    fn into_iter(self) -> std::slice::IterMut<'a, T> {
+    fn into_iter(self) -> slice::IterMut<'a, T> {
         self.iter_mut()
     }
 }

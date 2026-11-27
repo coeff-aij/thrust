@@ -15,3 +15,15 @@ pub mod weights;
 pub type USize = thrust_models::model::UInt;
 #[cfg(thrust_int_range)]
 pub type USize = thrust_models::model::UIntN<64>;
+
+/// `tracing`'s `debug!` and `trace!`, which rustc's code calls; they do nothing, as with logging
+/// off, so that the calls stay as rustc has them.
+pub mod tracing {
+    macro_rules! debug {
+        ($($t:tt)*) => {};
+    }
+    macro_rules! trace {
+        ($($t:tt)*) => {};
+    }
+    pub(crate) use {debug, trace};
+}

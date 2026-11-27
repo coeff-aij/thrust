@@ -960,9 +960,7 @@ impl Niche {
     #[thrust_macros::ensures(forall(|n: Niche| result != Some(n)
         || (scalar == Scalar::Initialized { value: n.value, valid_range: n.valid_range } && n.offset == offset)))]
     pub fn from_scalar<C: HasDataLayout>(cx: &C, offset: Size, scalar: Scalar) -> Option<Self> {
-        let Scalar::Initialized { value, valid_range } = scalar else {
-            return None;
-        };
+        let Scalar::Initialized { value, valid_range } = scalar else { return None };
         let niche = Niche {
             offset,
             value,

@@ -12,6 +12,7 @@ use crate::rustc_abi::{
 use crate::rustc_index::bit_set::{ones, BitIter, BitMatrix, DenseBitSet};
 use crate::rustc_index::{Idx, IdxRange, IndexSlice, IndexVec, IterEnumerated};
 use crate::case_study::USize;
+use crate::case_study::tracing::{debug, trace};
 use crate::case_study::{counts, lemmas};
 use crate::case_study::iter::{Filter, Map, collect_index_vec, collect_index_vec_result, iter_all};
 use SavedLocalEligibility::*;
@@ -253,6 +254,12 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     assignments[*local] = Assigned(variant_index);
                 }
                 Assigned(idx) => {
+                    // We've already seen this local at another suspension
+                    // point, so it is no longer a candidate.
+                    trace!(
+                        "removing local {:?} in >1 variant ({:?}, {:?})",
+                        local, variant_index, idx
+                    );
                     ineligible_locals.insert(*local);
                     assignments[*local] = Ineligible(None);
                 }
@@ -339,6 +346,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
                     assignments[remove] = Ineligible(None);
                 }
             );
+            trace!("removing local {:?} due to conflict with {:?}", remove, other);
         }
     }
 
@@ -418,6 +426,7 @@ fn coroutine_saved_local_eligibility<VariantIdx: Idx, FieldIdx: Idx, LocalIdx: I
             );
         }
     }
+    debug!("coroutine saved local assignments: {:?}", assignments);
 
     (ineligible_locals, assignments)
 }
@@ -804,8 +813,6 @@ fn combine_offsets<VariantIdx: Idx + thrust_models::Model, FieldIdx: Idx + thrus
     fields: FieldsShape<FieldIdx>,
     m: usize,
 ) -> (IndexVec<FieldIdx, Size>, IndexVec<u32, FieldIdx>) {
-    use SavedLocalEligibility::*;
-
     let FieldsShape::Arbitrary {
         offsets,
         in_memory_order,
@@ -2205,6 +2212,7 @@ pub fn layout<
         forall(|t: USize| <FieldIdx as Idx>::index_is(tag_index, t) ==> t + 1 <= prefix_layouts.len()));
     thrust_macros::proof_assert!(|prefix_layouts: IndexVec<FieldIdx, F>|
         prefix_layouts.len() <= 4294967295usize);
+    debug!("prefix = {:#?}", prefix);
     let (outer_fields, promoted_offsets, promoted_memory_index) =
         split_prefix_fields(prefix.fields, tag_index, prefix_layouts.len());
 
