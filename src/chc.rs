@@ -3371,8 +3371,8 @@ pub struct System {
     /// Predicate variables pushed together with every clause that defines them, independently of
     /// any analysis of a body at an instance: a reachability check for unknowns
     /// ([`System::pred_var_reach_of`]) does not count them. The `hist_inv!` relation of an
-    /// `FnMut` closure's by-value captures is one: its laws come with it and each call's step
-    /// from the closure's own body.
+    /// `FnMut` closure's by-value captures at the closure's own parameters is one: its laws come
+    /// with it and each call's step from the closure's own body checked there.
     self_defined_pred_vars: HashSet<PredVarId>,
     /// The source name of each quantified variable issued with one, named in a comment of the
     /// SMT-LIB2 output when logging is on.

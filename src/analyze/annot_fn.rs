@@ -13,6 +13,7 @@ use rustc_middle::ty::{self as mir_ty, TyCtxt, TypeFoldable};
 
 use crate::analyze::{self, did_cache::DefIdCache};
 use crate::chc;
+use crate::pretty::PrettyDisplayExt as _;
 use crate::refine::{self, TypeBuilder};
 use crate::rty;
 
@@ -2016,12 +2017,9 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             return FormulaOrTerm::Formula(self.precondition_at(&fn_ty, &args));
         }
         let receiver_ty = self.expr_ty(receiver);
-        if let Some(closure_ty) = self.receiver_closure_ty(receiver_ty) {
-            self.record_pre_receiver(closure_ty);
-        }
         if let Some((fn_item_ty, def_id, generic_args)) = self.receiver_fn_item(receiver_ty) {
             // The function item itself, behind the references `G` is instantiated with, is what
-            // the `pre!` names: a hand-over states its precondition as it does a path's.
+            // the `pre!` names.
             self.record_pre_receiver(fn_item_ty);
             let fn_ty = self.fn_def_contract(receiver.span, def_id, generic_args, true);
             let args = self.spec_args("pre!", args, &self.fn_def_sig(def_id, generic_args));
@@ -2216,6 +2214,17 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
         let from = self.to_term(from);
         let to = self.to_term(to);
         let formula = match closure_ty.kind() {
+            mir_ty::TyKind::Closure(_, args)
+                if args.as_closure().kind() == mir_ty::ClosureKind::FnOnce =>
+            {
+                self.tcx.dcx().span_fatal(
+                    from_span,
+                    format!(
+                        "thrust: `hist_inv!` is not supported at `{closure_ty}`: an `FnOnce` \
+                         closure is called once, so it has no history of states"
+                    ),
+                )
+            }
             mir_ty::TyKind::Closure(..) => {
                 let upvars_sort = self.type_builder.build(model_ty).to_sort();
                 self.analyzer
@@ -2248,9 +2257,10 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .unwrap_or_else(|| panic!("hist_inv! at {param_ty:?}, which has no closure bound"));
         let param = param_ty.to_ty(self.tcx);
         let sort = self.type_builder.build(param).to_sort();
+        let param_def_id = self.type_builder.param_def_id(&param_ty);
         let pred = refine::closure_hist_inv_forall_pred(
             self.tcx,
-            self.type_builder.param_def_id(&param_ty),
+            param_def_id,
             self.type_builder
                 .generic_args_symbol(self.tcx.mk_args(&[param.into()])),
             vec![sort.clone()],
@@ -2263,6 +2273,7 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 &mut system,
                 &pred,
                 &contract,
+                analyze::closure_hist_inv::fn_bounded_where_declared(self.tcx, param_def_id),
                 &self.analyzer.enum_defs,
             ) {
                 system.add_law(pred.clone(), law);
@@ -2326,9 +2337,12 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
             .unwrap_or_else(|e| {
                 let hint = if matches!(e, rustc_middle::mir::interpret::ErrorHandled::TooGeneric(_))
                 {
-                    "its value depends on a type parameter, which is not supported in a contract"
+                    format!(
+                        "its value depends on {}, which is not supported in a contract",
+                        generic_param_kind(generic_args)
+                    )
                 } else {
-                    "its evaluation failed"
+                    "its evaluation failed".to_owned()
                 };
                 self.tcx.dcx().span_fatal(
                     hir.span,
@@ -2345,8 +2359,8 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
 
     /// The parameters of an `exists` / `forall` closure as quantified variables, the domain of
     /// their types (the range of an integer type in use ([`rty::int_range`]), the length of an
-    /// array: [`rty::binder_domain`]), over which they range,
-    /// and the body.
+    /// array: [`rty::binder_domain`]) and the code points of the `char`s they hold
+    /// ([`rty::char_domain_formula`]), over which they range, and the body.
     fn to_formula_with_quantified_vars(&self, closure: &rustc_hir::Body<'tcx>) -> QuantifiedBody {
         let mut inner_translator = self.clone();
         let mut vars = Vec::new();
@@ -2369,7 +2383,22 @@ impl<'a, 'tcx> AnnotFnTranslator<'a, 'tcx> {
                 .analyzer
                 .generate_user_quantified_var(format!("{ident} at {:?}", param.pat.span));
             let term = chc::Term::UserQuantifiedVar(sort.clone(), var);
-            if let Some(fact) = rty::binder_domain(&param_rty.ty, term.clone()) {
+            let domain = rty::binder_domain(&param_rty.ty, term.clone());
+            let closed_ty = param_rty.ty.clone().strip_refinement();
+            let char_facts =
+                rty::char_domain_formula(&closed_ty, term.clone(), &self.analyzer.enum_defs)
+                    .unwrap_or_else(|enum_ty| {
+                        self.tcx.dcx().span_fatal(
+                            param.pat.span,
+                            format!(
+                                "thrust: the `char`s of a variable of type `{param_ty}` cannot \
+                                 all be given their code points: `{}` recurs in its own \
+                                 payload or is nested too deep",
+                                enum_ty.display()
+                            ),
+                        )
+                    });
+            for fact in domain.into_iter().chain(char_facts) {
                 range = Some(match range {
                     Some(range) => range.and(fact),
                     None => fact,
@@ -3379,4 +3408,17 @@ fn positional_subpats<'tcx>(
         .enumerate()
         .map(|(i, p)| (if i < split { i } else { i + skipped }, p))
         .collect()
+}
+
+/// The kind of generic parameter `args` depend on, for a message about a value that cannot be
+/// evaluated at them.
+fn generic_param_kind(args: mir_ty::GenericArgsRef<'_>) -> &'static str {
+    use mir_ty::TypeVisitableExt as _;
+    let on_type = args.has_type_flags(mir_ty::TypeFlags::HAS_TY_PARAM);
+    let on_const = args.has_type_flags(mir_ty::TypeFlags::HAS_CT_PARAM);
+    match (on_type, on_const) {
+        (true, true) => "a type or const parameter",
+        (false, true) => "a const parameter",
+        (true, false) | (false, false) => "a type parameter",
+    }
 }

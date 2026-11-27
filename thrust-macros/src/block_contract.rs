@@ -334,11 +334,10 @@ impl BlockContract {
         let outer_attr = host
             .outer_context
             .map(|outer| quote!(#[thrust::_outer_context(#outer)]));
-        // the block splits its goals when its host does
-        let split_goals = host.split_goals.then(|| quote!(#[thrust::split_goals]));
+        let inherited = &host.inherited_attrs;
         let attrs = quote! {
             #outer_attr
-            #split_goals
+            #(#inherited)*
             #[::thrust_macros::context]
         };
         self.function(name, attrs, host.generics)
@@ -365,8 +364,23 @@ pub struct HoistHost<'a> {
     pub outer_context: Option<&'a crate::FnOuterItem>,
     /// Whether the host is an associated function, so that the hoisted function is one too.
     pub is_method: bool,
-    /// Whether the host is marked `#[thrust::split_goals]`.
-    pub split_goals: bool,
+    /// The host's attributes the hoisted function carries too, see [`inherited_attrs`].
+    pub inherited_attrs: Vec<syn::Attribute>,
+}
+
+/// The attributes of a host that apply to the block as well: `#[thrust::split_goals]` splits the
+/// goals of the block, and `#[thrust::reveal]` (bare or with paths) reveals the opaque functions to
+/// it, as it does to the host's closures.
+pub fn inherited_attrs(host_attrs: &[syn::Attribute]) -> Vec<syn::Attribute> {
+    let inherited: [syn::Path; 2] = [
+        syn::parse_quote!(thrust::split_goals),
+        syn::parse_quote!(thrust::reveal),
+    ];
+    host_attrs
+        .iter()
+        .filter(|attr| inherited.contains(attr.path()))
+        .cloned()
+        .collect()
 }
 
 impl HoistHost<'_> {

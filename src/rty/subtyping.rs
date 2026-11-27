@@ -128,6 +128,7 @@ where
     let mut clauses = Vec::new();
     match (got, expected) {
         (Type::Int(_) | Type::UInt(_), Type::Int(_) | Type::UInt(_))
+        | (Type::Char, Type::Char)
         | (Type::Bool, Type::Bool)
         | (Type::String, Type::String)
         | (Type::Opaque, Type::Opaque)
@@ -218,6 +219,13 @@ where
         }
         (Type::Param(got), Type::Param(expected))
             if got.forall_sort_idx == expected.forall_sort_idx => {}
+        // An opaque function pointer, as a closure seen from outside its body holds one, relates
+        // to no function type (`OpaqueFnPtrs` in `refine::template`). Relying on this is sound
+        // because every closure value passed the construction check in `check_closure_captures`,
+        // so a function pointer seen as opaque outside the body was already related to the type
+        // the body takes it at. The other sources of opaque types that meet a function type here
+        // (trait objects, raw pointers, `DynModel`) have no function pointer's Rust type.
+        (Type::Function(_), Type::Opaque) | (Type::Opaque, Type::Function(_)) => {}
         (Type::Alias(got), Type::Alias(expected))
             if got.forall_sort_index() == expected.forall_sort_index() => {}
         _ => rustc_middle::ty::tls::with(|tcx| {
@@ -354,13 +362,13 @@ where
                     .subst_value_var(|| expected.kind.deref_term(value())),
             );
         }
-        // An enum's payloads have facts under `THRUST_INT_RANGE` (`RefinedType::formula_with`).
-        // A value entering the type at other arguments (a type parameter, an alias, another
-        // integer type) is checked against them when the type has any; without the enums'
-        // definitions that cannot be told, which no analysis scope lacks.
+        // An enum's payloads have facts (`RefinedType::formula_with`): those of its `char`s, and
+        // under `THRUST_INT_RANGE` those of its integers. A value entering the type at other
+        // arguments (a type parameter, an alias, another integer type) is checked against them
+        // when the type has any; without the enums' definitions that cannot be told, which no
+        // analysis scope lacks.
         (Type::Enum(got), Type::Enum(expected))
-            if super::int_range_mode() != super::IntRange::Off
-                && got.clone().strip_refinement() != expected.clone().strip_refinement() =>
+            if got.clone().strip_refinement() != expected.clone().strip_refinement() =>
         {
             let expected = Type::Enum(expected.clone().strip_refinement());
             let Some(defs) = enum_defs else {
@@ -370,7 +378,7 @@ where
                     expected.display()
                 );
             };
-            if super::has_range_facts(&expected, defs, &mut Vec::new()) {
+            if super::has_payload_facts(&expected, defs) {
                 facts.push_conj(
                     super::type_fact_checks(&expected, defs)
                         .unwrap_or_else(|ty| {

@@ -306,11 +306,7 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
     };
 
     let host_sig = func.sig().clone();
-    let split_goals_path: syn::Path = syn::parse_quote!(thrust::split_goals);
-    let split_goals = func
-        .attrs()
-        .iter()
-        .any(|attr| attr.path() == &split_goals_path);
+    let inherited_attrs = crate::block_contract::inherited_attrs(func.attrs());
     // A method may parse as a free function, so the place is read from the enclosing item.
     let can_hoist = match &outer {
         Some(outer) => hoists_into(outer),
@@ -325,7 +321,7 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
             generics: &host_sig.generics,
             outer_context: outer.as_ref(),
             is_method: outer.is_some(),
-            split_goals,
+            inherited_attrs: inherited_attrs.clone(),
         }),
         hoisted: Vec::new(),
     };
@@ -383,7 +379,7 @@ fn expand_fn(mut func: FnItemWithSignature) -> TokenStream {
         generics: &func.sig().generics,
         outer_context: outer.as_ref(),
         is_method: outer.is_some(),
-        split_goals,
+        inherited_attrs,
     };
     let hoisted = hoisted
         .iter()

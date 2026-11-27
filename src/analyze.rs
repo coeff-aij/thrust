@@ -67,13 +67,13 @@ fn scalar_const_term<T>(
             rty::Type::int_of_width(v.size().bits() as u32),
             chc::Term::int(v.to_int(v.size())),
         )),
-        (
-            mir_ty::TyKind::Uint(_) | mir_ty::TyKind::Char,
-            mir::ConstValue::Scalar(Scalar::Int(v)),
-        ) => Some((
+        (mir_ty::TyKind::Uint(_), mir::ConstValue::Scalar(Scalar::Int(v))) => Some((
             rty::Type::uint_of_width(v.size().bits() as u32),
             chc::Term::int(v.to_uint(v.size())),
         )),
+        (mir_ty::TyKind::Char, mir::ConstValue::Scalar(Scalar::Int(v))) => {
+            Some((rty::Type::char(), chc::Term::int(v.to_uint(v.size()))))
+        }
         (mir_ty::TyKind::Bool, mir::ConstValue::Scalar(Scalar::Int(v))) => {
             Some((rty::Type::bool(), chc::Term::bool(v.try_to_bool().unwrap())))
         }
@@ -565,7 +565,8 @@ struct BasicBlockDef {
 /// The definitions of the enums the crate's types name: those whose datatypes the query declares
 /// ([`Analyzer::get_or_register_enum_def`]) and, under `THRUST_INT_RANGE`, every enum a type built
 /// so far names, whose definition the facts of its payloads read
-/// ([`refine::TypeBuilder::register_enum_def`]).
+/// ([`refine::TypeBuilder::register_enum_def`]). Without the option the facts of a payload, those of
+/// its `char`s, are read only of the enums registered ([`rty::EnumDefProvider::has_enum_def`]).
 #[derive(Debug, Clone, Default)]
 pub struct EnumDefs {
     defs: HashMap<DefId, rty::EnumDatatypeDef>,
@@ -604,6 +605,10 @@ impl EnumDefs {
 impl refine::EnumDefProvider for Rc<RefCell<EnumDefs>> {
     fn enum_def(&self, name: &chc::DatatypeSymbol) -> rty::EnumDatatypeDef {
         self.borrow().find_by_name(name).unwrap().clone()
+    }
+
+    fn has_enum_def(&self, name: &chc::DatatypeSymbol) -> bool {
+        self.borrow().find_by_name(name).is_some()
     }
 }
 
@@ -746,17 +751,9 @@ pub struct Analyzer<'tcx> {
     assumptions: Vec<AssumeSite>,
     /// The fn-like defs whose bodies are trusted rather than analyzed.
     trusted_bodies: HashSet<LocalDefId>,
-    /// What each analyzed body's calls into code Thrust does not analyze cover, by the body and
-    /// the function called with its generic arguments.
-    handovers: Vec<(
-        DefId,
-        DefId,
-        mir_ty::GenericArgsRef<'tcx>,
-        unanalyzed_entry::HandedOver<'tcx>,
-    )>,
-    /// How many values of a closure type each analyzed call into code Thrust does not analyze
-    /// states the obligation of.
-    handover_counts: Vec<unanalyzed_entry::HandoverCount<'tcx>>,
+    /// The functions whose `pre!` each analyzed body's calls into code Thrust does not analyze
+    /// state.
+    stated_function_pres: Vec<unanalyzed_entry::StatedFunctionPre<'tcx>>,
     /// What the analysis did with the body of each function, for the report.
     body_checks: BodyChecks,
     /// The functions each body calls, for the report.
@@ -1094,8 +1091,7 @@ impl<'tcx> Analyzer<'tcx> {
             invariant_annotations: Default::default(),
             assumptions: Default::default(),
             trusted_bodies: Default::default(),
-            handovers: Default::default(),
-            handover_counts: Default::default(),
+            stated_function_pres: Default::default(),
             body_checks: Default::default(),
             called_fns: Default::default(),
         }
